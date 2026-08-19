@@ -1,0 +1,1 @@
+export const CONSUMER_AUTH = 'CONSUMER_AUTH';
