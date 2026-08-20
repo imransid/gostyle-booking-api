@@ -1,19 +1,14 @@
-import { Controller, Get, Headers } from '@nestjs/common';
-import { AuthService } from './auth/auth.service';
+import { Controller, Get, UseGuards } from '@nestjs/common';
+
+import { AuthGuard } from './auth/auth.guard';
+import { CurrentUser } from './auth/current-user.decorator';
+import { Identity } from './auth/auth.service';
 
 @Controller()
 export class AppController {
-  constructor(private readonly auth: AuthService) {}
-
   @Get('api/v1/me')
-  async me(@Headers('authorization') header?: string) {
-    if (!header?.startsWith('Bearer ')) {
-      return { error: 'no token' };
-    }
-
-    const token = header.slice('Bearer '.length);
-    const identity = await this.auth.verifyToken(token);
-
-    return identity ?? { error: 'invalid token' };
+  @UseGuards(AuthGuard)
+  me(@CurrentUser() user: Identity) {
+    return user;
   }
 }
