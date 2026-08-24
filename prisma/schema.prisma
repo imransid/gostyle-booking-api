@@ -1,0 +1,344 @@
+// Go Style Booking: core schema (Step 2)
+// Everything the confirm transaction touches on the happy path.
+//
+// Two things Prisma cannot express live in prisma/migrations/ as raw SQL:
+//   1. EXCLUDE USING gist  (the anti-double-booking guarantee)
+//   2. CHECK constraints   (sanity rules on money and time)
+// Never let a `migrate dev` drop them.
+
+// Prisma 7: the connection url lives in prisma.config.ts, not here.
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================================ enums
+
+enum BookingStatus {
+  draft
+  held
+  pending_payment
+  pending_confirmation
+  confirmed
+  checked_in
+  in_service
+  completed
+  settled
+  cancelled
+  no_show
+  rescheduled
+  expired
+  skipped
+
+  @@map("booking_status")
+}
+
+enum PaymentStatus {
+  none_required
+  unpaid
+  deposit_paid
+  fully_paid
+  partially_refunded
+  refunded
+  forfeited
+  settled
+
+  @@map("payment_status")
+}
+
+enum SegmentKind {
+  setup
+  active
+  processing
+  finishing
+  teardown
+
+  @@map("segment_kind")
+}
+
+// ============================================================ booking
+
+model Booking {
+  id   String @id @default(uuid()) @db.Uuid
+  code String @unique
+
+  // External ids. No FK: these rows live in other services.
+  branchId   String @map("branch_id") @db.Uuid
+  customerId String @map("customer_id") @db.Uuid
+
+  status        BookingStatus @default(draft)
+  paymentStatus PaymentStatus @default(none_required) @map("payment_status")
+
+  // Time, stored twice on purpose.
+  // start_at/end_at  -> Postgres, for the overlap constraint
+  // start_minute     -> the kernel, minutes from midnight (900 = 15:00)
+  tradingDay  DateTime @map("trading_day") @db.Date
+  startAt     DateTime @map("start_at") @db.Timestamptz(6)
+  endAt       DateTime @map("end_at") @db.Timestamptz(6)
+  startMinute Int      @map("start_minute") @db.SmallInt
+  durationMin Int      @map("duration_min") @db.SmallInt
+
+  // Money as whole fils. Never Decimal, never Float.
+  priceFils         Int     @default(0) @map("price_fils")
+  depositFils       Int     @default(0) @map("deposit_fils")
+  requirementSource String? @map("requirement_source")
+
+  channel        String
+  moveCount      Int     @default(0) @map("move_count") @db.SmallInt
+  overbooked     Boolean @default(false)
+  overbookReason String? @map("overbook_reason")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  items           BookingItem[]
+  ledger          DepositLedger[]
+  statusHistory   BookingStatusHistory[]
+  idempotencyKeys IdempotencyKey[]
+
+  @@index([branchId, tradingDay, status], map: "booking_branch_day_idx")
+  @@index([customerId, startAt(sort: Desc)], map: "booking_customer_idx")
+  @@map("booking")
+}
+
+// ============================================================ booking_item
+
+model BookingItem {
+  id        String  @id @default(uuid()) @db.Uuid
+  bookingId String  @map("booking_id") @db.Uuid
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  // The snapshot. The catalogue can change; this cannot.
+  serviceId     String @map("service_id") @db.Uuid
+  serviceName   String @map("service_name")
+  resourceType  String @map("resource_type")
+  requiredSkill String @map("required_skill")
+
+  priceFils   Int @map("price_fils")
+  durationMin Int @map("duration_min") @db.SmallInt
+  position    Int @db.SmallInt
+
+  staffId String @map("staff_id") @db.Uuid
+
+  staffReservations    StaffReservation[]
+  resourceReservations ResourceReservation[]
+
+  @@unique([bookingId, position])
+  @@index([bookingId], map: "booking_item_booking_idx")
+  @@map("booking_item")
+}
+
+// ============================================================ hold
+
+model Hold {
+  id         String  @id @default(uuid()) @db.Uuid
+  branchId   String  @map("branch_id") @db.Uuid
+  customerId String? @map("customer_id") @db.Uuid
+
+  tradingDay       DateTime @map("trading_day") @db.Date
+  feasibilityToken String   @map("feasibility_token")
+  expiresAt        DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  staffReservations    StaffReservation[]
+  resourceReservations ResourceReservation[]
+
+  @@index([expiresAt], map: "hold_expiry_idx")
+  @@map("hold")
+}
+
+// ============================================================ staff_reservation
+// ONE table for booked segments AND held segments, so ONE constraint
+// protects both. A held slot is not sellable to anyone else.
+
+model StaffReservation {
+  id String @id @default(uuid()) @db.Uuid
+
+  // Exactly one of these is set. Enforced by a CHECK in raw SQL.
+  bookingItemId String?      @map("booking_item_id") @db.Uuid
+  bookingItem   BookingItem? @relation(fields: [bookingItemId], references: [id], onDelete: Cascade)
+  holdId        String?      @map("hold_id") @db.Uuid
+  hold          Hold?        @relation(fields: [holdId], references: [id], onDelete: Cascade)
+
+  branchId   String   @map("branch_id") @db.Uuid
+  staffId    String   @map("staff_id") @db.Uuid
+  tradingDay DateTime @map("trading_day") @db.Date
+
+  kind        SegmentKind
+  startAt     DateTime    @map("start_at") @db.Timestamptz(6)
+  endAt       DateTime    @map("end_at") @db.Timestamptz(6)
+  startMinute Int         @map("start_minute") @db.SmallInt
+  durationMin Int         @map("duration_min") @db.SmallInt
+
+  // Drives the exclusion constraint. False means capacity is released.
+  blocking Boolean @default(true)
+
+  claimPreMin  Int @default(0) @map("claim_pre_min") @db.SmallInt
+  claimPostMin Int @default(0) @map("claim_post_min") @db.SmallInt
+
+  /**
+   * Hands-free band, so the carve-back survives a round trip.
+   */
+  processingFromMin Int? @map("processing_from_min") @db.SmallInt
+  processingToMin   Int? @map("processing_to_min") @db.SmallInt
+
+  @@index([branchId, tradingDay, staffId], map: "staff_res_day_idx")
+  @@map("staff_reservation")
+}
+
+// ============================================================ resource_reservation
+// Chairs have capacity (2 colour stations), so overlap is legal up to the
+// unit count. Counted under an advisory lock. Once a concrete unit is
+// pinned at check-in, exclusion applies to that unit.
+
+model ResourceReservation {
+  id String @id @default(uuid()) @db.Uuid
+
+  bookingItemId String?      @map("booking_item_id") @db.Uuid
+  bookingItem   BookingItem? @relation(fields: [bookingItemId], references: [id], onDelete: Cascade)
+  holdId        String?      @map("hold_id") @db.Uuid
+  hold          Hold?        @relation(fields: [holdId], references: [id], onDelete: Cascade)
+
+  branchId       String  @map("branch_id") @db.Uuid
+  resourceType   String  @map("resource_type")
+  resourceUnitId String? @map("resource_unit_id") @db.Uuid
+
+  tradingDay  DateTime @map("trading_day") @db.Date
+  startAt     DateTime @map("start_at") @db.Timestamptz(6)
+  endAt       DateTime @map("end_at") @db.Timestamptz(6)
+  startMinute Int      @map("start_minute") @db.SmallInt
+  durationMin Int      @map("duration_min") @db.SmallInt
+
+  blocking Boolean @default(true)
+
+  @@index([branchId, tradingDay, resourceType], map: "resource_res_day_idx")
+  @@map("resource_reservation")
+}
+
+// ============================================================ STEP 3
+// Money, audit, delivery, retry safety.
+
+enum LedgerEntryType {
+  captured
+  applied_at_pos
+  refunded
+  partially_refunded
+  forfeited
+  reversed
+  goodwill
+  course_draw
+
+  @@map("ledger_entry_type")
+}
+
+enum PaymentRail {
+  wallet
+  card
+  apple_pay
+  cash
+  link
+  internal
+
+  @@map("payment_rail")
+}
+
+enum ActorKind {
+  customer
+  staff
+  manager
+  system
+
+  @@map("actor_kind")
+}
+
+// Append-only, enforced by a database trigger.
+// Signed amounts, so a booking's protected balance is SUM(amountFils).
+model DepositLedger {
+  id        String  @id @default(uuid(7)) @db.Uuid
+  bookingId String  @map("booking_id") @db.Uuid
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+
+  entryType  LedgerEntryType @map("entry_type")
+  amountFils Int             @map("amount_fils")
+
+  rail             PaymentRail?
+  gatewayRef       String?      @map("gateway_ref")
+  posTransactionId String?      @map("pos_transaction_id")
+
+  // A reversal or partial refund names the row it corrects.
+  linkedEntryId String?         @map("linked_entry_id") @db.Uuid
+  linkedEntry   DepositLedger?  @relation("LedgerCorrection", fields: [linkedEntryId], references: [id], onDelete: Restrict)
+  corrections   DepositLedger[] @relation("LedgerCorrection")
+
+  reason    String?
+  actorKind ActorKind @map("actor_kind")
+  actorId   String?   @map("actor_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([bookingId, createdAt], map: "deposit_ledger_booking_idx")
+  @@map("deposit_ledger")
+}
+
+// Append-only. Every transition, with who did it and why.
+model BookingStatusHistory {
+  id        String  @id @default(uuid(7)) @db.Uuid
+  bookingId String  @map("booking_id") @db.Uuid
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+
+  fromStatus BookingStatus? @map("from_status")
+  toStatus   BookingStatus  @map("to_status")
+
+  reason   String?
+  metadata Json?
+
+  actorKind ActorKind @map("actor_kind")
+  actorId   String?   @map("actor_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([bookingId, createdAt], map: "booking_status_history_booking_idx")
+  @@map("booking_status_history")
+}
+
+// Written INSIDE the same transaction as the state change, so an event
+// can never be lost when Redis is down.
+model EventOutbox {
+  id String @id @default(uuid(7)) @db.Uuid
+
+  aggregateType String @map("aggregate_type")
+  aggregateId   String @map("aggregate_id") @db.Uuid
+  eventType     String @map("event_type")
+  payload       Json
+
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  publishedAt DateTime? @map("published_at") @db.Timestamptz(6)
+  attempts    Int       @default(0) @db.SmallInt
+  lastError   String?   @map("last_error")
+
+  @@index([aggregateType, aggregateId], map: "event_outbox_aggregate_idx")
+  @@map("event_outbox")
+}
+
+// A retried request returns the original result instead of charging twice.
+model IdempotencyKey {
+  key         String @id
+  operation   String
+  requestHash String @map("request_hash")
+
+  responseStatus Int?  @map("response_status") @db.SmallInt
+  responseBody   Json? @map("response_body")
+
+  bookingId String?  @map("booking_id") @db.Uuid
+  booking   Booking? @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+
+  @@index([expiresAt], map: "idempotency_key_expiry_idx")
+  @@map("idempotency_key")
+}
