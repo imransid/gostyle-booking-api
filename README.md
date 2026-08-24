@@ -96,3 +96,35 @@ Nest is an MIT-licensed open source project. It can grow thanks to the sponsors 
 ## License
 
 Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+
+## Running locally
+
+```bash
+pnpm install
+docker compose up -d
+npx prisma migrate deploy
+npx prisma generate
+pnpm start:dev
+```
+
+API at http://localhost:3099, Swagger at http://localhost:3099/docs
+
+**Postgres runs on 5433**, not 5432, because Homebrew Postgres usually owns
+the default port on macOS. Redis is on 6379 unless you have a local one.
+
+## Commands
+
+| | |
+|---|---|
+| `pnpm test:unit` | domain tests, under a second |
+| `pnpm typecheck` | tsc, no emit |
+| `pnpm lint` | eslint, including the domain purity rule |
+| `pnpm db:psql` | psql into the container |
+| `pnpm db:clean` | truncate test data (DELETE will not work once money is attached) |
+
+## Rules that are enforced, not suggested
+
+- `src/domain/**` may not import NestJS or Prisma. Eslint blocks it.
+- Migrations are always `--create-only` first: Prisma cannot see the
+  `EXCLUDE USING gist` constraints and will silently drop them otherwise.
+- Money is stored in fils (integers), never decimals.
