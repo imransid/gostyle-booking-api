@@ -57,3 +57,7 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # Prisma generated client (generator output)
 /src/generated
+
+# tsc build cache. Machine-specific, and a stale one makes tsc
+# skip emitting entirely.
+*.tsbuildinfo
