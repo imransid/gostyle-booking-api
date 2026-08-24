@@ -14,9 +14,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # No version here on purpose. package.json's "packageManager" field is
+      # the single source of truth, and the action reads it. Specifying both
+      # is an error: two places to change means one of them eventually lags.
       - uses: pnpm/action-setup@v4
-        with:
-          version: 11
       - uses: actions/setup-node@v4
         with:
           node-version: 22
