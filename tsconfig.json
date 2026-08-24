@@ -8,6 +8,7 @@
     "allowSyntheticDefaultImports": true,
     "sourceMap": true,
     "outDir": "./dist",
+    "rootDir": "./src",
     "incremental": true,
     "skipLibCheck": true,
 
@@ -26,6 +27,6 @@
       "@interface/*":      ["./src/interface/*"]
     }
   },
-  "include": ["src/**/*", "prisma.config.ts"],
-"exclude": ["node_modules", "dist", "src/generated"]
+  "include": ["src/**/*"],
+"exclude": ["node_modules", "dist"]
 }

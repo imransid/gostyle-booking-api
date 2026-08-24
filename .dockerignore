@@ -1,0 +1,19 @@
+node_modules
+dist
+coverage
+.git
+.github
+.env
+.env.*
+src/generated
+*.log
+.DS_Store
+docker-compose*.yml
+README.md
+
+# tsc skips emitting when it finds a stale build cache from the host,
+# which produces an image with .d.ts files and no .js at all.
+*.tsbuildinfo
+tsconfig.build.tsbuildinfo
+.turbo
+test

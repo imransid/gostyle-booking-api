@@ -10,6 +10,18 @@
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
+  // REQUIRED. Prisma 7 generates ESM by default, and NestJS compiles to
+  // CommonJS. Without this, the app boots under ts-node but dies under
+  // plain node with "exports is not defined in ES module scope".
+  moduleFormat = "cjs"
+  // Bare specifiers: "./internal/class", not "./internal/class.ts".
+  //
+  // tsc NEVER rewrites import specifiers. With the default of "ts",
+  // the generated source says "./internal/class.ts" and the compiled
+  // .js still says it, so node looks for a .ts file that was compiled
+  // away. Bare specifiers resolve to .ts at compile time and .js at
+  // runtime, which is the classic CommonJS arrangement.
+  importFileExtension = ""
 }
 
 datasource db {
