@@ -1,5 +1,8 @@
 import { Global, Module } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
+import { OutboxRelay } from '../messaging/outbox-relay.service';
+import { LoggingEventPublisher } from '../messaging/logging-event-publisher';
+import { EVENT_PUBLISHER } from '@application/ports/event-publisher.port';
 import { HoldRepository } from './hold.repository';
 import { BookingRepository } from './booking.repository';
 import { LifecycleRepository } from './lifecycle.repository';
@@ -16,6 +19,8 @@ import { HoldSweeper } from '../scheduling/hold-sweeper.service';
 @Module({
   providers: [
     PrismaService,
+    OutboxRelay,
+    { provide: EVENT_PUBLISHER, useClass: LoggingEventPublisher },
     LifecycleRepository,
     BookingRepository,
     HoldRepository,
@@ -25,6 +30,7 @@ import { HoldSweeper } from '../scheduling/hold-sweeper.service';
   ],
   exports: [
     PrismaService,
+    OutboxRelay,
     LifecycleRepository,
     BookingRepository,
     HoldRepository,
