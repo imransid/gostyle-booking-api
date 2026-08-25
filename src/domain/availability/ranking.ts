@@ -298,7 +298,12 @@ export function selectOffers(
     .sort((a, b) => a.startMin - b.startMin)
     .map((c) => ({
       ...c,
-      badges: buildBadges(c, c === earliest, c === bestOverall, chosen.length > 1),
+      badges: buildBadges(
+        c,
+        c === earliest,
+        c === bestOverall,
+        chosen.length > 1,
+      ),
     }));
 }
 

@@ -1,6 +1,8 @@
 import {
   ConflictException,
   GoneException,
+  HttpException,
+  HttpStatus,
   Inject,
   Injectable,
   NotFoundException,
@@ -10,6 +12,15 @@ import {
   BOOKING_CONTEXT,
   type BookingContextReader,
 } from '@application/ports/booking-context.port';
+import {
+  CUSTOMER_CONTEXT,
+  type CustomerContextReader,
+} from '@application/ports/customer-context.port';
+import {
+  requirementFor,
+  DEFAULT_BRANCH,
+  type Requirement,
+} from '@domain/booking/customer';
 import {
   BookingRepository,
   type ConfirmItem,
@@ -61,6 +72,8 @@ export class ConfirmBookingHandler {
     @Inject(BOOKING_CONTEXT) private readonly context: BookingContextReader,
     private readonly bookings: BookingRepository,
     private readonly prisma: PrismaService,
+    @Inject(CUSTOMER_CONTEXT)
+    private readonly customers: CustomerContextReader,
   ) {}
 
   async execute(cmd: ConfirmBookingCommand): Promise<BookingView> {
@@ -106,10 +119,54 @@ export class ConfirmBookingHandler {
     }));
 
     const total = Money.sum(items.map((i) => Money.fils(i.priceFils)));
-    const deposit =
+
+    // THE SERVER DECIDES WHAT IS OWED. The request only says what was
+    // TENDERED. Before this, a client could send amountFils: 1 against a
+    // AED 480 colour and the booking was confirmed with a one-fil deposit,
+    // which protects nothing at all.
+    const customer = await this.customers.load(cmd.customerId);
+    const first = services[0];
+    const requirement = requirementFor({
+      totalFils: total.fils,
+      risk: customer.risk,
+      riskScore: customer.riskScore,
+      requireDepositFlag: customer.requireDepositFlag,
+      service: {
+        name: first?.name ?? 'service',
+        percent: first?.depositPercent ?? null,
+        fixedFils: first?.depositFixedFils ?? null,
+      },
+      isNewCustomer: customer.isNewCustomer,
+      channel: cmd.channel === 'online' ? 'online' : 'desk',
+      startMin: reservation.startMinute,
+      branch: DEFAULT_BRANCH,
+    });
+
+    const tendered =
       cmd.payment === undefined
         ? Money.ZERO
         : Money.fils(cmd.payment.amountFils);
+    const required = Money.fils(requirement.amountFils);
+
+    // Short of the requirement, nothing is charged and the desk is told the
+    // figure AND why, so "why was I charged this" is answered before the
+    // customer has to ask.
+    if (tendered.lessThan(required)) {
+      throw new HttpException(
+        {
+          statusCode: HttpStatus.PAYMENT_REQUIRED,
+          error: 'Payment Required',
+          message: `${required.toString()} is required before this booking can be confirmed.`,
+          requiredFils: required.fils,
+          tenderedFils: tendered.fils,
+          requirement: describeFully(requirement),
+        },
+        HttpStatus.PAYMENT_REQUIRED,
+      );
+    }
+
+    // Never bank more than the price, whatever a desk types in.
+    const deposit = Money.min(tendered, total);
 
     const outcome = await this.bookings.confirm({
       holdId: cmd.holdId,
@@ -121,7 +178,7 @@ export class ConfirmBookingHandler {
       priceFils: total.fils,
       depositFils: deposit.fils,
       requirementSource:
-        cmd.payment === undefined ? null : describeRequirement(deposit, total),
+        requirement.kind === 'none' ? null : requirement.source,
       payment:
         cmd.payment === undefined
           ? null
@@ -165,7 +222,7 @@ export class ConfirmBookingHandler {
       dueAtCheckoutFils: due.fils,
       dueAtCheckout: due.toString(),
       requirementSource:
-        cmd.payment === undefined ? null : describeRequirement(deposit, total),
+        requirement.kind === 'none' ? null : requirement.source,
       replayed: outcome.kind === 'replayed',
     };
 
@@ -214,17 +271,6 @@ function priceOf(serviceId: string): number {
 }
 
 /**
- * Stored on the booking so support can answer "why was I charged this" months
- * later, without anyone re-deriving February's rules from memory.
- */
-function describeRequirement(deposit: Money, total: Money): string {
-  if (deposit.isZero()) return 'No deposit required';
-  if (deposit.equals(total)) return 'Paid in full at booking';
-  const pct = Math.round((deposit.fils / total.fils) * 100);
-  return `Deposit ${pct}% of ${total.toString()}`;
-}
-
-/**
  * Same key with a DIFFERENT body is a client bug, not a retry. Storing the
  * hash lets a later version answer 422 instead of silently returning someone
  * else's booking.
@@ -239,4 +285,19 @@ function hashRequest(cmd: ConfirmBookingCommand): string {
       }),
     )
     .digest('hex');
+}
+
+/** The full trace, for the 402 body and for support months later. */
+function describeFully(r: Requirement): {
+  kind: string;
+  source: string;
+  clampNote?: string;
+  trace: readonly { rung: string; evaluation: string; fired: boolean }[];
+} {
+  return {
+    kind: r.kind,
+    source: r.source,
+    ...(r.clampNote !== undefined ? { clampNote: r.clampNote } : {}),
+    trace: r.trace,
+  };
 }

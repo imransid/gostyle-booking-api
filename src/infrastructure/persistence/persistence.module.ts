@@ -1,6 +1,8 @@
 import { Global, Module } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
 import { OutboxRelay } from '../messaging/outbox-relay.service';
+import { CUSTOMER_CONTEXT } from '@application/ports/customer-context.port';
+import { FixtureCustomerContext } from '../fixtures/fixture-customer-context';
 import { LoggingEventPublisher } from '../messaging/logging-event-publisher';
 import { EVENT_PUBLISHER } from '@application/ports/event-publisher.port';
 import { HoldRepository } from './hold.repository';
@@ -18,6 +20,8 @@ import { HoldSweeper } from '../scheduling/hold-sweeper.service';
 @Global()
 @Module({
   providers: [
+    // Swapping this for the real customer service changes ONE line.
+    { provide: CUSTOMER_CONTEXT, useClass: FixtureCustomerContext },
     PrismaService,
     OutboxRelay,
     { provide: EVENT_PUBLISHER, useClass: LoggingEventPublisher },
@@ -29,6 +33,7 @@ import { HoldSweeper } from '../scheduling/hold-sweeper.service';
     FixtureBookingContext,
   ],
   exports: [
+    CUSTOMER_CONTEXT,
     PrismaService,
     OutboxRelay,
     LifecycleRepository,
