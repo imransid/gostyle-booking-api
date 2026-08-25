@@ -436,7 +436,11 @@ export function cancellationOutcome(input: CancellationInput): MoneyOutcome {
     };
   }
 
-  if (hoursAhead > LATE_CANCEL_WINDOW_HOURS) {
+  // >= not >. The matrix row reads "24 h to 2 h before", so exactly T-2h is
+  // INSIDE that band, not past it. With a strict >, a customer cancelling on
+  // the stroke of two hours fell into LATE CANCEL: a fully-paid booking lost
+  // its 50% refund and was flagged against the risk score for being on time.
+  if (hoursAhead >= LATE_CANCEL_WINDOW_HOURS) {
     // A deposit is kept whole. Full payment splits, because the salon has
     // less chance to resell but the customer has paid for the whole visit.
     if (input.paidInFull) {

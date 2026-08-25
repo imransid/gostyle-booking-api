@@ -321,7 +321,10 @@ describe('cancellation, the refund matrix', () => {
     expect(cancel(24.001).band).toBe('more_than_24h');
     expect(cancel(24).band).toBe('24h_to_2h');
     expect(cancel(2.001).band).toBe('24h_to_2h');
-    expect(cancel(2).band).toBe('under_2h');
+    // Exactly T-2h is INSIDE the "24 h to 2 h" row, not past it. A customer
+    // who cancels on the stroke of two hours has not cancelled late.
+    expect(cancel(2).band).toBe('24h_to_2h');
+    expect(cancel(1.999).band).toBe('under_2h');
   });
 
   it('the salon cancelling refunds in full, whatever the timing', () => {

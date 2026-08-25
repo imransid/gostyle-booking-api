@@ -38,6 +38,16 @@ export class Money {
     return new Money(Math.round((this.fils * p) / 100));
   }
 
+  /**
+   * Round to whole dirhams.
+   *
+   * A percentage deposit is "rounded to whole dirhams", not whole fils.
+   * AED 87.50 is not a figure anyone quotes at a desk; AED 88 is.
+   */
+  roundToDirhams(): Money {
+    return new Money(Math.round(this.fils / 100) * 100);
+  }
+
   negate(): Money {
     return new Money(-this.fils);
   }
