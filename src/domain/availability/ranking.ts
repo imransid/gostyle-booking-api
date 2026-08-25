@@ -298,7 +298,7 @@ export function selectOffers(
     .sort((a, b) => a.startMin - b.startMin)
     .map((c) => ({
       ...c,
-      badges: buildBadges(c, c === earliest, c === bestOverall),
+      badges: buildBadges(c, c === earliest, c === bestOverall, chosen.length > 1),
     }));
 }
 
@@ -306,10 +306,13 @@ function buildBadges(
   c: RankedCandidate,
   isEarliest: boolean,
   isBest: boolean,
+  hasRivals: boolean,
 ): Badge[] {
   const badges: Badge[] = [];
   if (isEarliest) badges.push('EARLIEST');
-  if (isBest) badges.push('SMART_PICK');
+  // SMART PICK only means something when there is a choice. On a single
+  // offer it is EARLIEST and SMART PICK at once, which says nothing.
+  if (isBest && hasRivals) badges.push('SMART_PICK');
   if (c.fragmentation.insideProcessing) badges.push('OVERLAP');
   if (c.fragmentation.flushBefore || c.fragmentation.flushAfter)
     badges.push('FLUSH');

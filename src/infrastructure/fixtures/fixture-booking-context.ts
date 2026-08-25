@@ -32,6 +32,8 @@ const SERVICES: readonly Service[] = [
     durationMin: 45,
     resourceType: 'styling',
     claims: STYLING,
+    depositPercent: null,
+    depositFixedFils: null,
   },
   {
     id: 'blow-dry',
@@ -41,6 +43,8 @@ const SERVICES: readonly Service[] = [
     durationMin: 45,
     resourceType: 'styling',
     claims: STYLING,
+    depositPercent: null,
+    depositFixedFils: null,
   },
   {
     id: 'fringe-trim',
@@ -50,6 +54,8 @@ const SERVICES: readonly Service[] = [
     durationMin: 20,
     resourceType: 'styling',
     claims: STYLING,
+    depositPercent: null,
+    depositFixedFils: null,
   },
   {
     id: 'hair-colour',
@@ -59,6 +65,8 @@ const SERVICES: readonly Service[] = [
     durationMin: 100,
     resourceType: 'color',
     claims: COLOUR,
+    depositPercent: 50,
+    depositFixedFils: null,
     processing: { fromMin: 45, toMin: 75 },
     releasesChairDuringProcessing: true,
   },
@@ -70,6 +78,8 @@ const SERVICES: readonly Service[] = [
     durationMin: 125,
     resourceType: 'color',
     claims: COLOUR,
+    depositPercent: 50,
+    depositFixedFils: null,
     processing: { fromMin: 45, toMin: 85 },
     releasesChairDuringProcessing: true,
   },
@@ -81,17 +91,23 @@ const SERVICES: readonly Service[] = [
     durationMin: 150,
     resourceType: 'color',
     claims: COLOUR,
+    depositPercent: 50,
+    depositFixedFils: null,
     processing: { fromMin: 60, toMin: 105 },
     releasesChairDuringProcessing: true,
   },
   {
     id: 'keratin',
     name: 'Keratin treatment',
-    skill: 'color',
+    // A styling chair means a hair skill. It was 'color', which wrongly
+    // demanded a colourist for a service that never touches a colour station.
+    skill: 'hair',
     requiredLevel: 3,
     durationMin: 120,
     resourceType: 'styling',
     claims: STYLING,
+    depositPercent: 50,
+    depositFixedFils: 40000,
   },
   {
     id: 'gel-manicure',
@@ -101,6 +117,8 @@ const SERVICES: readonly Service[] = [
     durationMin: 60,
     resourceType: 'nail',
     claims: NAIL,
+    depositPercent: 20,
+    depositFixedFils: null,
   },
   {
     id: 'mani-pedi',
@@ -110,6 +128,8 @@ const SERVICES: readonly Service[] = [
     durationMin: 95,
     resourceType: 'nail',
     claims: NAIL,
+    depositPercent: 20,
+    depositFixedFils: null,
   },
   {
     id: 'luxury-facial',
@@ -119,6 +139,8 @@ const SERVICES: readonly Service[] = [
     durationMin: 75,
     resourceType: 'room',
     claims: ROOM,
+    depositPercent: 20,
+    depositFixedFils: null,
   },
   {
     id: 'brow-lamination',
@@ -128,6 +150,22 @@ const SERVICES: readonly Service[] = [
     durationMin: 45,
     resourceType: 'brow',
     claims: BROW,
+    depositPercent: 20,
+    depositFixedFils: 10000,
+  },
+  {
+    // Table 6.1. Massage is its own skill family, and nobody on the current
+    // roster holds it, so this service correctly offers nothing until a
+    // therapist is rostered. That is the right answer, not a bug.
+    id: 'hot-stone',
+    name: 'Hot stone massage',
+    skill: 'massage',
+    requiredLevel: 2,
+    durationMin: 75,
+    resourceType: 'room',
+    claims: ROOM,
+    depositPercent: 20,
+    depositFixedFils: 15000,
   },
   {
     id: 'hair-wash',

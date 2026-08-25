@@ -178,7 +178,12 @@ export class LifecycleRepository {
           data: {
             aggregateType: 'booking',
             aggregateId: booking.id,
-            eventType: `booking.${input.to}`,
+            // The in-service event is named session.started, not booking.in_service.
+            // Everything else follows booking.<status>.
+            eventType:
+              input.to === 'in_service'
+                ? 'session.started'
+                : `booking.${input.to}`,
             payload: {
               code: booking.code,
               from: booking.status,

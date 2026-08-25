@@ -205,6 +205,7 @@ const PRICE_FILS: Record<string, number> = {
   'mani-pedi': 22000,
   'luxury-facial': 38000,
   'brow-lamination': 22000,
+  'hot-stone': 34000,
   'hair-wash': 4000,
 };
 

@@ -44,6 +44,16 @@ export interface Service {
   readonly processing?: ProcessingBand;
   /** Whether the client leaves the chair during the hands-free band. */
   readonly releasesChairDuringProcessing?: boolean;
+  /**
+   * What this service asks for before it is confirmed. Rung 3 of the
+   * precedence engine.
+   *
+   * A service may set a percentage, a fixed amount, or both; where both, the
+   * larger wins. That is how a keratin treatment charges AED 400 rather than
+   * a percentage that would under-protect it.
+   */
+  readonly depositPercent?: number | null;
+  readonly depositFixedFils?: number | null;
 }
 
 /** Grain and lead time are properties of the CHANNEL, not of the service. */
