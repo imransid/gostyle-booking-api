@@ -21,6 +21,7 @@ import {
   DEFAULT_BRANCH,
   type Requirement,
 } from '@domain/booking/customer';
+import { quote, type QuoteLine } from '@domain/booking/quote';
 import {
   BookingRepository,
   type ConfirmItem,
@@ -55,6 +56,12 @@ export interface BookingView {
   readonly start: string;
   readonly end: string;
   readonly durationMin: number;
+  /** Net, exclusive of VAT. Prices are STORED net; tax is computed here. */
+  readonly totalNetFils: number;
+  readonly totalNet: string;
+  readonly vatFils: number;
+  readonly vat: string;
+  /** Inclusive of VAT. The number on the receipt. */
   readonly totalFils: number;
   readonly total: string;
   readonly depositFils: number;
@@ -62,6 +69,8 @@ export interface BookingView {
   readonly dueAtCheckoutFils: number;
   readonly dueAtCheckout: string;
   readonly requirementSource: string | null;
+  /** The quote pipeline, line by line, so nothing at checkout surprises. */
+  readonly quote: readonly QuoteLine[];
   /** True when the same Idempotency-Key was seen before. Nothing was charged twice. */
   readonly replayed: boolean;
 }
@@ -168,6 +177,18 @@ export class ConfirmBookingHandler {
     // Never bank more than the price, whatever a desk types in.
     const deposit = Money.min(tendered, total);
 
+    // The quote is what the customer actually owes. `total` above is NET,
+    // exclusive of VAT, and it stays that way because the deposit is
+    // resolved on the pre-discount net figure. The booking stores the
+    // VAT-inclusive total, because that is the number on the receipt.
+    const priced = quote({
+      serviceFils: total.fils,
+      addOnFils: 0,
+      bundleDiscountFils: 0,
+      tier: customer.tier,
+      requirementFils: deposit.fils,
+    });
+
     const outcome = await this.bookings.confirm({
       holdId: cmd.holdId,
       branchId: cmd.branchId,
@@ -205,7 +226,6 @@ export class ConfirmBookingHandler {
     }
 
     const b = outcome.booking;
-    const due = total.minus(deposit);
 
     const view: BookingView = {
       code: b.code,
@@ -215,14 +235,22 @@ export class ConfirmBookingHandler {
       start: formatMinute(b.startMin),
       end: formatMinute(b.startMin + b.durationMin),
       durationMin: b.durationMin,
-      totalFils: total.fils,
-      total: total.toString(),
+      totalNetFils: priced.subtotalNetFils,
+      totalNet: Money.fils(priced.subtotalNetFils).toString(),
+      vatFils: priced.vatFils,
+      vat: Money.fils(priced.vatFils).toString(),
+      totalFils: priced.totalFils,
+      total: Money.fils(priced.totalFils).toString(),
       depositFils: deposit.fils,
       deposit: deposit.toString(),
-      dueAtCheckoutFils: due.fils,
-      dueAtCheckout: due.toString(),
+      // The balance owed at the register INCLUDES the tax. Reporting the
+      // net balance here would have the desk collect 5% too little on every
+      // booking, and nobody would notice until a reconciliation.
+      dueAtCheckoutFils: priced.dueAtCheckoutFils,
+      dueAtCheckout: Money.fils(priced.dueAtCheckoutFils).toString(),
       requirementSource:
         requirement.kind === 'none' ? null : requirement.source,
+      quote: priced.lines,
       replayed: outcome.kind === 'replayed',
     };
 
@@ -232,7 +260,14 @@ export class ConfirmBookingHandler {
     if (cmd.idempotencyKey !== undefined && outcome.kind === 'confirmed') {
       await this.prisma.idempotencyKey.update({
         where: { key: cmd.idempotencyKey },
-        data: { responseBody: { ...view, replayed: true } },
+        data: {
+          // Prisma's JSON input type wants mutable arrays, and the view's
+          // quote lines are readonly. A structural copy satisfies it without
+          // loosening the type the client actually receives.
+          responseBody: JSON.parse(
+            JSON.stringify({ ...view, replayed: true }),
+          ) as object,
+        },
       });
     }
 
