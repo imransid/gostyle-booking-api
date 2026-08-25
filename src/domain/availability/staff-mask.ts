@@ -106,11 +106,26 @@ export function startMask(
   const chainSlots = slotsFor(chain.durationMin);
 
   // 1. The chain must FINISH before the shift ends, not merely start inside it.
+  //
+  //    AND ITS BUFFERS MUST FIT TOO. A chain is the services laid end to end
+  //    WITH their buffers, and the whole thing has to fit inside one feasible
+  //    window. A buffer is a real reservation on the calendar, not display
+  //    padding: the professional is genuinely doing that work.
+  //
+  //    Without this, a 125-minute colour with a 20-minute teardown was offered
+  //    at 16:55 against a shift ending 19:00. The service finished exactly at
+  //    19:00 and the station was still being cleaned at 19:20, by which time
+  //    the professional had gone home. The setup claim is the mirror image at
+  //    the front: offering 10:00 on a 10:00 shift means setting up at 09:50.
+  //
   //    +1 because rangeMask is exclusive at the far end and the last legal
-  //    start is exactly shiftEnd minus the chain.
+  //    start is exactly shiftEnd minus the chain minus its teardown.
+  const setupSlots = slotsFor(chain.claims.preMin);
+  const teardownSlots = slotsFor(chain.claims.postMin);
+
   const base = rangeMask(
-    toSlot(shift.startMin),
-    toSlotCeil(shift.endMin) - chainSlots + 1,
+    toSlot(shift.startMin) + setupSlots,
+    toSlotCeil(shift.endMin) - chainSlots - teardownSlots + 1,
   );
   if (base === NONE) return NONE;
 

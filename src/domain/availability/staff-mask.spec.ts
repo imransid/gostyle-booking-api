@@ -35,26 +35,27 @@ function lastStart(m: Mask): string | null {
 }
 
 describe('the chain must finish inside the shift', () => {
-  it('an empty diary offers the whole shift, minus the chain length', () => {
+  it('an empty diary offers the shift, minus the chain AND its buffers', () => {
     const m = startMask(
       MAYA_SHIFT,
       [],
       { durationMin: 105, claims: COLOUR },
       OVERLAP_ON,
     );
-    expect(firstStart(m)).toBe('10:00');
-    expect(lastStart(m)).toBe('16:15');
+    expect(firstStart(m)).toBe('10:10'); // 10:00 + 10 setup
+    expect(lastStart(m)).toBe('15:55'); // 15:55 + 105 + 20 = 18:00
   });
 
-  it('16:20 is refused because the chain would end at 18:05', () => {
+  it('the TEARDOWN must finish inside the shift too, not just the service', () => {
     const m = startMask(
       MAYA_SHIFT,
       [],
       { durationMin: 105, claims: COLOUR },
       OVERLAP_ON,
     );
-    expect(bitAt(m, toSlot(975))).toBe(true);
-    expect(bitAt(m, toSlot(980))).toBe(false);
+    expect(bitAt(m, toSlot(955))).toBe(true); // 15:55, teardown ends 18:00
+    expect(bitAt(m, toSlot(960))).toBe(false); // 16:00, teardown runs to 18:05
+    expect(bitAt(m, toSlot(975))).toBe(false); // 16:15, teardown runs to 18:20
   });
 
   it('a chain longer than the shift offers nothing at all', () => {

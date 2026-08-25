@@ -261,7 +261,9 @@ describe('the feasible set', () => {
   it('an empty salon offers the whole day to three professionals', () => {
     const r = feasibleSet(request());
     expect(r.pool).toEqual(['anya', 'maya', 'reem']);
-    expect(firstOffer(r.union)).toBe('10:00');
+    // 10:05, not 10:00: a styling setup is 5 minutes and the whole chain,
+    // buffers included, has to fit inside the shift.
+    expect(firstOffer(r.union)).toBe('10:05');
     expect(isEmpty(r)).toBe(false);
   });
 
@@ -366,10 +368,12 @@ describe('Dana books Full color and gloss', () => {
     expect(r.claims).toEqual({ preMin: 10, postMin: 20 });
   });
 
-  it('the last start is 19:55, so it finishes exactly at closing', () => {
+  it('the last start leaves room for the TEARDOWN before closing', () => {
+    // 19:55 + 125 lands exactly on 22:00, but the colour station is then
+    // being cleaned until 22:20, twenty minutes after the salon shut.
     const r = feasibleSet(dana());
-    expect(toSlots(r.union).map(toMin).pop()).toBe(1195);
-    expect(1195 + 125).toBe(1320);
+    expect(toSlots(r.union).map(toMin).pop()).toBe(1175);
+    expect(1175 + 125 + 20).toBe(1320);
   });
 
   it('Anya own colour opens a fringe-trim window for her, not for Maya', () => {
