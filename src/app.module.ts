@@ -8,6 +8,9 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { ConfigModule } from '@nestjs/config';
 import { PersistenceModule } from './infrastructure/persistence/persistence.module';
 
+import { APP_GUARD } from '@nestjs/core';
+import { BookingAuthGuard } from './auth/booking-auth.guard';
+
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
@@ -17,6 +20,6 @@ import { PersistenceModule } from './infrastructure/persistence/persistence.modu
     AvailabilityModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService, { provide: APP_GUARD, useClass: BookingAuthGuard }],
 })
 export class AppModule {}

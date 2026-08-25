@@ -12,22 +12,11 @@ import {
   LifecycleHandler,
   type LifecycleView,
 } from '@application/commands/lifecycle.handler';
-import type { ActorKind, CancelInitiator } from '@domain/booking/lifecycle';
+import type { CancelInitiator } from '@domain/booking/lifecycle';
+import { CurrentActor } from '../../auth/actor.decorator';
+import type { Actor } from '../../auth/actor';
 
 export class LifecycleDto {
-  @ApiPropertyOptional({
-    enum: ['customer', 'staff', 'manager', 'system'],
-    default: 'staff',
-  })
-  @IsOptional()
-  @IsIn(['customer', 'staff', 'manager', 'system'])
-  actor: ActorKind = 'staff';
-
-  @ApiPropertyOptional({ example: 'maya' })
-  @IsOptional()
-  @IsString()
-  actorId?: string;
-
   @ApiPropertyOptional({
     example: 'customer called to cancel',
     description:
@@ -75,11 +64,13 @@ export class LifecycleController {
   @ApiConflictResponse({
     description: 'Not a legal move from the current state.',
   })
+  @ApiForbiddenResponse({ description: 'This actor may not do that.' })
   checkIn(
     @Param('id') id: string,
     @Body() dto: LifecycleDto,
+    @CurrentActor() actor: Actor,
   ): Promise<LifecycleView> {
-    return this.run(id, 'checked_in', dto);
+    return this.run(id, 'checked_in', dto, actor);
   }
 
   @Post('start')
@@ -87,8 +78,9 @@ export class LifecycleController {
   start(
     @Param('id') id: string,
     @Body() dto: LifecycleDto,
+    @CurrentActor() actor: Actor,
   ): Promise<LifecycleView> {
-    return this.run(id, 'in_service', dto);
+    return this.run(id, 'in_service', dto, actor);
   }
 
   @Post('complete')
@@ -96,8 +88,9 @@ export class LifecycleController {
   complete(
     @Param('id') id: string,
     @Body() dto: LifecycleDto,
+    @CurrentActor() actor: Actor,
   ): Promise<LifecycleView> {
-    return this.run(id, 'completed', dto);
+    return this.run(id, 'completed', dto, actor);
   }
 
   @Post('settle')
@@ -105,8 +98,9 @@ export class LifecycleController {
   settle(
     @Param('id') id: string,
     @Body() dto: LifecycleDto,
+    @CurrentActor() actor: Actor,
   ): Promise<LifecycleView> {
-    return this.run(id, 'settled', dto);
+    return this.run(id, 'settled', dto, actor);
   }
 
   @Post('cancel')
@@ -121,8 +115,9 @@ export class LifecycleController {
   cancel(
     @Param('id') id: string,
     @Body() dto: LifecycleDto,
+    @CurrentActor() actor: Actor,
   ): Promise<LifecycleView> {
-    return this.run(id, 'cancelled', dto);
+    return this.run(id, 'cancelled', dto, actor);
   }
 
   @Post('no-show')
@@ -135,20 +130,28 @@ export class LifecycleController {
   noShow(
     @Param('id') id: string,
     @Body() dto: LifecycleDto,
+    @CurrentActor() actor: Actor,
   ): Promise<LifecycleView> {
-    return this.run(id, 'no_show', dto);
+    return this.run(id, 'no_show', dto, actor);
   }
 
   private run(
     id: string,
     to: Parameters<LifecycleHandler['execute']>[0]['to'],
     dto: LifecycleDto,
+    actor: Actor,
   ): Promise<LifecycleView> {
     return this.handler.execute({
       bookingId: id,
       to,
-      actor: dto.actor,
-      ...(dto.actorId !== undefined ? { actorId: dto.actorId } : {}),
+      // THE POINT OF ALL THIS.
+      //
+      // checkTransition() has known since the state machine was written that
+      // a customer may not check someone in. It now gets the VERIFIED answer
+      // instead of whatever the request body claimed. The dto no longer has
+      // an `actor` field at all, so there is nothing to spoof.
+      actor: actor.kind,
+      actorId: actor.id,
       ...(dto.reason !== undefined ? { reason: dto.reason } : {}),
       ...(dto.initiatedBy !== undefined
         ? { initiatedBy: dto.initiatedBy }

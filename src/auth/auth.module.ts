@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { ClientsModule, Transport } from '@nestjs/microservices';
 
 import { AuthService } from './auth.service';
+import { TokenVerifier } from './token-verifier.service';
 
 export const CONSUMER_AUTH = 'CONSUMER_AUTH';
 
@@ -23,7 +24,7 @@ export const CONSUMER_AUTH = 'CONSUMER_AUTH';
       },
     ]),
   ],
-  providers: [AuthService],
-  exports: [AuthService],
+  providers: [AuthService, TokenVerifier],
+  exports: [AuthService, TokenVerifier],
 })
 export class AuthModule {}

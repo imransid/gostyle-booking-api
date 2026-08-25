@@ -1,4 +1,5 @@
 import { Controller, Get } from '@nestjs/common';
+import { Public } from '../../auth/public.decorator';
 import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { PrismaService } from '../../infrastructure/persistence/prisma.service';
 import { OutboxRelay } from '../../infrastructure/messaging/outbox-relay.service';
@@ -22,6 +23,7 @@ interface HealthView {
 
 @ApiTags('health')
 @Controller('health')
+@Public()
 export class HealthController {
   constructor(
     private readonly prisma: PrismaService,

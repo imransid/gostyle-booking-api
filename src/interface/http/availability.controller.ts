@@ -1,3 +1,4 @@
+import { Public } from '../../auth/public.decorator';
 import { Controller, Get, Query } from '@nestjs/common';
 import {
   ApiBadRequestResponse,
@@ -133,6 +134,7 @@ export class CatalogueQueryDto {
 
 @ApiTags('availability')
 @Controller('availability')
+@Public()
 export class AvailabilityController {
   constructor(
     private readonly availability: GetAvailabilityHandler,

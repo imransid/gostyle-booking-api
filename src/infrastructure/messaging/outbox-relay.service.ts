@@ -45,6 +45,11 @@ interface OutboxRow {
 export class OutboxRelay {
   private static readonly log = new Logger(OutboxRelay.name);
   private running = false;
+  /**
+   * A database outage produces one identical error per second, forever,
+   * burying anything useful. Log the first, then back off.
+   */
+  private consecutiveFailures = 0;
   private publishedTotal = 0;
   private failedTotal = 0;
 
@@ -59,10 +64,21 @@ export class OutboxRelay {
     this.running = true;
     try {
       await this.drain();
+      this.consecutiveFailures = 0;
     } catch (e) {
-      OutboxRelay.log.error(
-        `Relay tick failed: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      this.consecutiveFailures += 1;
+      // First failure, then every thirtieth. Enough to see it started and
+      // that it is still going, without 300 lines per five-minute outage.
+      if (
+        this.consecutiveFailures === 1 ||
+        this.consecutiveFailures % 30 === 0
+      ) {
+        OutboxRelay.log.error(
+          `Relay tick failed (${this.consecutiveFailures}x): ` +
+            `${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+      return;
     } finally {
       this.running = false;
     }

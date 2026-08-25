@@ -31,6 +31,8 @@ import {
   type HoldView,
 } from '@application/commands/place-hold.handler';
 import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
+import { CurrentActor } from '../../auth/actor.decorator';
+import type { Actor } from '../../auth/actor';
 
 export class PlaceHoldDto {
   @ApiPropertyOptional({ example: 'marina-walk', default: 'marina-walk' })
@@ -94,14 +96,18 @@ export class HoldsController {
   @ApiConflictResponse({
     description: 'The slot went while you were deciding, or no chair is free.',
   })
-  place(@Body() dto: PlaceHoldDto): Promise<HoldView> {
+  place(
+    @Body() dto: PlaceHoldDto,
+    @CurrentActor() actor: Actor,
+  ): Promise<HoldView> {
     return this.handler.execute({
       branchId: dto.branch,
       tradingDay: dto.day,
       serviceIds: dto.services,
       startMin: dto.startMin,
       preferredStaffId: dto.staffId ?? null,
-      customerId: dto.customerId ?? null,
+      customerId:
+        actor.kind === 'customer' ? actor.id : (dto.customerId ?? null),
       channel: dto.channel,
     });
   }

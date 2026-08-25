@@ -41,11 +41,23 @@ export interface LifecycleCommand {
   readonly nowMs?: number;
 }
 
+/**
+ * A malformed id is a 404, not a 500. Without this, Postgres rejects the
+ * uuid cast with 22P02 and the caller gets an internal error for what is
+ * really just a wrong id.
+ */
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 @Injectable()
 export class LifecycleHandler {
   constructor(private readonly repo: LifecycleRepository) {}
 
   async execute(cmd: LifecycleCommand): Promise<LifecycleView> {
+    if (!UUID_RE.test(cmd.bookingId)) {
+      throw new NotFoundException('No such booking');
+    }
+
     const input: TransitionInput = {
       bookingId: cmd.bookingId,
       to: cmd.to,

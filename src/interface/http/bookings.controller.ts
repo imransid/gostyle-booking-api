@@ -25,6 +25,8 @@ import {
   type BookingView,
 } from '@application/commands/confirm-booking.handler';
 import type { PaymentRail } from '@infrastructure/persistence/booking.repository';
+import { CurrentActor } from '../../auth/actor.decorator';
+import type { Actor } from '../../auth/actor';
 
 export class ConfirmBookingDto {
   @ApiProperty({ example: 'the id returned by POST /holds' })
@@ -110,7 +112,8 @@ export class BookingsController {
   @ApiConflictResponse({ description: 'The slot went while you were paying.' })
   confirm(
     @Body() dto: ConfirmBookingDto,
-    @Headers('idempotency-key') idempotencyKey?: string,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @CurrentActor() actor?: Actor,
   ): Promise<BookingView> {
     return this.handler.execute({
       holdId: dto.holdId,
@@ -130,7 +133,10 @@ export class BookingsController {
             },
           }
         : {}),
-      ...(dto.actorId !== undefined ? { actorId: dto.actorId } : {}),
+      // From the verified token, never the body. A client could name
+      // anyone; the token cannot.
+      ...(actor !== undefined ? { actorId: actor.id } : {}),
+      ...(actor?.kind === 'customer' ? { customerId: actor.id } : {}),
       ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
     });
   }
