@@ -12,6 +12,7 @@ import type {
   ChairOccupation,
   ResourceType,
 } from '@domain/availability/capacity';
+import { occupationsFor } from '@domain/availability/capacity';
 
 // Table 6.2, per resource class.
 const COLOUR: BufferClaims = { preMin: 10, postMin: 20 };
@@ -349,11 +350,19 @@ export class FixtureBookingContext implements BookingContextReader {
       });
       staffBookings.set(b.staffId, list);
 
-      occupations.push({
-        resourceType: b.resourceType,
-        startMin: b.startMin,
-        endMin: b.startMin + b.durationMin,
-      });
+      // A colour with a hands-free band holds its station in TWO intervals,
+      // not one. Pushing the whole duration made every colour station read as
+      // busy through its own developing time, and slots that genuinely
+      // existed were refused.
+      occupations.push(
+        ...occupationsFor({
+          resourceType: b.resourceType,
+          startMin: b.startMin,
+          endMin: b.startMin + b.durationMin,
+          ...(b.processing !== undefined ? { processing: b.processing } : {}),
+          releasesChairDuringProcessing: b.processing !== undefined,
+        }),
+      );
     }
 
     return Promise.resolve({

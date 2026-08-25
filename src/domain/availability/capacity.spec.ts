@@ -9,6 +9,7 @@ import {
   unitsFreeAt,
   chainCapacityMask,
   capacityFreeByType,
+  occupationsFor,
 } from './capacity';
 import { Mask, NONE, ALL, bitAt, popcount, toSlots } from './mask';
 import { SLOTS, toSlot, toMin } from './grid';
@@ -323,5 +324,66 @@ describe('Figure 7: the worked example', () => {
         }
       }
     }
+  });
+});
+
+describe('an existing booking releases its chair during the band', () => {
+  const colour = {
+    resourceType: 'color',
+    startMin: 900,
+    endMin: 1025,
+    processing: { fromMin: 45, toMin: 85 },
+    releasesChairDuringProcessing: true,
+  };
+
+  it('splits into two intervals, not one', () => {
+    expect(occupationsFor(colour)).toEqual([
+      { resourceType: 'color', startMin: 900, endMin: 945 },
+      { resourceType: 'color', startMin: 985, endMin: 1025 },
+    ]);
+  });
+
+  it('the band itself is genuinely free', () => {
+    const free = capacityFreeMask(
+      { ...COLOUR, units: 1 },
+      occupationsFor(colour),
+    );
+    expect(freeAt(free, 940)).toBe(false); // active
+    expect(freeAt(free, 960)).toBe(true); // developing, chair released
+    expect(freeAt(free, 990)).toBe(false); // finishing
+  });
+
+  it('holding the chair through the band blocks the whole time', () => {
+    const held = { ...colour, releasesChairDuringProcessing: false };
+    const free = capacityFreeMask(
+      { ...COLOUR, units: 1 },
+      occupationsFor(held),
+    );
+    expect(freeAt(free, 960)).toBe(false);
+  });
+
+  it('a booking with no band is one interval, unchanged', () => {
+    expect(
+      occupationsFor({ resourceType: 'nail', startMin: 900, endMin: 960 }),
+    ).toEqual([{ resourceType: 'nail', startMin: 900, endMin: 960 }]);
+  });
+
+  it('THE COST OF GETTING THIS WRONG: a whole band of capacity', () => {
+    const split = capacityFreeMask(
+      { ...COLOUR, units: 1 },
+      occupationsFor(colour),
+    );
+    const naive = capacityFreeMask({ ...COLOUR, units: 1 }, [
+      { resourceType: 'color', startMin: 900, endMin: 1025 },
+    ]);
+    // The band is 40 minutes, but the colour station carries a 5-minute
+    // changeover which applies to the active interval as well, so 35 minutes
+    // (7 slots) come back rather than 40.
+    //
+    // Charging a full changeover mid-service is conservative: the client is
+    // developing, not finished. It blocks slightly more than strictly needed,
+    // which is the safe direction, and modelling "turnover only at the true
+    // end" would mean marking which interval is final. Left as is on purpose.
+    expect(popcount(split) - popcount(naive)).toBe(7);
   });
 });

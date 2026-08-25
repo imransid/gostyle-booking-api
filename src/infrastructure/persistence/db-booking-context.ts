@@ -100,6 +100,9 @@ export class DbBookingContext implements BookingContextReader {
 
     const occupations: ChairOccupation[] = [
       ...base.occupations,
+      // resource_reservation rows are ALREADY split around the hands-free
+      // band, because placeHold writes one row per chain segment and
+      // expandChain does the splitting. Nothing to do here.
       ...chairRows.map((r) => ({
         resourceType: r.resourceType,
         startMin: r.startMinute,

@@ -176,3 +176,66 @@ export function capacityFreeByType(
   }
   return out;
 }
+
+/**
+ * A booking already on the diary, with its own hands-free band.
+ *
+ * The band is measured from the booking's own start, exactly as it is on
+ * ChainSegment.
+ */
+export interface OccupyingBooking {
+  readonly resourceType: string;
+  readonly startMin: number;
+  readonly endMin: number;
+  readonly processing?: { readonly fromMin: number; readonly toMin: number };
+  /** Whether the client leaves the chair during the band. */
+  readonly releasesChairDuringProcessing?: boolean;
+}
+
+/**
+ * Cut an existing booking into the chair intervals it ACTUALLY occupies.
+ *
+ * A colour with a hands-free band holds its station in TWO intervals, before
+ * the band and after it, not one continuous block. During the band the client
+ * is in the lounge and the station is genuinely sellable to someone else.
+ *
+ * expandChain already does this for the chain being PLACED. This is the same
+ * rule for the bookings already on the diary, and without it the two halves
+ * of the engine disagree: a colour offers its own band back to the next
+ * customer, then the capacity count insists every station is busy.
+ *
+ * Net effect of the omission: colour stations read as oversubscribed all day
+ * and slots that exist are refused.
+ */
+export function occupationsFor(booking: OccupyingBooking): ChairOccupation[] {
+  const band = booking.processing;
+  if (band === undefined || booking.releasesChairDuringProcessing !== true) {
+    return [
+      {
+        resourceType: booking.resourceType,
+        startMin: booking.startMin,
+        endMin: booking.endMin,
+      },
+    ];
+  }
+
+  const bandStart = booking.startMin + band.fromMin;
+  const bandEnd = booking.startMin + band.toMin;
+  const out: ChairOccupation[] = [];
+
+  if (bandStart > booking.startMin) {
+    out.push({
+      resourceType: booking.resourceType,
+      startMin: booking.startMin,
+      endMin: bandStart,
+    });
+  }
+  if (booking.endMin > bandEnd) {
+    out.push({
+      resourceType: booking.resourceType,
+      startMin: bandEnd,
+      endMin: booking.endMin,
+    });
+  }
+  return out;
+}
