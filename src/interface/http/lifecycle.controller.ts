@@ -7,7 +7,7 @@ import {
   ApiPropertyOptional,
   ApiTags,
 } from '@nestjs/swagger';
-import { IsIn, IsInt, IsOptional, IsString } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
 import {
   LifecycleHandler,
   type LifecycleView,
@@ -41,6 +41,62 @@ export class LifecycleDto {
   })
   @IsOptional()
   vipStandingReservation?: boolean;
+
+  @ApiPropertyOptional({
+    example: 12000,
+    description:
+      'Products sold at the till, as a TOTAL. The point of sale owns the ' +
+      'line items; this service owns the arithmetic. Never tipped on, never ' +
+      'discounted by tier.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  retailFils?: number;
+
+  @ApiPropertyOptional({
+    example: 10,
+    description:
+      'A percentage of the tippable base, which excludes retail. Use this ' +
+      'or tipFils, not both.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  tipPercent?: number;
+
+  @ApiPropertyOptional({ example: 5000, description: 'A custom tip amount.' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  tipFils?: number;
+
+  @ApiPropertyOptional({ example: 5000 })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  loyaltyRedeemFils?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'The caller has already validated the code. No code table lives in ' +
+      'this service yet.',
+  })
+  @IsOptional()
+  promoApplies?: boolean;
+
+  @ApiPropertyOptional({
+    example: 'diplomatic exemption on file',
+    description: 'A manager may zero the VAT, and must say why.',
+  })
+  @IsOptional()
+  @IsString()
+  taxExemptReason?: string;
+
+  @ApiPropertyOptional({ example: 'card' })
+  @IsOptional()
+  @IsString()
+  rail?: string;
 
   @ApiPropertyOptional({
     example: 1755000000000,
@@ -160,6 +216,21 @@ export class LifecycleController {
         ? { vipStandingReservation: dto.vipStandingReservation }
         : {}),
       ...(dto.nowMs !== undefined ? { nowMs: dto.nowMs } : {}),
+      checkout: {
+        ...(dto.retailFils !== undefined ? { retailFils: dto.retailFils } : {}),
+        ...(dto.tipFils !== undefined ? { tipFils: dto.tipFils } : {}),
+        ...(dto.tipPercent !== undefined ? { tipPercent: dto.tipPercent } : {}),
+        ...(dto.loyaltyRedeemFils !== undefined
+          ? { loyaltyRedeemFils: dto.loyaltyRedeemFils }
+          : {}),
+        ...(dto.promoApplies !== undefined
+          ? { promoApplies: dto.promoApplies }
+          : {}),
+        ...(dto.taxExemptReason !== undefined
+          ? { taxExemptReason: dto.taxExemptReason }
+          : {}),
+        ...(dto.rail !== undefined ? { rail: dto.rail } : {}),
+      },
     });
   }
 }

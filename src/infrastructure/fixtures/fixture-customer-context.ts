@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { assessRisk, type CustomerHistory } from '@domain/booking/customer';
+import { toUuid } from '@infrastructure/persistence/hold.repository';
 import {
   ANONYMOUS,
   type CustomerContext,
@@ -60,10 +61,25 @@ const SEEDS: ReadonlyMap<string, Seed> = new Map([
  * Swapping it changes ONE provider in the module. No handler, controller or
  * domain file is touched.
  */
+/**
+ * The database stores customer_id as a UUID, so a slug like "nour" is folded
+ * through toUuid() when the booking is written. Reading it back gives the
+ * UUID, not the slug, and a slug-keyed map misses every time: the customer
+ * silently becomes anonymous and their tier is lost.
+ *
+ * Indexing both ways costs nothing and disappears with the fixture.
+ */
+const BY_UUID: ReadonlyMap<string, string> = new Map(
+  [...SEEDS.keys()].map((slug) => [toUuid(slug), slug]),
+);
+
 @Injectable()
 export class FixtureCustomerContext implements CustomerContextReader {
   load(customerId: string): Promise<CustomerContext> {
-    const seed = SEEDS.get(customerId);
+    const slug = SEEDS.has(customerId)
+      ? customerId
+      : (BY_UUID.get(customerId.toLowerCase()) ?? customerId);
+    const seed = SEEDS.get(slug);
     if (seed === undefined) {
       // An id nobody knows is not an error at the desk: it is a walk-in the
       // receptionist typed a name for. New, so rung 4a fires.

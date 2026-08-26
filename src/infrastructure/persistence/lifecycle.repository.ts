@@ -19,11 +19,40 @@ import {
  * that spans lines is fragile twice over: a formatter can move the
  * angle bracket away from the call, and a heredoc can swallow it.
  */
+/** One row of the ticket query. Named, because a multi-line generic
+ *  after $queryRaw gets eaten by the shell when this file is written
+ *  through a heredoc. A line ending in "<" never survives. */
+interface TicketRow {
+  customer_id: string;
+  status: string;
+  service_fils: bigint | null;
+  captured_fils: bigint | null;
+}
+
 interface LockedBooking {
   readonly id: string;
   readonly code: string;
   readonly status: BookingStatus;
   readonly start_at: Date;
+}
+
+/**
+ * A settled ticket, already computed by the handler.
+ *
+ * The repository does not run the arithmetic: the handler owns the customer
+ * and the tier, exactly as it owns the requirement at confirm. This is the
+ * result, ready to persist.
+ */
+export interface SettlementWrite {
+  readonly baseFils: number;
+  readonly tipFils: number;
+  readonly vatFils: number;
+  readonly depositAppliedFils: number;
+  readonly loyaltyRedeemFils: number;
+  readonly dueFils: number;
+  readonly creditFils: number;
+  readonly taxExempt: boolean;
+  readonly rail: string;
 }
 
 export interface TransitionInput {
@@ -33,6 +62,8 @@ export interface TransitionInput {
   readonly actorId: string | null;
   readonly reason: string | null;
   readonly nowMs?: number;
+  /** Present only on completed -> settled. */
+  readonly settlement?: SettlementWrite;
   /** A salon-initiated cancel refunds in full, whatever the timing. */
   readonly initiatedBy?: CancelInitiator;
   readonly vipStandingReservation?: boolean;
@@ -79,6 +110,46 @@ export class LifecycleRepository {
    *   5. settle the money
    *   6. audit and event, in the same commit
    */
+  /**
+   * What the ticket is worth, before the register adds anything.
+   *
+   * Three facts, one round trip: the services actually delivered, the
+   * customer the booking belongs to, and what has already been captured.
+   *
+   * The deposit comes from the LEDGER, not from booking.deposit_fils. The
+   * ledger is the accounting truth: a partial refund or a goodwill credit
+   * between confirm and checkout moves the real figure, and the booking row
+   * still shows what was taken on the day.
+   */
+  async ticketFor(bookingId: string): Promise<{
+    serviceFils: number;
+    customerId: string;
+    capturedFils: number;
+    status: string;
+  } | null> {
+    const rows = await this.prisma.$queryRaw<TicketRow[]>`
+      SELECT b.customer_id,
+             b.status::text                       AS status,
+             (SELECT COALESCE(SUM(bi.price_fils), 0)
+                FROM booking_item bi
+               WHERE bi.booking_id = b.id)        AS service_fils,
+             (SELECT COALESCE(SUM(dl.amount_fils), 0)
+                FROM deposit_ledger dl
+               WHERE dl.booking_id = b.id)        AS captured_fils
+        FROM booking b
+       WHERE b.id = ${bookingId}::uuid`;
+
+    const row = rows[0];
+    if (row === undefined) return null;
+
+    return {
+      customerId: row.customer_id,
+      status: row.status,
+      serviceFils: Number(row.service_fils ?? 0),
+      capturedFils: Number(row.captured_fils ?? 0),
+    };
+  }
+
   async transition(input: TransitionInput): Promise<TransitionOutcome> {
     const nowMs = input.nowMs ?? Date.now();
 
@@ -122,6 +193,53 @@ export class LifecycleRepository {
           actor: input.actor,
           actorId: input.actorId,
         });
+
+        // 3b. Settlement. The deposit is TENDER: it is consumed by the
+        //     ticket, not refunded, so it leaves the ledger as
+        //     applied_at_pos. Anything the ticket did not need goes back as
+        //     credit, which is why both entries are negative and the
+        //     booking's protected balance lands on zero either way.
+        //
+        //     Tips and retail never touch THIS ledger. It tracks the deposit,
+        //     and a tip is a fresh charge at the till.
+        if (input.settlement !== undefined) {
+          const st = input.settlement;
+          const applied = st.depositAppliedFils - st.creditFils;
+
+          if (applied > 0) {
+            await tx.depositLedger.create({
+              data: {
+                bookingId: booking.id,
+                entryType: 'applied_at_pos',
+                amountFils: -applied,
+                rail: 'internal',
+                reason: `Applied to ticket ${booking.code}`,
+                actorKind: input.actor,
+                actorId:
+                  input.actor === 'system' || input.actorId === null
+                    ? null
+                    : toUuid(input.actorId),
+              },
+            });
+          }
+
+          if (st.creditFils > 0) {
+            await tx.depositLedger.create({
+              data: {
+                bookingId: booking.id,
+                entryType: 'refunded',
+                amountFils: -st.creditFils,
+                rail: 'internal',
+                reason: 'Overpayment credited to the wallet',
+                actorKind: input.actor,
+                actorId:
+                  input.actor === 'system' || input.actorId === null
+                    ? null
+                    : toUuid(input.actorId),
+              },
+            });
+          }
+        }
 
         const paymentStatus = nextPaymentStatus(money);
 
