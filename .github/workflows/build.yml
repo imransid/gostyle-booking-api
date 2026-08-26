@@ -7,11 +7,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  # Pinned, not ${{ github.repository }}. This repo has three remotes, so
-  # deriving the path from the trigger produces three different image
-  # names for the same commit. The server is already authorised for this
-  # org, and one image path means one place to look.
-  IMAGE: entity-tech-solutions/gostyle-booking-api
+  IMAGE: ${{ github.repository }}
 
 jobs:
   verify:
