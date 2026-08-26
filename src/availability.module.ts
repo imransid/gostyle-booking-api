@@ -15,6 +15,7 @@ import { BookingsController } from '@interface/http/bookings.controller';
 import { ConfirmBookingHandler } from '@application/commands/confirm-booking.handler';
 
 import { LifecycleController } from '@interface/http/lifecycle.controller';
+import { RescheduleHandler } from '@application/commands/reschedule.handler';
 import { LifecycleHandler } from '@application/commands/lifecycle.handler';
 
 @Module({
@@ -26,6 +27,7 @@ import { LifecycleHandler } from '@application/commands/lifecycle.handler';
     LifecycleController,
   ],
   providers: [
+    RescheduleHandler,
     ConfirmBookingHandler,
     GetAvailabilityHandler,
     GetCatalogueHandler,

@@ -2,6 +2,7 @@ import { Global, Module } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
 import { OutboxRelay } from '../messaging/outbox-relay.service';
 import { ReminderRepository } from './reminder.repository';
+import { RescheduleRepository } from './reschedule.repository';
 import { ReminderScheduler } from '../scheduling/reminder-scheduler.service';
 import { CUSTOMER_CONTEXT } from '@application/ports/customer-context.port';
 import { FixtureCustomerContext } from '../fixtures/fixture-customer-context';
@@ -22,6 +23,7 @@ import { HoldSweeper } from '../scheduling/hold-sweeper.service';
 @Global()
 @Module({
   providers: [
+    RescheduleRepository,
     ReminderRepository,
     ReminderScheduler,
     // Swapping this for the real customer service changes ONE line.
@@ -37,6 +39,7 @@ import { HoldSweeper } from '../scheduling/hold-sweeper.service';
     FixtureBookingContext,
   ],
   exports: [
+    RescheduleRepository,
     ReminderRepository,
     ReminderScheduler,
     CUSTOMER_CONTEXT,

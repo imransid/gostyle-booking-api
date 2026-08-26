@@ -7,7 +7,14 @@ import {
   ApiPropertyOptional,
   ApiTags,
 } from '@nestjs/swagger';
-import { IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import {
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Min,
+} from 'class-validator';
 import {
   LifecycleHandler,
   type LifecycleView,
@@ -15,6 +22,11 @@ import {
 import type { CancelInitiator } from '@domain/booking/lifecycle';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
+import {
+  RescheduleHandler,
+  type RescheduleView,
+} from '@application/commands/reschedule.handler';
+import { ApiGoneResponse, ApiProperty } from '@nestjs/swagger';
 
 export class LifecycleDto {
   @ApiPropertyOptional({
@@ -109,10 +121,69 @@ export class LifecycleDto {
   nowMs?: number;
 }
 
+export class RescheduleDto {
+  @ApiProperty({
+    description:
+      'A hold on the NEW slot, placed exactly like any other. The hold did ' +
+      'the racing, so by the time this arrives the slot is already protected.',
+  })
+  @IsUUID()
+  holdId!: string;
+
+  @ApiProperty({ example: '2026-09-22' })
+  @IsString()
+  day!: string;
+
+  @ApiProperty({
+    example: 'customer asked to move',
+    description: 'Mandatory. A move without a reason is unauditable.',
+  })
+  @IsString()
+  reason!: string;
+
+  @ApiPropertyOptional({ example: 1755000000000, description: 'Testing only.' })
+  @IsOptional()
+  @IsInt()
+  nowMs?: number;
+}
+
 @ApiTags('lifecycle')
 @Controller('bookings/:id')
 export class LifecycleController {
-  constructor(private readonly handler: LifecycleHandler) {}
+  constructor(
+    private readonly handler: LifecycleHandler,
+    private readonly reschedules: RescheduleHandler,
+  ) {}
+
+  @Post('reschedule')
+  @ApiOperation({
+    summary: 'Move the booking to a slot already held',
+    description:
+      'The booking MOVES: same row, same code, new time, move counter up by ' +
+      'one. Within policy the deposit carries untouched; inside the late ' +
+      'window it is forfeited and the new time is quoted fresh. From the ' +
+      'fourth move, a booking carrying no deposit acquires a 20% one.',
+  })
+  @ApiOkResponse({ description: 'Moved.' })
+  @ApiGoneResponse({
+    description: 'The new slot went while they were deciding.',
+  })
+  @ApiConflictResponse({ description: 'This booking cannot be moved.' })
+  reschedule(
+    @Param('id') id: string,
+    @Body() dto: RescheduleDto,
+    @CurrentActor() actor: Actor,
+  ): Promise<RescheduleView> {
+    return this.reschedules.execute({
+      bookingId: id,
+      holdId: dto.holdId,
+      tradingDay: dto.day,
+      reason: dto.reason,
+      actor: actor.kind,
+      actorId: actor.id,
+      ...(dto.nowMs !== undefined ? { nowMs: dto.nowMs } : {}),
+    });
+  }
 
   @Post('check-in')
   @ApiOperation({ summary: 'The customer arrived' })
