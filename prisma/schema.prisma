@@ -104,6 +104,13 @@ model Booking {
   overbooked     Boolean @default(false)
   overbookReason String? @map("overbook_reason")
 
+  // The reminder ladder. Timestamps rather than booleans: "when did we tell
+  // them" is the question support actually asks, and a boolean cannot answer
+  // it. NULL means outstanding, and that is what the scheduler claims on.
+  reminded24hAt DateTime? @map("reminded_24h_at") @db.Timestamptz(6)
+  reminded3hAt  DateTime? @map("reminded_3h_at") @db.Timestamptz(6)
+  nudged15mAt   DateTime? @map("nudged_15m_at") @db.Timestamptz(6)
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
