@@ -3,6 +3,8 @@ import { PrismaService } from './prisma.service';
 import { OutboxRelay } from '../messaging/outbox-relay.service';
 import { ReminderRepository } from './reminder.repository';
 import { RescheduleRepository } from './reschedule.repository';
+import { WaitlistRepository } from './waitlist.repository';
+import { WaitlistListener } from '../messaging/waitlist-listener';
 import { ReminderScheduler } from '../scheduling/reminder-scheduler.service';
 import { CUSTOMER_CONTEXT } from '@application/ports/customer-context.port';
 import { FixtureCustomerContext } from '../fixtures/fixture-customer-context';
@@ -23,6 +25,7 @@ import { HoldSweeper } from '../scheduling/hold-sweeper.service';
 @Global()
 @Module({
   providers: [
+    WaitlistRepository,
     RescheduleRepository,
     ReminderRepository,
     ReminderScheduler,
@@ -30,7 +33,22 @@ import { HoldSweeper } from '../scheduling/hold-sweeper.service';
     { provide: CUSTOMER_CONTEXT, useClass: FixtureCustomerContext },
     PrismaService,
     OutboxRelay,
-    { provide: EVENT_PUBLISHER, useClass: LoggingEventPublisher },
+    // The publisher is a CHAIN, not a single thing.
+    //
+    // WaitlistListener answers to EVENT_PUBLISHER and forwards to the real
+    // one, so every path that frees a slot triggers an offer without any of
+    // them knowing the waitlist exists.
+    //
+    // The inner publisher gets its own token. Without it, the listener would
+    // inject the token it also provides, and Nest would fail at boot with a
+    // circular dependency rather than at compile time.
+    LoggingEventPublisher,
+    {
+      provide: EVENT_PUBLISHER,
+      useFactory: (next: LoggingEventPublisher, waitlist: WaitlistRepository) =>
+        new WaitlistListener(next, waitlist),
+      inject: [LoggingEventPublisher, WaitlistRepository],
+    },
     LifecycleRepository,
     BookingRepository,
     HoldRepository,
@@ -39,6 +57,7 @@ import { HoldSweeper } from '../scheduling/hold-sweeper.service';
     FixtureBookingContext,
   ],
   exports: [
+    WaitlistRepository,
     RescheduleRepository,
     ReminderRepository,
     ReminderScheduler,

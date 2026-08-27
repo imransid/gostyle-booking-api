@@ -73,11 +73,19 @@ export class DbBookingContext implements BookingContextReader {
     // This disappears the day real UUIDs arrive over gRPC.
     const slugOf = new Map(base.professionals.map((p) => [toUuid(p.id), p.id]));
 
-    // Start from the fixture diary. It stands in for bookings made through
-    // channels this service cannot see yet, so the day stays believably busy.
+    // THE DIARY IS THE DATABASE. Nothing else.
+    //
+    // This used to start from the fixture's eleven hand-written bookings, on
+    // the reasoning that they stood in for channels this service could not
+    // see. That was fair while the fixture was the whole world. It stopped
+    // being fair the moment real bookings existed: every day in production
+    // then carried the same imaginary Friday, so a colour returned the same
+    // three late-afternoon starts whatever the date, and six invented
+    // bookings sat on real chairs.
+    //
+    // The ROSTER and the CHAIR REGISTRY still come from the fixture, because
+    // those genuinely live in other services. The diary does not.
     const staffBookings = new Map<string, StaffBooking[]>();
-    for (const [id, list] of base.staffBookings)
-      staffBookings.set(id, [...list]);
 
     for (const r of staffRows) {
       const slug = slugOf.get(r.staffId) ?? r.staffId;
@@ -99,7 +107,6 @@ export class DbBookingContext implements BookingContextReader {
     }
 
     const occupations: ChairOccupation[] = [
-      ...base.occupations,
       // resource_reservation rows are ALREADY split around the hands-free
       // band, because placeHold writes one row per chain segment and
       // expandChain does the splitting. Nothing to do here.

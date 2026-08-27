@@ -363,17 +363,17 @@ export class FixtureBookingContext implements BookingContextReader {
     return Promise.resolve(found);
   }
 
-  loadDay(_branchId: string, tradingDay: string): Promise<DayContext> {
-    // Sunday is a closed day, so the closure path is demonstrable.
-    if (new Date(`${tradingDay}T00:00:00Z`).getUTCDay() === 0) {
-      return Promise.resolve({
-        professionals: [],
-        staffBookings: new Map(),
-        resources: RESOURCES,
-        occupations: [],
-        closureReason: 'Branch closed on Sundays',
-      });
-    }
+  loadDay(_branchId: string, _tradingDay: string): Promise<DayContext> {
+    // NO WEEKLY CLOSURE HERE.
+    //
+    // There was a Sunday closure, invented so the closure path would be
+    // demonstrable. Nothing in the specification says the branch closes on
+    // Sundays, and in the UAE Sunday is a working day: the weekend is Friday
+    // and Saturday. So the rule was both unsourced AND backwards for the
+    // market it serves.
+    //
+    // Real closures come from the roster service, which does not exist yet.
+    // No closures is the honest answer until it does.
 
     const staffBookings = new Map<string, StaffBooking[]>();
     const occupations: ChairOccupation[] = [];

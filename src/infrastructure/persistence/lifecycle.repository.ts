@@ -30,6 +30,10 @@ interface TicketRow {
 }
 
 interface LockedBooking {
+  branch_id: string;
+  trading_day: Date;
+  start_minute: number;
+  duration_min: number;
   readonly id: string;
   readonly code: string;
   readonly status: BookingStatus;
@@ -159,7 +163,8 @@ export class LifecycleRepository {
         //    a self-scan check-in, exactly one of them wins and the loser
         //    reads fresh state rather than silently overwriting.
         const locked = await tx.$queryRaw<LockedBooking[]>`
-          SELECT id, code, status, start_at
+          SELECT id, code, status, start_at, branch_id, trading_day,
+                 start_minute, duration_min
             FROM booking
            WHERE id = ${input.bookingId}::uuid
            FOR UPDATE`;
@@ -251,15 +256,22 @@ export class LifecycleRepository {
           },
         });
 
+        // The items, read once. The capacity release needs their ids and the
+        // event needs the first one's service and professional, so a single
+        // read serves both rather than one conditional read and one more
+        // later.
+        const items = await tx.bookingItem.findMany({
+          where: { bookingId: booking.id },
+          select: { id: true, serviceId: true, staffId: true },
+          orderBy: { position: 'asc' },
+        });
+        const firstItem = items[0];
+
         // 4. THE LINE THAT RETURNS CAPACITY.
         //    Never delete a reservation: history survives, the time becomes
         //    sellable, and the row leaves the exclusion constraint's
         //    WHERE (blocking) filter in the same statement.
         if (releasesCapacity(input.to)) {
-          const items = await tx.bookingItem.findMany({
-            where: { bookingId: booking.id },
-            select: { id: true },
-          });
           const itemIds = items.map((i) => i.id);
           if (itemIds.length > 0) {
             await tx.staffReservation.updateMany({
@@ -309,6 +321,22 @@ export class LifecycleRepository {
               refundFils: money?.refundFils ?? 0,
               keptFils: money?.keptFils ?? 0,
               releasedCapacity: releasesCapacity(input.to),
+              // WHAT was freed, not just that something was.
+              //
+              // A consumer that only learns "GS-1050 was cancelled" has to go
+              // and fetch the booking before it can do anything, which defeats
+              // the point of publishing an event at all. The waitlist needs
+              // exactly these five fields to find a candidate.
+              branchId: booking.branch_id,
+              tradingDay: booking.trading_day.toISOString().slice(0, 10),
+              startMin: booking.start_minute,
+              durationMin: booking.duration_min,
+              ...(firstItem !== undefined
+                ? {
+                    serviceId: firstItem.serviceId,
+                    staffId: firstItem.staffId,
+                  }
+                : {}),
             },
           },
         });

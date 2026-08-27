@@ -361,3 +361,52 @@ model IdempotencyKey {
   @@index([expiresAt], map: "idempotency_key_expiry_idx")
   @@map("idempotency_key")
 }
+
+// ============================================================ waitlist
+// What turns a cancellation into revenue rather than a hole in the day.
+
+enum WaitlistStatus {
+  waiting
+  offered
+  accepted
+  expired
+  left
+
+  @@map("waitlist_status")
+}
+
+model WaitlistEntry {
+  id String @id @default(uuid()) @db.Uuid
+
+  branchId   String @map("branch_id") @db.Uuid
+  customerId String @map("customer_id") @db.Uuid
+  serviceId  String @map("service_id")
+
+  tradingDay    DateTime @map("trading_day") @db.Date
+  windowFromMin Int      @map("window_from_min") @db.SmallInt
+  windowToMin   Int      @map("window_to_min") @db.SmallInt
+
+  /// null means "any professional".
+  preferredStaffId String? @map("preferred_staff_id") @db.Uuid
+
+  status WaitlistStatus @default(waiting)
+
+  /// The fairness cap. Three declines and offers stop for this window.
+  declineCount Int @default(0) @map("decline_count") @db.SmallInt
+
+  /// Booking codes already turned down, so a slot is never offered twice.
+  declinedCodes String[] @default([]) @map("declined_codes")
+
+  /// The live offer, if any. Cleared when it is accepted, declined or lapses.
+  offeredBookingCode String?   @map("offered_booking_code")
+  offerExpiresAt     DateTime? @map("offer_expires_at") @db.Timestamptz(6)
+
+  joinedAt DateTime @default(now()) @map("joined_at") @db.Timestamptz(6)
+
+  // The matching query: one day, one service, still waiting. Partial on the
+  // live statuses, because a list that has been served is dead weight and an
+  // index over every entry ever created would grow without bound.
+  @@index([branchId, tradingDay, serviceId], map: "waitlist_match_idx")
+  @@index([offerExpiresAt], map: "waitlist_offer_expiry_idx")
+  @@map("waitlist_entry")
+}
