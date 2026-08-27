@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { toUuid } from '../persistence/hold.repository';
 import type {
   BookingContextReader,
   DayContext,
@@ -351,6 +352,24 @@ const DIARY: readonly SeedBooking[] = [
  * Swapping this for the real thing changes ONE provider in the module. No
  * handler, controller or domain file is touched. That is the point of the port.
  */
+/**
+ * Every service, by slug AND by the uuid it is folded into.
+ *
+ * booking_item.service_id is a uuid column, so confirm writes toUuid(slug).
+ * Anything reading a service id BACK out of the database therefore holds the
+ * hash, not the slug, and a slug-keyed lookup misses.
+ *
+ * Resolving both here, once, is better than a toUuid call at each of the
+ * dozen boundaries: every one of those is a place to forget, and forgetting
+ * is silent. It all disappears when the catalogue speaks real uuids.
+ */
+/** The roster's slugs, so callers can turn a stored uuid back. */
+export const STAFF_SLUGS: readonly string[] = PROFESSIONALS.map((p) => p.id);
+
+const BY_ANY_ID: ReadonlyMap<string, Service> = new Map(
+  SERVICES.flatMap((s) => [[s.id, s] as const, [toUuid(s.id), s] as const]),
+);
+
 @Injectable()
 export class FixtureBookingContext implements BookingContextReader {
   loadServices(
@@ -358,7 +377,7 @@ export class FixtureBookingContext implements BookingContextReader {
     serviceIds: readonly string[],
   ): Promise<Service[]> {
     const found = serviceIds
-      .map((id) => SERVICES.find((s) => s.id === id))
+      .map((id) => BY_ANY_ID.get(id) ?? BY_ANY_ID.get(id.toLowerCase()))
       .filter((s): s is Service => s !== undefined);
     return Promise.resolve(found);
   }

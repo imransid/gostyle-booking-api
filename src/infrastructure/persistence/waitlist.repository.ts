@@ -1,5 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
+import { toUuid } from './hold.repository';
+import { SlugIndex } from './slug-uuid';
+import { STAFF_SLUGS } from '../fixtures/fixture-booking-context';
 import {
   planOffer,
   decline as declineRule,
@@ -20,6 +23,17 @@ interface EntryRow {
   decline_count: number;
   declined_codes: string[];
   joined_at: Date;
+}
+
+interface OfferRow {
+  branch_id: string;
+  customer_id: string;
+  offered_booking_code: string;
+  trading_day: Date;
+  start_minute: number;
+  duration_min: number;
+  service_id: string;
+  staff_id: string;
 }
 
 interface LapsedRow {
@@ -50,6 +64,9 @@ export interface OfferResult {
 @Injectable()
 export class WaitlistRepository {
   private static readonly log = new Logger(WaitlistRepository.name);
+
+  /** booking_item.staff_id is a uuid; placeHold expects a slug. */
+  private readonly staff = new SlugIndex(STAFF_SLUGS);
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -181,6 +198,128 @@ export class WaitlistRepository {
   }
 
   /**
+   * Join the list.
+   *
+   * The position is counted at join time as a courtesy, not stored: it is
+   * true when the message goes out and stale a minute later, because people
+   * ahead can be served, decline out, or leave. Storing it would invite
+   * someone to trust it.
+   */
+  async join(input: {
+    branchId: string;
+    customerId: string;
+    serviceId: string;
+    tradingDay: string;
+    windowFromMin: number;
+    windowToMin: number;
+    preferredStaffId: string | null;
+  }): Promise<{ entryId: string; position: number }> {
+    const entry = await this.prisma.waitlistEntry.create({
+      data: {
+        branchId: toUuid(input.branchId),
+        customerId: toUuid(input.customerId),
+        // The SAME normalisation booking_item gets. The catalogue speaks
+        // slugs ("full-colour") and the column is a uuid, so confirm folds
+        // the slug through toUuid on the way in. Storing the raw slug here
+        // meant the waitlist held "full-colour" while the freed-slot event
+        // carried the hash, and matches() compared two spellings of the same
+        // service and rejected everyone.
+        //
+        // This disappears the day the catalogue speaks real uuids.
+        serviceId: toUuid(input.serviceId),
+        tradingDay: new Date(`${input.tradingDay}T00:00:00Z`),
+        windowFromMin: input.windowFromMin,
+        windowToMin: input.windowToMin,
+        preferredStaffId:
+          input.preferredStaffId === null
+            ? null
+            : toUuid(input.preferredStaffId),
+      },
+    });
+
+    const ahead = await this.prisma.waitlistEntry.count({
+      where: {
+        branchId: toUuid(input.branchId),
+        tradingDay: new Date(`${input.tradingDay}T00:00:00Z`),
+        serviceId: toUuid(input.serviceId),
+        status: { in: ['waiting', 'offered'] },
+        joinedAt: { lt: entry.joinedAt },
+      },
+    });
+
+    WaitlistRepository.log.log(
+      `${input.customerId} joined for ${input.serviceId} on ${input.tradingDay} (${ahead} ahead)`,
+    );
+    return { entryId: entry.id, position: ahead + 1 };
+  }
+
+  /**
+   * The offer on this entry, if it is still live.
+   *
+   * Null covers three cases that look different to us and identical to the
+   * customer: never offered, already lapsed, already answered. All three mean
+   * "that slot is not yours to take", and distinguishing them in the response
+   * would only tell a stranger which entry ids exist.
+   */
+  async liveOffer(entryId: string): Promise<{
+    branchId: string;
+    customerId: string;
+    bookingCode: string;
+    serviceId: string;
+    tradingDay: string;
+    startMin: number;
+    durationMin: number;
+    staffId: string;
+  } | null> {
+    const rows = await this.prisma.$queryRaw<OfferRow[]>`
+      SELECT w.branch_id, w.customer_id, w.offered_booking_code,
+             b.trading_day, b.start_minute, b.duration_min,
+             bi.service_id, bi.staff_id
+        FROM waitlist_entry w
+        JOIN booking b  ON b.code = w.offered_booking_code
+        JOIN booking_item bi ON bi.booking_id = b.id
+       WHERE w.id = ${entryId}::uuid
+         AND w.status = 'offered'
+         AND w.offer_expires_at > now()
+       ORDER BY bi.position
+       LIMIT 1`;
+
+    const r = rows[0];
+    if (r === undefined) return null;
+
+    return {
+      branchId: r.branch_id,
+      customerId: r.customer_id,
+      bookingCode: r.offered_booking_code,
+      serviceId: r.service_id,
+      tradingDay: r.trading_day.toISOString().slice(0, 10),
+      startMin: r.start_minute,
+      durationMin: r.duration_min,
+      staffId: this.staff.toSlug(r.staff_id),
+    };
+  }
+
+  /**
+   * Taken.
+   *
+   * status = 'offered' in the WHERE is the claim: if the sweeper lapsed this
+   * offer a millisecond ago, or the customer double-tapped, the second write
+   * matches nothing and the caller is told the offer is gone rather than
+   * being handed a slot twice.
+   */
+  async markAccepted(entryId: string): Promise<boolean> {
+    const done = await this.prisma.waitlistEntry.updateMany({
+      where: { id: entryId, status: 'offered' },
+      data: {
+        status: 'accepted',
+        offeredBookingCode: null,
+        offerExpiresAt: null,
+      },
+    });
+    return done.count > 0;
+  }
+
+  /**
    * Offers that ran out of time.
    *
    * WITHOUT THIS THE QUEUE STALLS. The pass-down only happens on a decline,
@@ -255,7 +394,7 @@ export class WaitlistRepository {
       tradingDay: r.trading_day.toISOString().slice(0, 10),
       startMin: r.start_minute,
       durationMin: r.duration_min,
-      staffId: r.staff_id,
+      staffId: this.staff.toSlug(r.staff_id),
     };
   }
 

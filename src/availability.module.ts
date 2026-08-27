@@ -16,10 +16,13 @@ import { ConfirmBookingHandler } from '@application/commands/confirm-booking.han
 
 import { LifecycleController } from '@interface/http/lifecycle.controller';
 import { RescheduleHandler } from '@application/commands/reschedule.handler';
+import { WaitlistHandler } from '@application/commands/waitlist.handler';
+import { WaitlistController } from '@interface/http/waitlist.controller';
 import { LifecycleHandler } from '@application/commands/lifecycle.handler';
 
 @Module({
   controllers: [
+    WaitlistController,
     AvailabilityController,
     HealthController,
     HoldsController,
@@ -27,6 +30,7 @@ import { LifecycleHandler } from '@application/commands/lifecycle.handler';
     LifecycleController,
   ],
   providers: [
+    WaitlistHandler,
     RescheduleHandler,
     ConfirmBookingHandler,
     GetAvailabilityHandler,
