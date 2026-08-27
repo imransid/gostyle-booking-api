@@ -22,6 +22,22 @@ interface EntryRow {
   joined_at: Date;
 }
 
+interface LapsedRow {
+  id: string;
+  branch_id: string;
+  offered_booking_code: string | null;
+  customer_id: string;
+}
+
+interface SlotRow {
+  code: string;
+  trading_day: Date;
+  start_minute: number;
+  duration_min: number;
+  service_id: string;
+  staff_id: string;
+}
+
 export interface OfferResult {
   readonly offered: boolean;
   readonly entryId?: string;
@@ -162,6 +178,85 @@ export class WaitlistRepository {
         passedOver: plan.passedOver.length,
       };
     });
+  }
+
+  /**
+   * Offers that ran out of time.
+   *
+   * WITHOUT THIS THE QUEUE STALLS. The pass-down only happens on a decline,
+   * and most people do not decline: they ignore the message. One silent
+   * candidate would hold a freed slot until the day itself, with three more
+   * people behind them who would have taken it.
+   *
+   * A lapse is treated exactly as a decline, including the fairness cap,
+   * because a customer who never answers is absorbing offers just as surely
+   * as one who says no.
+   */
+  async sweepExpiredOffers(nowMs: number = Date.now()): Promise<number> {
+    // Claimed the same way as everything else: the UPDATE moves them out of
+    // 'offered' so a second replica finds nothing to sweep.
+    const lapsed = await this.prisma.$queryRaw<LapsedRow[]>`
+      UPDATE waitlist_entry
+         SET status = 'waiting'
+       WHERE id IN (
+         SELECT id FROM waitlist_entry
+          WHERE status = 'offered'
+            AND offer_expires_at <= ${new Date(nowMs)}
+          ORDER BY offer_expires_at
+          LIMIT 100
+          FOR UPDATE SKIP LOCKED
+       )
+      RETURNING id, branch_id, offered_booking_code, customer_id`;
+
+    let passed = 0;
+    for (const row of lapsed) {
+      if (row.offered_booking_code === null) continue;
+
+      // The slot has to be rebuilt from the booking, because the waitlist row
+      // only remembers which code it was offered. If the booking has since
+      // been rebooked by someone else there is nothing to pass down, which is
+      // the right answer rather than an error.
+      const slot = await this.slotForCode(row.offered_booking_code);
+      if (slot === null) {
+        await this.prisma.waitlistEntry.update({
+          where: { id: row.id },
+          data: { offeredBookingCode: null, offerExpiresAt: null },
+        });
+        continue;
+      }
+
+      await this.passDown(row.id, row.branch_id, slot, nowMs);
+      passed += 1;
+    }
+
+    if (passed > 0) {
+      WaitlistRepository.log.log(`${passed} offer(s) lapsed and passed down`);
+    }
+    return passed;
+  }
+
+  /** Rebuild a freed slot from the booking that freed it. */
+  private async slotForCode(code: string): Promise<FreedSlot | null> {
+    const rows = await this.prisma.$queryRaw<SlotRow[]>`
+      SELECT b.code, b.trading_day, b.start_minute, b.duration_min,
+             bi.service_id, bi.staff_id
+        FROM booking b
+        JOIN booking_item bi ON bi.booking_id = b.id
+       WHERE b.code = ${code}
+       ORDER BY bi.position
+       LIMIT 1`;
+
+    const r = rows[0];
+    if (r === undefined) return null;
+
+    return {
+      bookingCode: r.code,
+      serviceId: r.service_id,
+      tradingDay: r.trading_day.toISOString().slice(0, 10),
+      startMin: r.start_minute,
+      durationMin: r.duration_min,
+      staffId: r.staff_id,
+    };
   }
 
   /**
