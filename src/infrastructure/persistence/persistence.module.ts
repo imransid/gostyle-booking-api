@@ -27,6 +27,7 @@ import { FixtureBookingContext } from '../fixtures/fixture-booking-context';
 import { HoldSweeper } from '../scheduling/hold-sweeper.service';
 import { SeriesRepository } from './series.repository';
 import { RosterChangeRepository } from './roster-change.repository';
+import { CompactionRepository } from './compaction.repository';
 
 /**
  * Global on purpose. One connection pool per process, shared by every module
@@ -36,6 +37,7 @@ import { RosterChangeRepository } from './roster-change.repository';
 @Global()
 @Module({
   providers: [
+    CompactionRepository,
     RosterChangeRepository,
     SeriesRepository,
     GroupConfirmRepository,
@@ -86,6 +88,7 @@ import { RosterChangeRepository } from './roster-change.repository';
     FixtureBookingContext,
   ],
   exports: [
+    CompactionRepository,
     RosterChangeRepository,
     SeriesRepository,
     GroupConfirmRepository,

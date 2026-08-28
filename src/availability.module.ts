@@ -34,9 +34,12 @@ import { MaterialiseSeriesHandler } from '@application/commands/materialise-seri
 import { SeriesMaterialiser } from '@infrastructure/scheduling/series-materialiser.service';
 import { RosterChangesController } from '@interface/http/roster-changes.controller';
 import { RosterChangeHandler } from '@application/commands/roster-change.handler';
+import { CompactionController } from '@interface/http/compaction.controller';
+import { CompactionHandler } from '@application/commands/compaction.handler';
 
 @Module({
   controllers: [
+    CompactionController,
     RosterChangesController,
     SeriesController,
     GroupsController,
@@ -49,6 +52,7 @@ import { RosterChangeHandler } from '@application/commands/roster-change.handler
     LifecycleController,
   ],
   providers: [
+    CompactionHandler,
     RosterChangeHandler,
     CreateSeriesHandler,
     SeriesPanelHandler,

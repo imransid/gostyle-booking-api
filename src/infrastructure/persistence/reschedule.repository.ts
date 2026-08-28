@@ -4,6 +4,7 @@ import { rescheduleOutcome } from '@domain/booking/reschedule';
 import type { RescheduleOutcome } from '@domain/booking/reschedule';
 import type { ActorKind } from '@domain/booking/lifecycle';
 import { toUuid, branchInstant } from './hold.repository';
+import { isExclusionViolation } from './booking.repository';
 
 /** Named: a heredoc eats a line ending in `<`. */
 interface MovingBooking {
@@ -46,6 +47,28 @@ export type RescheduleResult =
       readonly outcome: RescheduleOutcome;
     };
 
+export interface ShiftInPlaceInput {
+  readonly bookingId: string;
+  readonly tradingDay: string;
+  /** The same professional. A shift changes when, never who. */
+  readonly toStartMin: number;
+  readonly reason: string;
+  readonly actor: ActorKind;
+  readonly actorId: string | null;
+}
+
+export type ShiftResult =
+  | { readonly kind: 'not_found' }
+  | { readonly kind: 'illegal'; readonly message: string }
+  /** The exclusion constraint refused: somebody else has that time now. */
+  | { readonly kind: 'slot_taken' }
+  | {
+      readonly kind: 'shifted';
+      readonly code: string;
+      readonly fromStartMin: number;
+      readonly toStartMin: number;
+    };
+
 /** A move is only legal from a booking that has not happened yet. */
 const MOVABLE = new Set([
   'confirmed',
@@ -78,6 +101,189 @@ export class RescheduleRepository {
    *   8  history, with the reason
    *   9  the event, so the waitlist and the notifier both hear about it
    */
+
+  /**
+   * Nudge a booking a few minutes without holding the new slot first.
+   *
+   * THE HOLD-THEN-MOVE PATH CANNOT DO THIS, and the reason is not obvious
+   * until you watch it fail: a booking shifted by fifteen minutes overlaps
+   * ITSELF, so placing a hold on the new slot is refused by the exclusion
+   * constraint against the very booking being moved. Compaction found this
+   * immediately, because every move it proposes is small by definition.
+   *
+   * So the atomicity comes from the transaction instead of from a hold. The
+   * old reservations stop blocking and the new ones are written in the same
+   * commit, under the same advisory lock a hold would have taken, and the
+   * exclusion constraint still has the final word about everybody else.
+   *
+   * No money moves. A compaction shift is the salon's convenience and the
+   * customer has already agreed to it; charging a move fee for it would be
+   * charging someone for doing us a favour.
+   */
+  async shiftInPlace(input: ShiftInPlaceInput): Promise<ShiftResult> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const rows = await tx.$queryRaw<
+          {
+            id: string;
+            code: string;
+            status: string;
+            start_minute: number;
+            duration_min: number;
+            branch_id: string;
+          }[]
+        >`
+          SELECT id, code, status, start_minute, duration_min, branch_id
+            FROM booking
+           WHERE id = ${input.bookingId}::uuid
+           FOR UPDATE`;
+
+        const booking = rows[0];
+        if (booking === undefined) return { kind: 'not_found' as const };
+        if (!MOVABLE.has(booking.status)) {
+          return {
+            kind: 'illegal' as const,
+            message: `A ${booking.status} booking cannot be shifted.`,
+          };
+        }
+
+        const items = await tx.bookingItem.findMany({
+          where: { bookingId: booking.id },
+          select: { id: true, staffId: true, resourceType: true },
+          orderBy: { position: 'asc' },
+        });
+        const first = items[0];
+        if (first === undefined) return { kind: 'not_found' as const };
+
+        // The same turn-taking a hold would do, so two shifts on one chair
+        // type cannot interleave.
+        const key = `${booking.branch_id}:${first.resourceType}:${input.tradingDay}`;
+        await tx.$executeRaw`
+          SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`;
+
+        const oldStart = branchInstant(input.tradingDay, booking.start_minute);
+        const newStart = branchInstant(input.tradingDay, input.toStartMin);
+        const newEnd = new Date(
+          newStart.getTime() + booking.duration_min * 60_000,
+        );
+        const itemIds = items.map((i) => i.id);
+
+        // Release first. Inside this transaction the released rows leave the
+        // constraint's WHERE (blocking) filter, so the booking stops
+        // colliding with itself and everyone else still counts.
+        await tx.staffReservation.updateMany({
+          where: { bookingItemId: { in: itemIds } },
+          data: { blocking: false },
+        });
+        await tx.resourceReservation.updateMany({
+          where: { bookingItemId: { in: itemIds } },
+          data: { blocking: false },
+        });
+
+        await tx.staffReservation.create({
+          data: {
+            bookingItemId: first.id,
+            branchId: booking.branch_id,
+            staffId: first.staffId ?? '',
+            tradingDay: new Date(`${input.tradingDay}T00:00:00Z`),
+            kind: 'active',
+            startAt: newStart,
+            endAt: newEnd,
+            startMinute: input.toStartMin,
+            durationMin: booking.duration_min,
+          },
+        });
+        await tx.resourceReservation.create({
+          data: {
+            bookingItemId: first.id,
+            branchId: booking.branch_id,
+            resourceType: first.resourceType,
+            tradingDay: new Date(`${input.tradingDay}T00:00:00Z`),
+            startAt: newStart,
+            endAt: newEnd,
+            startMinute: input.toStartMin,
+            durationMin: booking.duration_min,
+          },
+        });
+
+        await tx.booking.update({
+          where: { id: booking.id },
+          data: {
+            startAt: newStart,
+            endAt: newEnd,
+            startMinute: input.toStartMin,
+            moveCount: { increment: 1 },
+            // The ladder starts again, exactly as it does on a full move.
+            reminded24hAt: null,
+            reminded3hAt: null,
+            nudged15mAt: null,
+          },
+        });
+
+        await tx.bookingStatusHistory.create({
+          data: {
+            bookingId: booking.id,
+            fromStatus: booking.status as 'confirmed',
+            toStatus: 'rescheduled',
+            reason: input.reason,
+            metadata: {
+              fromStartAt: oldStart.toISOString(),
+              toStartAt: newStart.toISOString(),
+              shiftMin: input.toStartMin - booking.start_minute,
+            },
+            actorKind: input.actor,
+            actorId:
+              input.actor === 'system' || input.actorId === null
+                ? null
+                : toUuid(input.actorId),
+          },
+        });
+        await tx.bookingStatusHistory.create({
+          data: {
+            bookingId: booking.id,
+            fromStatus: 'rescheduled',
+            toStatus: booking.status as 'confirmed',
+            reason: `Shifted to ${newStart.toISOString()}`,
+            actorKind: input.actor,
+            actorId:
+              input.actor === 'system' || input.actorId === null
+                ? null
+                : toUuid(input.actorId),
+          },
+        });
+
+        await tx.eventOutbox.create({
+          data: {
+            aggregateType: 'booking',
+            aggregateId: booking.id,
+            eventType: 'booking.rescheduled',
+            payload: {
+              code: booking.code,
+              fromStartAt: oldStart.toISOString(),
+              toStartAt: newStart.toISOString(),
+              reason: input.reason,
+              releasedCapacity: true,
+            },
+          },
+        });
+
+        RescheduleRepository.log.log(
+          `${booking.code} shifted ${booking.start_minute} -> ${input.toStartMin}`,
+        );
+
+        return {
+          kind: 'shifted' as const,
+          code: booking.code,
+          fromStartMin: booking.start_minute,
+          toStartMin: input.toStartMin,
+        };
+      });
+    } catch (e) {
+      if (isExclusionViolation(e)) return { kind: 'slot_taken' as const };
+      throw e;
+    }
+  }
+
   async move(input: RescheduleInput): Promise<RescheduleResult> {
     const nowMs = input.nowMs ?? Date.now();
 
