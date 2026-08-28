@@ -107,6 +107,9 @@ model Booking {
   /// The payment link window. Set when a booking is confirmed on the link
   /// rail; null on every other rail. An unpaid link holds a professional and
   /// a chair exactly as a confirmed booking does, so it needs a closing time.
+  /// Set when this booking is one participant's lane in a group.
+  groupId String? @map("group_id") @db.Uuid
+
   linkExpiresAt  DateTime? @map("link_expires_at") @db.Timestamptz(6)
   linkRemindedAt DateTime? @map("link_reminded_at") @db.Timestamptz(6)
 
@@ -415,4 +418,84 @@ model WaitlistEntry {
   @@index([branchId, tradingDay, serviceId], map: "waitlist_match_idx")
   @@index([offerExpiresAt], map: "waitlist_offer_expiry_idx")
   @@map("waitlist_entry")
+}
+
+// ============================================================ groups
+// A parent reservation holding two or more participants, each with their own
+// items, professional, chair and status, unified by one organiser, one target
+// window and one payment arrangement.
+
+enum GroupMode {
+  arrive_together
+  finish_together
+
+  @@map("group_mode")
+}
+
+enum GroupArrangement {
+  organiser_pays_all
+  split_equally
+  each_pays_own
+
+  @@map("group_arrangement")
+}
+
+model BookingGroup {
+  id String @id @default(uuid()) @db.Uuid
+
+  branchId    String @map("branch_id") @db.Uuid
+  organiserId String @map("organiser_id") @db.Uuid
+
+  tradingDay DateTime @map("trading_day") @db.Date
+  /// The anchor. In arrive-together every lane starts here; in
+  /// finish-together the lanes are staggered backwards to end together.
+  targetMin  Int      @map("target_min") @db.SmallInt
+
+  mode        GroupMode
+  arrangement GroupArrangement
+
+  /// Derived from the participants, never set directly. Confirmed when all
+  /// active participants are confirmed, partially_confirmed while shares are
+  /// pending, and so on.
+  status String @default("draft")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  participants GroupParticipant[]
+
+  @@index([branchId, tradingDay], map: "group_day_idx")
+  @@map("booking_group")
+}
+
+model GroupParticipant {
+  id      String       @id @default(uuid()) @db.Uuid
+  groupId String       @map("group_id") @db.Uuid
+  group   BookingGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  /// A registered customer, or null for a named guest under the organiser.
+  /// Guests inherit the organiser's contact channel; registered participants
+  /// get their own messages and their own Pass QR.
+  customerId String? @map("customer_id") @db.Uuid
+  guestName  String? @map("guest_name")
+
+  /// THE LANE IS AN ORDINARY BOOKING.
+  ///
+  /// Check-in, no-show, settlement and the waitlist all operate on bookings,
+  /// so a participant whose lane is a booking inherits every one of them.
+  /// A parallel participant-lifecycle would mean writing all of that twice
+  /// and keeping the two in step forever.
+  bookingId String? @unique @map("booking_id") @db.Uuid
+
+  /// What this participant owes under the arrangement. Null until the group
+  /// is priced.
+  shareFils Int? @map("share_fils")
+
+  position Int @db.SmallInt
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([groupId, position], map: "participant_position_uniq")
+  @@index([bookingId], map: "participant_booking_idx")
+  @@map("group_participant")
 }
