@@ -7,6 +7,7 @@ import { WaitlistRepository } from './waitlist.repository';
 import { WaitlistListener } from '../messaging/waitlist-listener';
 import { WaitlistSweeper } from '../scheduling/waitlist-sweeper.service';
 import { NoShowSweeper } from '../scheduling/no-show-sweeper.service';
+import { PaymentLinkSweeper } from '../scheduling/payment-link-sweeper.service';
 import { ReminderScheduler } from '../scheduling/reminder-scheduler.service';
 import { CUSTOMER_CONTEXT } from '@application/ports/customer-context.port';
 import { FixtureCustomerContext } from '../fixtures/fixture-customer-context';
@@ -27,6 +28,7 @@ import { HoldSweeper } from '../scheduling/hold-sweeper.service';
 @Global()
 @Module({
   providers: [
+    PaymentLinkSweeper,
     NoShowSweeper,
     WaitlistRepository,
     WaitlistSweeper,
@@ -61,6 +63,7 @@ import { HoldSweeper } from '../scheduling/hold-sweeper.service';
     FixtureBookingContext,
   ],
   exports: [
+    PaymentLinkSweeper,
     NoShowSweeper,
     WaitlistRepository,
     WaitlistSweeper,

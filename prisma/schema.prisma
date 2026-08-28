@@ -104,6 +104,12 @@ model Booking {
   overbooked     Boolean @default(false)
   overbookReason String? @map("overbook_reason")
 
+  /// The payment link window. Set when a booking is confirmed on the link
+  /// rail; null on every other rail. An unpaid link holds a professional and
+  /// a chair exactly as a confirmed booking does, so it needs a closing time.
+  linkExpiresAt  DateTime? @map("link_expires_at") @db.Timestamptz(6)
+  linkRemindedAt DateTime? @map("link_reminded_at") @db.Timestamptz(6)
+
   // The reminder ladder. Timestamps rather than booleans: "when did we tell
   // them" is the question support actually asks, and a boolean cannot answer
   // it. NULL means outstanding, and that is what the scheduler claims on.

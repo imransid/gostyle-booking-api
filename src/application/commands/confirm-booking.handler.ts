@@ -1,6 +1,7 @@
 import {
   ConflictException,
   GoneException,
+  UnprocessableEntityException,
   HttpException,
   HttpStatus,
   Inject,
@@ -22,12 +23,14 @@ import {
   type Requirement,
 } from '@domain/booking/customer';
 import { quote, type QuoteLine } from '@domain/booking/quote';
+import { linkWindow } from '@domain/booking/payment-link';
 import {
   BookingRepository,
   type ConfirmItem,
   type PaymentRail,
 } from '@infrastructure/persistence/booking.repository';
 import { PrismaService } from '@infrastructure/persistence/prisma.service';
+import { branchInstant } from '@infrastructure/persistence/hold.repository';
 import { Money } from '@domain/shared/money';
 import { formatMinute } from '@domain/availability/grid';
 
@@ -174,6 +177,27 @@ export class ConfirmBookingHandler {
       );
     }
 
+    // A LINK THAT IS ALREADY DEAD IS WORSE THAN NO LINK.
+    //
+    // The window is the shorter of six hours and the time until two hours
+    // before the start, and inside that last two hours it has already closed.
+    // Issuing one anyway gives the customer a broken payment page and holds
+    // the slot until a sweeper notices, so the desk is told to take payment
+    // now instead.
+    let linkExpiresAt: Date | null = null;
+    if (cmd.payment?.rail === 'link') {
+      const window = linkWindow(
+        Date.now(),
+        branchInstant(cmd.tradingDay, reservation.startMinute).getTime(),
+      );
+      if (window.kind === 'too_late') {
+        throw new UnprocessableEntityException(
+          `That start is too close for a payment link: the window closed ${window.minutesPastCutoff} minutes ago. Take payment now instead.`,
+        );
+      }
+      linkExpiresAt = new Date(window.expiresAtMs);
+    }
+
     // Never bank more than the price, whatever a desk types in.
     const deposit = Money.min(tendered, total);
 
@@ -211,6 +235,7 @@ export class ConfirmBookingHandler {
       actorId: cmd.actorId ?? null,
       idempotencyKey: cmd.idempotencyKey ?? null,
       requestHash: hashRequest(cmd),
+      linkExpiresAt,
     });
 
     // Both refusals mean the same thing to the customer: nothing was charged.

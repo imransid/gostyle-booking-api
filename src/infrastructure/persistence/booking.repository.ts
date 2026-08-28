@@ -39,6 +39,14 @@ export interface ConfirmBookingInput {
   readonly idempotencyKey: string | null;
   readonly requestHash: string;
   /**
+   * When the payment link closes. Null on every rail but 'link'.
+   *
+   * Computed by the handler, because refusing a link that is already dead is
+   * a decision about what to tell the desk, not a decision about what to
+   * store.
+   */
+  readonly linkExpiresAt: Date | null;
+  /**
    * Exactly what a retry should receive. Stored verbatim, so a replay is
    * answered from bytes rather than re-derived from a world that has
    * already changed underneath it.
@@ -148,6 +156,7 @@ export class BookingRepository {
             priceFils: input.priceFils,
             depositFils: input.depositFils,
             requirementSource: input.requirementSource,
+            linkExpiresAt: input.linkExpiresAt,
             channel: input.channel,
           },
           select: { id: true, code: true },
