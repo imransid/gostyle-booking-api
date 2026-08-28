@@ -28,7 +28,14 @@ export const PROCESSING_GUARD_MIN = 5;
 /** A gap under this is unsellable and counts as stranded time. */
 export const MIN_SELLABLE_MIN = 25;
 
-/** Minimum distance between two offers in the three-offer policy. */
+/**
+ * Minimum distance between two offers in the three-offer policy.
+ *
+ * The three must be genuinely different choices rather than three faces of
+ * the same half hour. Ranking uses it to space the offers, and the series
+ * ladder uses it to space the alternatives on a needs-attention occurrence:
+ * the same reasoning, so the same number, defined once.
+ */
 export const OFFER_SPACING_MIN = 25;
 
 /** Per-professional daily booking cap. */

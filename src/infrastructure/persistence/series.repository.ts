@@ -3,7 +3,7 @@ import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from './prisma.service';
 import { toUuid, branchInstant } from './hold.repository';
 import { SlugIndex } from './slug-uuid';
-import { isExclusionViolation } from './booking.repository';
+import { isExclusionViolation } from './pg-errors';
 import { STAFF_SLUGS } from '../fixtures/fixture-booking-context';
 import type {
   Occurrence,

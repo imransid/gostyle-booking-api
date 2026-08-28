@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
+import { isExclusionViolation } from './pg-errors';
 
 /** Asia/Dubai is UTC+4 all year. A branch with DST would need a real tz lib. */
 const BRANCH_UTC_OFFSET_MIN = 240;
@@ -79,35 +80,6 @@ export type PlaceHoldOutcome =
       readonly inUse: number;
       readonly units: number;
     };
-
-/** Postgres exclusion violation. Prisma has no typed code for 23P01. */
-/**
- * Postgres SQLSTATE 23P01, exclusion_violation.
- *
- * Prisma 7 reports it as its own P2039 and buries the real code three levels
- * down, so the path is worth spelling out rather than pattern-matching text:
- *
- *   PrismaClientKnownRequestError
- *     .code                                  "P2039"
- *     .meta.driverAdapterError.cause.code    "23P01"   <- the truth
- *
- * An earlier version of this matched `message.includes('exclusion constraint')`
- * and quietly reported a dead connection pool as "someone took your slot".
- * A wrong business answer is worse than a 500, because nobody investigates
- * a 409. Match the code, and let anything unrecognised throw.
- */
-function isExclusionViolation(e: unknown): boolean {
-  if (typeof e !== 'object' || e === null) return false;
-
-  const direct = (e as { code?: unknown }).code;
-  if (direct === '23P01') return true;
-
-  const cause = (
-    e as { meta?: { driverAdapterError?: { cause?: { code?: unknown } } } }
-  ).meta?.driverAdapterError?.cause?.code;
-
-  return cause === '23P01';
-}
 
 @Injectable()
 export class HoldRepository {

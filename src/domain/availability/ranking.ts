@@ -1,4 +1,9 @@
-import { toMin, DAILY_BOOKING_CAP, PROCESSING_GUARD_MIN } from './grid';
+import {
+  toMin,
+  DAILY_BOOKING_CAP,
+  PROCESSING_GUARD_MIN,
+  OFFER_SPACING_MIN,
+} from './grid';
 import { BufferClaims, StaffBooking, gapBetween } from './staff-mask';
 
 /**
@@ -31,9 +36,6 @@ export const SLIVER_MAX_MIN = 19;
 
 /** How much a destroyed sellable start costs, against the layer-one score. */
 export const DELTA_CAPACITY_WEIGHT = 0.5;
-
-/** The three offers must be genuinely different choices, not one half hour. */
-export const OFFER_SPACING_MIN = 25;
 
 export interface ScoringInput {
   readonly startMin: number;

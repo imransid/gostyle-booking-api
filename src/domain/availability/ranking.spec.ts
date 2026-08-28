@@ -8,7 +8,6 @@ import {
   sampleForMeasurement,
   FRAGMENTATION,
   SLIVER_MAX_MIN,
-  OFFER_SPACING_MIN,
   DEMAND_MIX,
   type Candidate,
   type RankedCandidate,
@@ -17,7 +16,7 @@ import {
   type SellableStartsProbe,
 } from './ranking';
 import { type BufferClaims, type StaffBooking } from './staff-mask';
-import { toSlot, DAILY_BOOKING_CAP } from './grid';
+import { toSlot, DAILY_BOOKING_CAP, OFFER_SPACING_MIN } from './grid';
 
 const COLOUR: BufferClaims = { preMin: 10, postMin: 20 };
 const STYLING: BufferClaims = { preMin: 5, postMin: 10 };

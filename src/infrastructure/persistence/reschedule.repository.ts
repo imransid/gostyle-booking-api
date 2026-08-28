@@ -4,7 +4,7 @@ import { rescheduleOutcome } from '@domain/booking/reschedule';
 import type { RescheduleOutcome } from '@domain/booking/reschedule';
 import type { ActorKind } from '@domain/booking/lifecycle';
 import { toUuid, branchInstant } from './hold.repository';
-import { isExclusionViolation } from './booking.repository';
+import { isExclusionViolation } from './pg-errors';
 
 /** Named: a heredoc eats a line ending in `<`. */
 interface MovingBooking {
