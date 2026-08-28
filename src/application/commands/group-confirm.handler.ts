@@ -1,3 +1,5 @@
+import { shout, type Shouted } from '@application/contract/wire';
+import type { GroupStatus } from '@domain/booking/group-status';
 import {
   ConflictException,
   GoneException,
@@ -29,7 +31,7 @@ export interface GroupConfirmCommand {
 
 export interface GroupConfirmView {
   readonly groupId: string;
-  readonly status: string;
+  readonly status: Shouted<GroupStatus>;
   readonly bookings: readonly {
     readonly label: string;
     readonly code: string;
@@ -125,7 +127,7 @@ export class GroupConfirmHandler {
 
     return {
       groupId: outcome.groupId,
-      status: outcome.status,
+      status: shout(outcome.status),
       bookings: outcome.bookings.map((b) => ({
         label: b.label,
         code: b.code,

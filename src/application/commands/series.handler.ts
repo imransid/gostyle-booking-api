@@ -1,3 +1,5 @@
+import { shout, type Shouted } from '@application/contract/wire';
+import type { OccurrenceState } from '../../generated/prisma/enums';
 import {
   Inject,
   Injectable,
@@ -152,16 +154,16 @@ export interface OccurrenceView {
   readonly index: number;
   readonly day: string;
   readonly start: string;
-  readonly state: string;
+  readonly state: Shouted<OccurrenceState>;
   readonly bookingCode: string | null;
-  readonly bookingStatus: string | null;
+  readonly bookingStatus: Shouted<BookingStatus> | null;
   readonly movedFromDayOfMonth: number | null;
   readonly alternatives: unknown;
 }
 
 export interface SeriesPanelView {
   readonly seriesId: string;
-  readonly status: SeriesStatus;
+  readonly status: Shouted<SeriesStatus>;
   readonly health: string;
   readonly healthReasons: readonly string[];
   readonly healthExplanation: string;
@@ -170,9 +172,9 @@ export interface SeriesPanelView {
   readonly course: {
     readonly visits: number;
     readonly drawn: number;
-    readonly remainingFils: number;
+    readonly remainingMinor: number;
     readonly remaining: string;
-    readonly perVisitFils: number;
+    readonly perVisitMinor: number;
     readonly explanation: string;
   } | null;
 }
@@ -208,16 +210,16 @@ export class SeriesPanelHandler {
             return {
               visits: state.visits,
               drawn: state.drawnCount,
-              remainingFils: state.remainingGrossFils,
+              remainingMinor: state.remainingGrossFils,
               remaining: `AED ${(state.remainingGrossFils / 100).toFixed(2)}`,
-              perVisitFils: draws[0]?.grossFils ?? 0,
+              perVisitMinor: draws[0]?.grossFils ?? 0,
               explanation: state.explanation,
             };
           })();
 
     return {
       seriesId,
-      status: series.status,
+      status: shout(series.status),
       health: health.health,
       healthReasons: health.reasons,
       healthExplanation: health.explanation,
@@ -227,9 +229,9 @@ export class SeriesPanelHandler {
         index: o.index,
         day: o.day,
         start: formatMinute(o.startMin),
-        state: o.state,
+        state: shout(o.state),
         bookingCode: o.bookingCode,
-        bookingStatus: o.bookingStatus,
+        bookingStatus: o.bookingStatus === null ? null : shout(o.bookingStatus),
         movedFromDayOfMonth: o.movedFromDayOfMonth,
         alternatives: o.alternatives,
       })),
@@ -373,11 +375,11 @@ export class SeriesLifecycleHandler {
  * described by the occurrence row itself: there is no booking to ask.
  */
 function statusOfOccurrence(
-  state: string,
-  bookingStatus: string | null,
+  state: OccurrenceState,
+  bookingStatus: BookingStatus | null,
 ): BookingStatus {
   if (state === 'skipped') return 'skipped';
   if (state === 'detached') return 'cancelled';
-  if (bookingStatus !== null) return bookingStatus as BookingStatus;
+  if (bookingStatus !== null) return bookingStatus;
   return 'draft';
 }

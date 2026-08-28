@@ -64,13 +64,13 @@ export class LifecycleDto {
   @IsOptional()
   @IsInt()
   @Min(0)
-  retailFils?: number;
+  retailMinor?: number;
 
   @ApiPropertyOptional({
     example: 10,
     description:
       'A percentage of the tippable base, which excludes retail. Use this ' +
-      'or tipFils, not both.',
+      'or tipMinor, not both.',
   })
   @IsOptional()
   @IsInt()
@@ -81,13 +81,13 @@ export class LifecycleDto {
   @IsOptional()
   @IsInt()
   @Min(0)
-  tipFils?: number;
+  tipMinor?: number;
 
   @ApiPropertyOptional({ example: 5000 })
   @IsOptional()
   @IsInt()
   @Min(0)
-  loyaltyRedeemFils?: number;
+  loyaltyRedeemMinor?: number;
 
   @ApiPropertyOptional({
     description:
@@ -288,11 +288,13 @@ export class LifecycleController {
         : {}),
       ...(dto.nowMs !== undefined ? { nowMs: dto.nowMs } : {}),
       checkout: {
-        ...(dto.retailFils !== undefined ? { retailFils: dto.retailFils } : {}),
-        ...(dto.tipFils !== undefined ? { tipFils: dto.tipFils } : {}),
+        ...(dto.retailMinor !== undefined
+          ? { retailFils: dto.retailMinor }
+          : {}),
+        ...(dto.tipMinor !== undefined ? { tipFils: dto.tipMinor } : {}),
         ...(dto.tipPercent !== undefined ? { tipPercent: dto.tipPercent } : {}),
-        ...(dto.loyaltyRedeemFils !== undefined
-          ? { loyaltyRedeemFils: dto.loyaltyRedeemFils }
+        ...(dto.loyaltyRedeemMinor !== undefined
+          ? { loyaltyRedeemFils: dto.loyaltyRedeemMinor }
           : {}),
         ...(dto.promoApplies !== undefined
           ? { promoApplies: dto.promoApplies }

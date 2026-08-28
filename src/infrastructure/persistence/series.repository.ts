@@ -1,3 +1,4 @@
+import type { OccurrenceState } from '../../generated/prisma/enums';
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from './prisma.service';
@@ -607,10 +608,10 @@ export class SeriesRepository {
       readonly index: number;
       readonly day: string;
       readonly startMin: number;
-      readonly state: string;
+      readonly state: OccurrenceState;
       readonly movedFromDayOfMonth: number | null;
       readonly bookingCode: string | null;
-      readonly bookingStatus: string | null;
+      readonly bookingStatus: BookingStatus | null;
       readonly startsInHours: number;
       readonly alternatives: unknown;
     }[]

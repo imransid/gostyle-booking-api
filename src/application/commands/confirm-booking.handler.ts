@@ -22,7 +22,17 @@ import {
   DEFAULT_BRANCH,
   type Requirement,
 } from '@domain/booking/customer';
-import { quote, type QuoteLine } from '@domain/booking/quote';
+import { quote } from '@domain/booking/quote';
+import {
+  shout,
+  toWireQuoteLine,
+  type Shouted,
+  type WireQuoteLine,
+} from '@application/contract/wire';
+import type {
+  BookingStatus,
+  PaymentStatus,
+} from '../../generated/prisma/enums';
 import { linkWindow } from '@domain/booking/payment-link';
 import {
   BookingRepository,
@@ -56,26 +66,26 @@ export interface ConfirmBookingCommand {
 export interface BookingView {
   readonly code: string;
   readonly bookingId: string;
-  readonly status: string;
-  readonly paymentStatus: string;
+  readonly status: Shouted<BookingStatus>;
+  readonly paymentStatus: Shouted<PaymentStatus>;
   readonly start: string;
   readonly end: string;
   readonly durationMin: number;
   /** Net, exclusive of VAT. Prices are STORED net; tax is computed here. */
-  readonly totalNetFils: number;
+  readonly totalNetMinor: number;
   readonly totalNet: string;
-  readonly vatFils: number;
+  readonly vatMinor: number;
   readonly vat: string;
   /** Inclusive of VAT. The number on the receipt. */
-  readonly totalFils: number;
+  readonly totalMinor: number;
   readonly total: string;
-  readonly depositFils: number;
+  readonly depositMinor: number;
   readonly deposit: string;
-  readonly dueAtCheckoutFils: number;
+  readonly dueAtCheckoutMinor: number;
   readonly dueAtCheckout: string;
   readonly requirementSource: string | null;
   /** The quote pipeline, line by line, so nothing at checkout surprises. */
-  readonly quote: readonly QuoteLine[];
+  readonly quote: readonly WireQuoteLine[];
   /** True when the same Idempotency-Key was seen before. Nothing was charged twice. */
   readonly replayed: boolean;
 }
@@ -177,8 +187,8 @@ export class ConfirmBookingHandler {
           statusCode: HttpStatus.PAYMENT_REQUIRED,
           error: 'Payment Required',
           message: `${required.toString()} is required before this booking can be confirmed.`,
-          requiredFils: required.fils,
-          tenderedFils: tendered.fils,
+          requiredMinor: required.fils,
+          tenderedMinor: tendered.fils,
           requirement: describeFully(requirement),
         },
         HttpStatus.PAYMENT_REQUIRED,
@@ -265,27 +275,27 @@ export class ConfirmBookingHandler {
     const view: BookingView = {
       code: b.code,
       bookingId: b.bookingId,
-      status: b.status,
-      paymentStatus: b.paymentStatus,
+      status: shout(b.status),
+      paymentStatus: shout(b.paymentStatus),
       start: formatMinute(b.startMin),
       end: formatMinute(b.startMin + b.durationMin),
       durationMin: b.durationMin,
-      totalNetFils: priced.subtotalNetFils,
+      totalNetMinor: priced.subtotalNetFils,
       totalNet: Money.fils(priced.subtotalNetFils).toString(),
-      vatFils: priced.vatFils,
+      vatMinor: priced.vatFils,
       vat: Money.fils(priced.vatFils).toString(),
-      totalFils: priced.totalFils,
+      totalMinor: priced.totalFils,
       total: Money.fils(priced.totalFils).toString(),
-      depositFils: deposit.fils,
+      depositMinor: deposit.fils,
       deposit: deposit.toString(),
       // The balance owed at the register INCLUDES the tax. Reporting the
       // net balance here would have the desk collect 5% too little on every
       // booking, and nobody would notice until a reconciliation.
-      dueAtCheckoutFils: priced.dueAtCheckoutFils,
+      dueAtCheckoutMinor: priced.dueAtCheckoutFils,
       dueAtCheckout: Money.fils(priced.dueAtCheckoutFils).toString(),
       requirementSource:
         requirement.kind === 'none' ? null : requirement.source,
-      quote: priced.lines,
+      quote: priced.lines.map(toWireQuoteLine),
       replayed: outcome.kind === 'replayed',
     };
 

@@ -1,3 +1,5 @@
+import { shout, type Shouted } from '@application/contract/wire';
+import type { PaymentStatus } from '../../generated/prisma/enums';
 import {
   ConflictException,
   ForbiddenException,
@@ -25,9 +27,9 @@ import type {
 export interface LifecycleView {
   readonly code: string;
   readonly bookingId: string;
-  readonly from: BookingStatus;
-  readonly to: BookingStatus;
-  readonly paymentStatus: string;
+  readonly from: Shouted<BookingStatus>;
+  readonly to: Shouted<BookingStatus>;
+  readonly paymentStatus: Shouted<PaymentStatus | 'unchanged'>;
   readonly refund?: string;
   readonly kept?: string;
   readonly lateCancel?: boolean;
@@ -183,9 +185,9 @@ export class LifecycleHandler {
     return {
       code: b.code,
       bookingId: b.bookingId,
-      from: b.from,
-      to: b.to,
-      paymentStatus: b.paymentStatus,
+      from: shout(b.from),
+      to: shout(b.to),
+      paymentStatus: shout(b.paymentStatus),
       ...(settlement === null
         ? {}
         : {

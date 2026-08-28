@@ -37,7 +37,14 @@ import { Param } from '@nestjs/common';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
 import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
-import type { GroupMode } from '@domain/availability/party';
+import {
+  WIRE_GROUP_MODES,
+  WIRE_ARRANGEMENTS,
+  modeFromWire,
+  arrangementFromWire,
+  type WireGroupMode,
+  type WireArrangement,
+} from '@application/contract/wire';
 
 export class ParticipantDto {
   @ApiProperty({ example: 'Dana' })
@@ -91,15 +98,23 @@ export class GroupHoldDto {
   @Max(DAY_END_MIN)
   targetMin!: number;
 
-  @ApiProperty({ enum: ['arrive_together', 'finish_together'] })
-  @IsIn(['arrive_together', 'finish_together'])
-  mode!: GroupMode;
+  @ApiProperty({
+    enum: WIRE_GROUP_MODES,
+    description:
+      'TOGETHER seats everyone at targetMin. FINISH staggers the starts ' +
+      'backwards so the party leaves as one.',
+  })
+  @IsIn(WIRE_GROUP_MODES)
+  mode!: WireGroupMode;
 
   @ApiProperty({
-    enum: ['organiser_pays_all', 'split_equally', 'each_pays_own'],
+    enum: WIRE_ARRANGEMENTS,
+    description:
+      'ORGANIZER charges the whole party to whoever booked it. SPLIT divides ' +
+      'it evenly, remainder first. OWN charges each participant their own.',
   })
-  @IsIn(['organiser_pays_all', 'split_equally', 'each_pays_own'])
-  arrangement!: 'organiser_pays_all' | 'split_equally' | 'each_pays_own';
+  @IsIn(WIRE_ARRANGEMENTS)
+  arrangement!: WireArrangement;
 
   @ApiProperty({ type: [ParticipantDto], minItems: 2, maxItems: 8 })
   @IsArray()
@@ -158,8 +173,8 @@ export class GroupsController {
       organiserId: actor.id ?? 'anonymous',
       tradingDay: dto.day,
       targetMin: dto.targetMin,
-      mode: dto.mode,
-      arrangement: dto.arrangement,
+      mode: modeFromWire(dto.mode),
+      arrangement: arrangementFromWire(dto.arrangement),
       participants: dto.participants.map((p) => ({
         label: p.label,
         serviceIds: p.serviceIds,

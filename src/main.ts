@@ -14,6 +14,15 @@ async function bootstrap(): Promise<void> {
   // every webhook is rejected as forged.
   const app = await NestFactory.create(AppModule, { rawBody: true });
 
+  // Every route is /v1/*, except the health probe.
+  //
+  // The version belongs in the path because it is the only place a client
+  // cannot forget to send it: a header default is one misconfigured proxy
+  // away from routing v2 traffic at v1 handlers. /health stays where it is
+  // because Docker Swarm's healthcheck already points at it, and a probe
+  // that 404s takes the service out of rotation on deploy.
+  app.setGlobalPrefix('v1', { exclude: ['health'] });
+
   // Validation lives at the edge, so the handler and the domain never see
   // a malformed value. transform:true is what makes @Transform run and turns
   // "840" into the number 840.

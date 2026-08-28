@@ -1,3 +1,4 @@
+import { toWireGate, type WireGate } from '@application/contract/wire';
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import {
   BOOKING_CONTEXT,
@@ -20,7 +21,6 @@ import type { ActorKind } from '@domain/booking/lifecycle';
 import {
   gateFor,
   stateAfter,
-  type Gate,
   type RosterChangeKind,
   type Resolution,
 } from '@domain/booking/roster-change';
@@ -49,7 +49,7 @@ export interface OpenRosterChangeCommand {
 
 export interface RosterChangeView {
   readonly changeId: string;
-  readonly gate: Gate;
+  readonly gate: WireGate;
   readonly affected: number;
   readonly autoRepaired: readonly {
     readonly code: string;
@@ -59,8 +59,8 @@ export interface RosterChangeView {
   readonly needsDecision: readonly {
     readonly code: string;
     readonly explanation: string;
-    readonly refundFils: number;
-    readonly goodwillFils: number;
+    readonly refundMinor: number;
+    readonly goodwillMinor: number;
   }[];
 }
 
@@ -101,8 +101,8 @@ export class RosterChangeHandler {
     const needsDecision: {
       code: string;
       explanation: string;
-      refundFils: number;
-      goodwillFils: number;
+      refundMinor: number;
+      goodwillMinor: number;
     }[] = [];
 
     for (const booking of affected) {
@@ -117,8 +117,8 @@ export class RosterChangeHandler {
         needsDecision.push({
           code: booking.code,
           explanation: outcome.explanation,
-          refundFils: outcome.refundFils,
-          goodwillFils: outcome.goodwillFils,
+          refundMinor: outcome.refundFils,
+          goodwillMinor: outcome.goodwillFils,
         });
       }
     }
@@ -132,7 +132,7 @@ export class RosterChangeHandler {
 
     return {
       changeId,
-      gate,
+      gate: toWireGate(gate),
       affected: affected.length,
       autoRepaired,
       needsDecision,
@@ -324,12 +324,12 @@ export class RosterChangeHandler {
 
   async view(changeId: string): Promise<{
     change: NonNullable<Awaited<ReturnType<RosterChangeRepository['detail']>>>;
-    gate: Gate;
+    gate: WireGate;
   }> {
     const change = await this.repo.detail(changeId);
     if (change === null) throw new NotFoundException('No such roster change');
     const gate = gateFor(await this.repo.worklist(changeId));
-    return { change, gate };
+    return { change, gate: toWireGate(gate) };
   }
 
   async resolve(
@@ -337,7 +337,7 @@ export class RosterChangeHandler {
     itemId: string,
     resolution: Resolution,
     actor: { kind: ActorKind; id: string | null },
-  ): Promise<Gate> {
+  ): Promise<WireGate> {
     const item = await this.repo.openItem(itemId);
     if (item === null || item.changeId !== changeId) {
       throw new NotFoundException('That item is not open, or does not exist');
@@ -361,7 +361,7 @@ export class RosterChangeHandler {
     if (!ok) {
       throw new NotFoundException('That item is not open, or does not exist');
     }
-    return gateFor(await this.repo.worklist(changeId));
+    return toWireGate(gateFor(await this.repo.worklist(changeId)));
   }
 
   /**
@@ -437,13 +437,13 @@ export class RosterChangeHandler {
    */
   async commit(
     changeId: string,
-  ): Promise<{ committed: boolean; gate: Gate; message: string }> {
+  ): Promise<{ committed: boolean; gate: WireGate; message: string }> {
     const gate = gateFor(await this.repo.worklist(changeId));
     const outcome = await this.repo.commit(changeId);
 
     return {
       committed: outcome.ok,
-      gate,
+      gate: toWireGate(gate),
       message: outcome.ok
         ? 'Committed. The roster edit may proceed.'
         : outcome.message,

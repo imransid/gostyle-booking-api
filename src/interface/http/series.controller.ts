@@ -112,7 +112,7 @@ export class CourseDto {
   @ApiProperty({ example: 180000, description: 'Net of VAT, in fils.' })
   @IsInt()
   @Min(0)
-  totalNetFils!: number;
+  totalNetMinor!: number;
 
   @ApiProperty({ example: 6 })
   @IsInt()
@@ -218,7 +218,13 @@ export class SeriesController {
       autoConfirmRule: dto.autoConfirmRule,
       serviceId: dto.serviceId,
       preferredStaffId: dto.preferredStaffId ?? null,
-      course: dto.course ?? null,
+      course:
+        dto.course === undefined
+          ? null
+          : {
+              totalNetFils: dto.course.totalNetMinor,
+              visits: dto.course.visits,
+            },
     });
   }
 

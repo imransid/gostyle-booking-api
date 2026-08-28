@@ -60,12 +60,14 @@ export class ConfirmBookingDto {
 
   @ApiPropertyOptional({
     example: 24000,
-    description: 'Fils captured. Omit when the requirement was none.',
+    description:
+      'Minor units captured (fils; 24000 is AED 240.00). Omit when the ' +
+      'requirement was none.',
   })
   @IsOptional()
   @IsInt()
   @Min(1)
-  amountFils?: number;
+  amountMinor?: number;
 
   @ApiPropertyOptional({
     enum: ['wallet', 'card', 'apple_pay', 'cash', 'link'],
@@ -122,10 +124,10 @@ export class BookingsController {
       tradingDay: dto.day,
       serviceIds: dto.services,
       channel: dto.channel,
-      ...(dto.amountFils !== undefined && dto.rail !== undefined
+      ...(dto.amountMinor !== undefined && dto.rail !== undefined
         ? {
             payment: {
-              amountFils: dto.amountFils,
+              amountFils: dto.amountMinor,
               rail: dto.rail,
               ...(dto.gatewayRef !== undefined
                 ? { gatewayRef: dto.gatewayRef }

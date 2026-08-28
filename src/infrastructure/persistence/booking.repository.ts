@@ -1,3 +1,7 @@
+import type {
+  BookingStatus,
+  PaymentStatus,
+} from '../../generated/prisma/enums';
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
 import { isExclusionViolation } from './pg-errors';
@@ -58,8 +62,14 @@ export interface ConfirmBookingInput {
 export interface ConfirmedBooking {
   readonly bookingId: string;
   readonly code: string;
-  readonly status: string;
-  readonly paymentStatus: string;
+  /**
+   * The enum, not a string. The contract layer shouts these into
+   * SCREAMING_SNAKE for the wire and cannot do that safely from `string`:
+   * `Uppercase<string>` is just `string` again, and the compiler would stop
+   * checking that a real status came back.
+   */
+  readonly status: BookingStatus;
+  readonly paymentStatus: PaymentStatus;
   readonly startMin: number;
   readonly durationMin: number;
   readonly staffId: string;

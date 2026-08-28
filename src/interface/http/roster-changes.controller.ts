@@ -22,10 +22,10 @@ import {
   type RosterChangeView,
 } from '@application/commands/roster-change.handler';
 import type {
-  Gate,
   Resolution,
   RosterChangeKind,
 } from '@domain/booking/roster-change';
+import type { WireGate } from '@application/contract/wire';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
 
@@ -138,7 +138,7 @@ export class RosterChangesController {
     @Param('itemId', new ParseUUIDPipe()) itemId: string,
     @Body() dto: ResolveItemDto,
     @CurrentActor() actor: Actor,
-  ): Promise<Gate> {
+  ): Promise<WireGate> {
     return this.handler.resolve(id, itemId, dto.resolution, {
       kind: actor.kind,
       id: actor.id,
@@ -156,7 +156,7 @@ export class RosterChangesController {
   @ApiConflictResponse({ description: 'The worklist is not clear.' })
   async commit(@Param('id', new ParseUUIDPipe()) id: string): Promise<{
     committed: boolean;
-    gate: Gate;
+    gate: WireGate;
     message: string;
   }> {
     return this.handler.commit(id);

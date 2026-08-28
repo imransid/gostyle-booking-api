@@ -1,3 +1,4 @@
+import type { GroupStatus } from '@domain/booking/group-status';
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
 import { toUuid, branchInstant } from './hold.repository';
@@ -44,7 +45,7 @@ export type GroupConfirmOutcome =
   | {
       readonly kind: 'confirmed';
       readonly groupId: string;
-      readonly status: string;
+      readonly status: GroupStatus;
       readonly bookings: readonly {
         readonly participantId: string;
         readonly label: string;

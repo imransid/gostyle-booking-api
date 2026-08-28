@@ -1,3 +1,4 @@
+import type { PaymentStatus } from '../../generated/prisma/enums';
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
 import { toUuid } from './hold.repository';
@@ -78,7 +79,13 @@ export interface TransitionedBooking {
   readonly code: string;
   readonly from: BookingStatus;
   readonly to: BookingStatus;
-  readonly paymentStatus: string;
+  /**
+   * 'unchanged' is not a PaymentStatus and is not meant to be: it says the
+   * transition moved the booking without touching the money, which is a
+   * different fact from any of the eight states and the one the desk needs
+   * when it asks "was anything refunded?".
+   */
+  readonly paymentStatus: PaymentStatus | 'unchanged';
 }
 
 export type TransitionOutcome =

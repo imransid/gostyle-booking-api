@@ -1,3 +1,4 @@
+import { modeToWire, type WireGroupMode } from '@application/contract/wire';
 import {
   ConflictException,
   Inject,
@@ -37,7 +38,7 @@ export interface GroupHoldView {
   readonly holdId: string;
   readonly expiresAt: string;
   readonly expiresInSeconds: number;
-  readonly mode: GroupMode;
+  readonly mode: WireGroupMode;
   readonly lanes: readonly {
     readonly label: string;
     readonly staffId: string;
@@ -156,7 +157,7 @@ export class GroupHoldHandler {
       expiresInSeconds: Math.round(
         (outcome.expiresAt.getTime() - Date.now()) / 1000,
       ),
-      mode: cmd.mode,
+      mode: modeToWire(cmd.mode),
       lanes: outcome.lanes.map((l) => ({
         label: byId.get(l.participantId)!.participant.label,
         staffId: l.staffId,
