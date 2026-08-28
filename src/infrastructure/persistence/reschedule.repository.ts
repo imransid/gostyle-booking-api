@@ -159,6 +159,22 @@ export class RescheduleRepository {
         data: { holdId: null, bookingItemId: firstItem.id },
       });
 
+      // 5b. WHO IS DOING THE WORK MOVED TOO.
+      //
+      // The reservation and booking_item.staff_id both record the
+      // professional, and until this line only the reservation was updated.
+      // A move that kept the same person hid it perfectly; the first move
+      // that landed on somebody ELSE left the diary saying anya and the
+      // booking item saying maya, with nothing to say which was right.
+      //
+      // Found when the disruption ladder reassigned a booking away from a
+      // professional who had called in sick, which is the one case where a
+      // reschedule ALWAYS changes the person.
+      await tx.bookingItem.update({
+        where: { id: firstItem.id },
+        data: { staffId: slot.staff_id },
+      });
+
       // 6. The booking itself.
       const newStart = branchInstant(input.tradingDay, slot.start_minute);
       const newEnd = new Date(

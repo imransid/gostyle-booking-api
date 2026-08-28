@@ -662,3 +662,87 @@ model SeriesOccurrence {
   @@index([seriesId, plannedDay], map: "occurrence_series_day_idx")
   @@map("series_occurrence")
 }
+
+// ============================================================ roster changes
+// A proposed roster edit, the bookings it disturbs, and the gate that stops
+// it committing while any of them is unresolved.
+
+enum RosterChangeKind {
+  shift_conflict
+  closure_sweep
+  chair_out_of_service
+
+  @@map("roster_change_kind")
+}
+
+enum WorklistItemState {
+  open
+  auto_repaired
+  resolved
+  overridden
+  cancelled
+
+  @@map("worklist_item_state")
+}
+
+model RosterChange {
+  id String @id @default(uuid()) @db.Uuid
+
+  branchId   String   @map("branch_id") @db.Uuid
+  tradingDay DateTime @map("trading_day") @db.Date
+
+  kind RosterChangeKind
+
+  /// The professional going off, for a shift conflict.
+  staffId String? @map("staff_id") @db.Uuid
+  /// The chair type going out of service.
+  resourceType String? @map("resource_type")
+
+  reason String
+
+  /// When the roster service told us it had committed.
+  ///
+  /// The GATE is not stored. "May this commit?" is computed from the items
+  /// that exist, because a stored boolean and a set of item states are two
+  /// facts that can disagree. What is stored is the fact that a commit
+  /// happened, which nothing else can derive.
+  ///
+  /// A trigger refuses to set this while any item is still open. That is the
+  /// commit gate, and it is a rule in the database rather than a promise the
+  /// caller makes.
+  committedAt DateTime? @map("committed_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  items RosterChangeItem[]
+
+  @@index([branchId, tradingDay], map: "roster_change_day_idx")
+  @@map("roster_change")
+}
+
+model RosterChangeItem {
+  id       String       @id @default(uuid()) @db.Uuid
+  changeId String       @map("change_id") @db.Uuid
+  change   RosterChange @relation(fields: [changeId], references: [id], onDelete: Cascade)
+
+  bookingId   String @map("booking_id") @db.Uuid
+  bookingCode String @map("booking_code")
+
+  state WorklistItemState @default(open)
+
+  /// Which rung of the ladder settled it, where one did.
+  rung String?
+
+  /// The prepared salon cancellation: refund, goodwill and waitlist window.
+  /// Present only while a human has yet to accept it.
+  proposal Json? @db.JsonB
+
+  resolvedAt DateTime? @map("resolved_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([changeId, bookingId], map: "worklist_booking_uniq")
+  @@index([changeId], map: "worklist_change_idx")
+  @@map("roster_change_item")
+}

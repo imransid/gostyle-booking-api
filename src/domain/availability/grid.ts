@@ -66,3 +66,31 @@ export function formatMinute(minuteOfDay: number): string {
   const m = minuteOfDay % 60;
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
+
+// ---------------------------------------------------------------- parts of day
+
+/**
+ * The trading day in three equal blocks.
+ *
+ * "The same part of the day" is rung three of the disruption ladder, and the
+ * documentation never defines it. Three four-hour blocks fall straight out of
+ * DAY_START_MIN and DAY_END_MIN rather than inventing new boundaries, and they
+ * are the version a customer can be told without explanation: a moved booking
+ * is still their morning.
+ *
+ * ONE definition, here, because a second one in the ladder would drift.
+ */
+export type PartOfDay = 'morning' | 'afternoon' | 'evening';
+
+/** (1320 - 600) / 3 = 240. Four hours each. */
+export const PART_OF_DAY_MIN = (DAY_END_MIN - DAY_START_MIN) / 3;
+
+export function partOfDay(minuteOfDay: number): PartOfDay {
+  if (minuteOfDay < DAY_START_MIN + PART_OF_DAY_MIN) return 'morning';
+  if (minuteOfDay < DAY_START_MIN + 2 * PART_OF_DAY_MIN) return 'afternoon';
+  return 'evening';
+}
+
+export function samePartOfDay(a: number, b: number): boolean {
+  return partOfDay(a) === partOfDay(b);
+}

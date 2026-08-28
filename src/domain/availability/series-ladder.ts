@@ -15,14 +15,9 @@
  */
 
 import { OFFER_SPACING_MIN } from './grid';
+import type { RepairCandidate } from './repair';
 
-/** A start the engine has already proved feasible. */
-export interface RepairCandidate {
-  readonly startMin: number;
-  readonly staffId: string;
-  /** Distance is measured against the occurrence's original minute. */
-  readonly durationMin: number;
-}
+export type { RepairCandidate };
 
 /** The shifts rung three will accept, in the order it tries them. */
 export const SHIFT_STEPS_MIN: readonly number[] = [15, 30];

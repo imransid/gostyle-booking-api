@@ -32,9 +32,12 @@ import {
 } from '@application/commands/series.handler';
 import { MaterialiseSeriesHandler } from '@application/commands/materialise-series.handler';
 import { SeriesMaterialiser } from '@infrastructure/scheduling/series-materialiser.service';
+import { RosterChangesController } from '@interface/http/roster-changes.controller';
+import { RosterChangeHandler } from '@application/commands/roster-change.handler';
 
 @Module({
   controllers: [
+    RosterChangesController,
     SeriesController,
     GroupsController,
     WebhooksController,
@@ -46,6 +49,7 @@ import { SeriesMaterialiser } from '@infrastructure/scheduling/series-materialis
     LifecycleController,
   ],
   providers: [
+    RosterChangeHandler,
     CreateSeriesHandler,
     SeriesPanelHandler,
     SeriesLifecycleHandler,
