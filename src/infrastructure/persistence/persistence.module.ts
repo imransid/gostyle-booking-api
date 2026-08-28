@@ -8,6 +8,9 @@ import { WaitlistListener } from '../messaging/waitlist-listener';
 import { WaitlistSweeper } from '../scheduling/waitlist-sweeper.service';
 import { NoShowSweeper } from '../scheduling/no-show-sweeper.service';
 import { PaymentLinkSweeper } from '../scheduling/payment-link-sweeper.service';
+import { PAYMENT_GATEWAY } from '@application/ports/payment-gateway.port';
+import { SimulatedGateway } from '../payments/simulated-gateway';
+import { PaymentWebhookRepository } from './payment-webhook.repository';
 import { ReminderScheduler } from '../scheduling/reminder-scheduler.service';
 import { CUSTOMER_CONTEXT } from '@application/ports/customer-context.port';
 import { FixtureCustomerContext } from '../fixtures/fixture-customer-context';
@@ -28,6 +31,10 @@ import { HoldSweeper } from '../scheduling/hold-sweeper.service';
 @Global()
 @Module({
   providers: [
+    PaymentWebhookRepository,
+    SimulatedGateway,
+    // One line changes when a real provider is chosen.
+    { provide: PAYMENT_GATEWAY, useExisting: SimulatedGateway },
     PaymentLinkSweeper,
     NoShowSweeper,
     WaitlistRepository,
@@ -63,6 +70,9 @@ import { HoldSweeper } from '../scheduling/hold-sweeper.service';
     FixtureBookingContext,
   ],
   exports: [
+    PaymentWebhookRepository,
+    PAYMENT_GATEWAY,
+    SimulatedGateway,
     PaymentLinkSweeper,
     NoShowSweeper,
     WaitlistRepository,

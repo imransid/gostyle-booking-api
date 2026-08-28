@@ -5,7 +5,14 @@ import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  // rawBody keeps the exact bytes the client sent, alongside the parsed body.
+  //
+  // Payment webhooks are signed over those bytes. Parsing JSON and
+  // re-serialising it changes key order and whitespace, so a signature
+  // checked against the re-serialised body NEVER matches. It is the most
+  // common way this integration gets quietly broken, and it fails closed:
+  // every webhook is rejected as forged.
+  const app = await NestFactory.create(AppModule, { rawBody: true });
 
   // Validation lives at the edge, so the handler and the domain never see
   // a malformed value. transform:true is what makes @Transform run and turns

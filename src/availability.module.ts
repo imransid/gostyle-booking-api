@@ -18,10 +18,13 @@ import { LifecycleController } from '@interface/http/lifecycle.controller';
 import { RescheduleHandler } from '@application/commands/reschedule.handler';
 import { WaitlistHandler } from '@application/commands/waitlist.handler';
 import { WaitlistController } from '@interface/http/waitlist.controller';
+import { WebhooksController } from '@interface/http/webhooks.controller';
+import { PaymentWebhookHandler } from '@application/commands/payment-webhook.handler';
 import { LifecycleHandler } from '@application/commands/lifecycle.handler';
 
 @Module({
   controllers: [
+    WebhooksController,
     WaitlistController,
     AvailabilityController,
     HealthController,
@@ -30,6 +33,7 @@ import { LifecycleHandler } from '@application/commands/lifecycle.handler';
     LifecycleController,
   ],
   providers: [
+    PaymentWebhookHandler,
     WaitlistHandler,
     RescheduleHandler,
     ConfirmBookingHandler,
