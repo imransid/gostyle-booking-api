@@ -1,0 +1,153 @@
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Query,
+} from '@nestjs/common';
+import {
+  ApiCreatedResponse,
+  ApiNotFoundResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiProperty,
+  ApiPropertyOptional,
+  ApiTags,
+} from '@nestjs/swagger';
+import {
+  ArrayNotEmpty,
+  IsArray,
+  IsInt,
+  IsOptional,
+  IsString,
+  Matches,
+  Max,
+  Min,
+} from 'class-validator';
+import {
+  WalkInHandler,
+  type WalkInQueueView,
+} from '@application/commands/walk-in.handler';
+import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
+
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+export class JoinWalkInDto {
+  @ApiProperty()
+  @IsString()
+  branchId!: string;
+
+  @ApiProperty({ example: '2027-03-05' })
+  @Matches(DAY)
+  tradingDay!: string;
+
+  @ApiPropertyOptional({ description: 'A registered customer.' })
+  @IsOptional()
+  @IsString()
+  customerId?: string;
+
+  @ApiPropertyOptional({ description: 'Somebody who just walked in.' })
+  @IsOptional()
+  @IsString()
+  guestName?: string;
+
+  @ApiProperty({
+    example: ['colour-and-finish'],
+    description: 'Service or PACKAGE ids. Packages are expanded on the way in.',
+  })
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsString({ each: true })
+  serviceIds!: string[];
+
+  @ApiProperty({ example: 840, description: 'Minute of day they arrived.' })
+  @IsInt()
+  @Min(DAY_START_MIN)
+  @Max(DAY_END_MIN - 1)
+  joinedMin!: number;
+}
+
+export class SeatWalkInDto {
+  @ApiProperty({ example: 900 })
+  @IsInt()
+  @Min(DAY_START_MIN)
+  @Max(DAY_END_MIN - 1)
+  startMin!: number;
+
+  @ApiProperty({ example: 'maya' })
+  @IsString()
+  staffId!: string;
+}
+
+/**
+ * The walk-in queue.
+ *
+ * Seating returns a HOLD, not a booking. The desk confirms it through the
+ * ordinary POST /bookings, because a walk-in confirmed on its own path is a
+ * walk-in whose deposit rules and audit trail drift from everybody else's.
+ */
+@ApiTags('walk-ins')
+@Controller('walk-ins')
+export class WalkInsController {
+  constructor(private readonly handler: WalkInHandler) {}
+
+  @Post()
+  @ApiOperation({ summary: 'Add somebody to the queue' })
+  @ApiCreatedResponse({ description: 'Their place in the queue.' })
+  async join(@Body() dto: JoinWalkInDto): Promise<{
+    id: string;
+    position: number;
+    serviceIds: readonly string[];
+  }> {
+    return this.handler.join({
+      branchId: dto.branchId,
+      tradingDay: dto.tradingDay,
+      customerId: dto.customerId ?? null,
+      guestName: dto.guestName ?? null,
+      serviceIds: dto.serviceIds,
+      joinedMin: dto.joinedMin,
+    });
+  }
+
+  @Get()
+  @ApiOperation({
+    summary: 'The queue, with a live quote of the nearest options',
+    description:
+      'Each row shows who is waiting, what they want, how long they have ' +
+      'been there, and the nearest starts the engine can actually offer.',
+  })
+  @ApiOkResponse({ description: 'The queue in arrival order.' })
+  async view(
+    @Query('branchId') branchId: string,
+    @Query('tradingDay') tradingDay: string,
+    @Query('nowMin') nowMin: string,
+  ): Promise<WalkInQueueView> {
+    return this.handler.view(branchId, tradingDay, Number(nowMin));
+  }
+
+  @Post(':id/seat')
+  @ApiOperation({
+    summary: 'Seat a walk-in',
+    description:
+      'Places an ordinary hold on the chosen start. Confirm it through ' +
+      'POST /bookings exactly as any other booking.',
+  })
+  @ApiOkResponse({ description: 'The hold to confirm.' })
+  @ApiNotFoundResponse()
+  async seat(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: SeatWalkInDto,
+  ): Promise<unknown> {
+    return this.handler.seat(id, dto.startMin, dto.staffId);
+  }
+
+  @Post(':id/leave')
+  @ApiOperation({ summary: 'They gave up, or were sent to the waitlist' })
+  async leave(
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<{ left: boolean }> {
+    return this.handler.leave(id);
+  }
+}

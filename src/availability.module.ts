@@ -36,9 +36,12 @@ import { RosterChangesController } from '@interface/http/roster-changes.controll
 import { RosterChangeHandler } from '@application/commands/roster-change.handler';
 import { CompactionController } from '@interface/http/compaction.controller';
 import { CompactionHandler } from '@application/commands/compaction.handler';
+import { WalkInsController } from '@interface/http/walk-ins.controller';
+import { WalkInHandler } from '@application/commands/walk-in.handler';
 
 @Module({
   controllers: [
+    WalkInsController,
     CompactionController,
     RosterChangesController,
     SeriesController,
@@ -52,6 +55,7 @@ import { CompactionHandler } from '@application/commands/compaction.handler';
     LifecycleController,
   ],
   providers: [
+    WalkInHandler,
     CompactionHandler,
     RosterChangeHandler,
     CreateSeriesHandler,

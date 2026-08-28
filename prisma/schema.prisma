@@ -746,3 +746,56 @@ model RosterChangeItem {
   @@index([changeId], map: "worklist_change_idx")
   @@map("roster_change_item")
 }
+
+// ============================================================ walk-ins
+// People standing in the salon, in the order they arrived.
+
+enum WalkInStatus {
+  waiting
+  /// Converted into a booking through the ordinary confirm path.
+  seated
+  /// Gave up, or was sent to the waitlist instead.
+  left
+
+  @@map("walk_in_status")
+}
+
+model WalkInEntry {
+  id String @id @default(uuid()) @db.Uuid
+
+  branchId   String   @map("branch_id") @db.Uuid
+  tradingDay DateTime @map("trading_day") @db.Date
+
+  /// A registered customer, or null for somebody who just walked in.
+  customerId String? @map("customer_id") @db.Uuid
+  guestName  String? @map("guest_name")
+
+  /// What they want. Packages are expanded before they get here.
+  serviceIds  String[] @map("service_ids")
+  durationMin Int      @map("duration_min") @db.SmallInt
+
+  status WalkInStatus @default(waiting)
+
+  /// The booking they were seated into. The queue entry keeps pointing at it
+  /// so "who did we seat and when" survives the day.
+  bookingId String? @unique @map("booking_id") @db.Uuid
+
+  /// The hold the desk took while walking them to a chair.
+  ///
+  /// Seating produces a HOLD, not a booking: the desk confirms it through the
+  /// ordinary path a moment later. Remembering the hold is what lets the
+  /// confirmation find its way back here, so the queue empties itself instead
+  /// of relying on somebody pressing a second button.
+  holdId String? @map("hold_id") @db.Uuid
+
+  /// Minute of day they joined. THE QUEUE IS ORDERED BY THIS AND NOTHING
+  /// ELSE: a salon that reorders its waiting room by service value is one
+  /// where the person who has waited longest watches somebody else go first.
+  joinedMin Int      @map("joined_min") @db.SmallInt
+  joinedAt  DateTime @default(now()) @map("joined_at") @db.Timestamptz(6)
+
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@index([branchId, tradingDay], map: "walk_in_day_idx")
+  @@map("walk_in_entry")
+}

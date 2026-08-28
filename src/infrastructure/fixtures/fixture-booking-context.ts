@@ -1,3 +1,4 @@
+import type { ServicePackage } from '@domain/booking/package';
 import { Injectable } from '@nestjs/common';
 import { toUuid } from '../persistence/hold.repository';
 import type {
@@ -434,3 +435,37 @@ export class FixtureBookingContext implements BookingContextReader {
     return Promise.resolve([...SERVICES]);
   }
 }
+
+/**
+ * The packages the branch merchandises.
+ *
+ * A pricing construct only. Each expands into the services above, and the
+ * engine never learns a package was involved: the chain, skills, buffers,
+ * chair demand and processing bands all come from the parts.
+ *
+ * Prices are net of VAT and below the sum of the parts, which is the whole
+ * proposition. expandPackage refuses one that is not.
+ */
+export const PACKAGES: readonly ServicePackage[] = [
+  {
+    id: 'colour-and-finish',
+    name: 'Colour and finish',
+    serviceIds: ['full-colour', 'blow-dry'],
+    // Parts: 48,000 + 14,000 = 62,000. Saves AED 60.
+    priceFils: 56000,
+  },
+  {
+    id: 'bridal-morning',
+    name: 'Bridal morning',
+    serviceIds: ['balayage', 'blow-dry', 'luxury-facial'],
+    // Parts: 72,000 + 14,000 + 38,000 = 124,000. Saves AED 190.
+    priceFils: 105000,
+  },
+  {
+    id: 'hands-and-feet',
+    name: 'Hands and feet',
+    serviceIds: ['gel-manicure', 'mani-pedi'],
+    // Parts: 18,000 + 22,000 = 40,000. Saves AED 40.
+    priceFils: 36000,
+  },
+];

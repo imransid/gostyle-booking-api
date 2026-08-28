@@ -24,6 +24,9 @@ import {
 } from '@domain/availability/grid';
 import type { ChairOccupation } from '@domain/availability/capacity';
 import type { StaffBooking } from '@domain/availability/staff-mask';
+import { resolveSelection } from '@domain/booking/package';
+import { PACKAGES } from '@infrastructure/fixtures/fixture-booking-context';
+import { priceOf } from '@application/commands/confirm-booking.handler';
 import {
   fragmentationScore,
   rankAndSelect,
@@ -166,13 +169,18 @@ export class GetAvailabilityHandler {
   async execute(query: GetAvailabilityQuery): Promise<AvailabilityView> {
     const started = performance.now();
 
+    // Packages expand to real services before the engine sees anything, so
+    // availability for a package is availability for its parts. There is no
+    // package branch in the engine and there never should be.
+    const selection = resolveSelection(query.serviceIds, PACKAGES, priceOf);
+
     const services = await this.context.loadServices(
       query.branchId,
-      query.serviceIds,
+      selection.serviceIds,
     );
-    if (services.length !== query.serviceIds.length) {
+    if (services.length !== selection.serviceIds.length) {
       const known = new Set(services.map((s) => s.id));
-      const missing = query.serviceIds.filter((id) => !known.has(id));
+      const missing = selection.serviceIds.filter((id) => !known.has(id));
       throw new NotFoundException(`Unknown service: ${missing.join(', ')}`);
     }
 

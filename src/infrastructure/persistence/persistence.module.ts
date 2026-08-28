@@ -28,6 +28,9 @@ import { HoldSweeper } from '../scheduling/hold-sweeper.service';
 import { SeriesRepository } from './series.repository';
 import { RosterChangeRepository } from './roster-change.repository';
 import { CompactionRepository } from './compaction.repository';
+import { WalkInRepository } from './walk-in.repository';
+import { WalkInGapListener } from '../messaging/walk-in-gap-listener';
+import { WalkInSeatedListener } from '../messaging/walk-in-seated-listener';
 
 /**
  * Global on purpose. One connection pool per process, shared by every module
@@ -37,6 +40,7 @@ import { CompactionRepository } from './compaction.repository';
 @Global()
 @Module({
   providers: [
+    WalkInRepository,
     CompactionRepository,
     RosterChangeRepository,
     SeriesRepository,
@@ -76,9 +80,25 @@ import { CompactionRepository } from './compaction.repository';
         next: LoggingEventPublisher,
         waitlist: WaitlistRepository,
         prisma: PrismaService,
+        walkIns: WalkInRepository,
       ) =>
-        new GroupStatusListener(new WaitlistListener(next, waitlist), prisma),
-      inject: [LoggingEventPublisher, WaitlistRepository, PrismaService],
+        // Innermost last. A freeing event passes the group listener, then
+        // the walk-in nudge, then the waitlist offer, then reaches the real
+        // publisher. Walk-ins and the waitlist both hear about the same gap
+        // off the same event, which is what "together" means here.
+        new GroupStatusListener(
+          new WalkInSeatedListener(
+            new WalkInGapListener(new WaitlistListener(next, waitlist), prisma),
+            walkIns,
+          ),
+          prisma,
+        ),
+      inject: [
+        LoggingEventPublisher,
+        WaitlistRepository,
+        PrismaService,
+        WalkInRepository,
+      ],
     },
     LifecycleRepository,
     BookingRepository,
@@ -88,6 +108,7 @@ import { CompactionRepository } from './compaction.repository';
     FixtureBookingContext,
   ],
   exports: [
+    WalkInRepository,
     CompactionRepository,
     RosterChangeRepository,
     SeriesRepository,

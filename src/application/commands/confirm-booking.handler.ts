@@ -33,6 +33,8 @@ import { PrismaService } from '@infrastructure/persistence/prisma.service';
 import { branchInstant } from '@infrastructure/persistence/hold.repository';
 import { Money } from '@domain/shared/money';
 import { formatMinute } from '@domain/availability/grid';
+import { resolveSelection } from '@domain/booking/package';
+import { PACKAGES } from '@infrastructure/fixtures/fixture-booking-context';
 
 export interface ConfirmBookingCommand {
   readonly holdId: string;
@@ -98,11 +100,17 @@ export class ConfirmBookingHandler {
       if (replay !== null) return replay;
     }
 
+    // A PACKAGE STOPS EXISTING HERE. It expands into the services the branch
+    // already sells, and everything below this line sees a plain selection:
+    // same chain, same skills, same buffers, same chair demand. What survives
+    // is one line in the quote.
+    const selection = resolveSelection(cmd.serviceIds, PACKAGES, priceOf);
+
     const services = await this.context.loadServices(
       cmd.branchId,
-      cmd.serviceIds,
+      selection.serviceIds,
     );
-    if (services.length !== cmd.serviceIds.length) {
+    if (services.length !== selection.serviceIds.length) {
       throw new NotFoundException('One or more services do not exist');
     }
 
@@ -208,7 +216,9 @@ export class ConfirmBookingHandler {
     const priced = quote({
       serviceFils: total.fils,
       addOnFils: 0,
-      bundleDiscountFils: 0,
+      // The sum of the package parts minus the package price, which is what
+      // the customer is actually being given.
+      bundleDiscountFils: selection.bundleDiscountFils,
       tier: customer.tier,
       requirementFils: deposit.fils,
     });

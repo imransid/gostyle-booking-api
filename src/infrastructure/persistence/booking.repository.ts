@@ -244,6 +244,10 @@ export class BookingRepository {
             eventType: 'booking.confirmed',
             payload: {
               code: booking.code,
+              // Which hold became this booking. The walk-in queue uses it to
+              // find its own entry and clear it, so the desk does not have to
+              // tell us twice that somebody sat down.
+              holdId: input.holdId,
               startMinute: staffRes.startMinute,
               endMinute,
               depositFils: input.depositFils,
