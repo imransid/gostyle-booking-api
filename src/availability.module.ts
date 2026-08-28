@@ -24,9 +24,18 @@ import { GroupHoldHandler } from '@application/commands/group-hold.handler';
 import { GroupConfirmHandler } from '@application/commands/group-confirm.handler';
 import { PaymentWebhookHandler } from '@application/commands/payment-webhook.handler';
 import { LifecycleHandler } from '@application/commands/lifecycle.handler';
+import { SeriesController } from '@interface/http/series.controller';
+import {
+  CreateSeriesHandler,
+  SeriesLifecycleHandler,
+  SeriesPanelHandler,
+} from '@application/commands/series.handler';
+import { MaterialiseSeriesHandler } from '@application/commands/materialise-series.handler';
+import { SeriesMaterialiser } from '@infrastructure/scheduling/series-materialiser.service';
 
 @Module({
   controllers: [
+    SeriesController,
     GroupsController,
     WebhooksController,
     WaitlistController,
@@ -37,6 +46,11 @@ import { LifecycleHandler } from '@application/commands/lifecycle.handler';
     LifecycleController,
   ],
   providers: [
+    CreateSeriesHandler,
+    SeriesPanelHandler,
+    SeriesLifecycleHandler,
+    MaterialiseSeriesHandler,
+    SeriesMaterialiser,
     GroupConfirmHandler,
     GroupHoldHandler,
     PaymentWebhookHandler,

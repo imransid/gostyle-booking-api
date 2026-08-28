@@ -48,6 +48,14 @@ describe('this occurrence only', () => {
     const got = planEdit('this_occurrence', SERIES, 'o4');
     expect(got.untouched).toEqual(['o1', 'o2', 'o3', 'o5', 'o6']);
   });
+
+  it('does not call the out-of-scope ones started or closed', () => {
+    // They were never candidates. Reporting them as ineligible reads as a
+    // warning about the edit when it is only arithmetic about the scope.
+    const got = planEdit('this_occurrence', SERIES, 'o4');
+    expect(got.ineligible).toEqual([]);
+    expect(got.explanation).not.toMatch(/left alone/);
+  });
 });
 
 describe('this and all future', () => {
@@ -84,6 +92,12 @@ describe('the entire series', () => {
     const got = planEdit('entire_series', SERIES, 'o4');
     expect(got.untouched).toEqual(['o1', 'o2']);
   });
+
+  it('reports the finished ones as ineligible, and says so', () => {
+    const got = planEdit('entire_series', SERIES, 'o4');
+    expect(got.ineligible).toEqual(['o1', 'o2']);
+    expect(got.explanation).toMatch(/2 left alone/);
+  });
 });
 
 describe('occurrences no scope may touch', () => {
@@ -92,6 +106,7 @@ describe('occurrences no scope may touch', () => {
     const got = planEdit('entire_series', live, 'x');
     expect(got.affected).toEqual([]);
     expect(got.untouched).toEqual(['x']);
+    expect(got.ineligible).toEqual(['x']);
   });
 
   it('skips one already cancelled', () => {
@@ -115,7 +130,7 @@ describe('pausing or ending the series', () => {
   it('holds back the one inside 48 hours for the desk to confirm', () => {
     const got = planPauseOrEnd(SERIES);
     expect(got.needsExplicitConfirmation).toEqual(['o3']);
-    expect(got.explanation).toMatch(/48-hour window/);
+    expect(got.explanation).toMatch(/48-hour window needs the desk/);
   });
 
   it('leaves started and closed occurrences alone', () => {
@@ -157,5 +172,6 @@ describe('pausing or ending the series', () => {
   it('takes a custom protection window', () => {
     const got = planPauseOrEnd(SERIES, 400);
     expect(got.needsExplicitConfirmation).toEqual(['o3', 'o4', 'o5']);
+    expect(got.explanation).toMatch(/window need the desk/);
   });
 });

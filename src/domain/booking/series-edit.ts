@@ -67,8 +67,17 @@ export interface EditPlan {
   readonly affected: readonly string[];
   /** Occurrences that leave the series and stand alone. */
   readonly detached: readonly string[];
-  /** Untouched, and why. */
+  /** Not part of this edit: out of scope, or started, or closed. */
   readonly untouched: readonly string[];
+  /**
+   * IN scope, but not editable: the visit has started or is already closed.
+   *
+   * Kept apart from `untouched` because the two mean different things to the
+   * person reading the confirmation. "Twenty left alone" is reassuring when
+   * they chose one occurrence and alarming when they chose the whole series,
+   * and lumping them together said the second thing in both cases.
+   */
+  readonly ineligible: readonly string[];
   readonly explanation: string;
 }
 
@@ -113,6 +122,7 @@ export function planEdit(
 
   const affected = candidates.filter(editable);
   const affectedIds = new Set(affected.map((o) => o.id));
+  const ineligible = candidates.filter((o) => !editable(o)).map((o) => o.id);
   const untouched = occurrences
     .filter((o) => !affectedIds.has(o.id))
     .map((o) => o.id);
@@ -124,7 +134,8 @@ export function planEdit(
     // the series itself, so its occurrences stay members of it.
     detached: scope === 'this_occurrence' ? affected.map((o) => o.id) : [],
     untouched,
-    explanation: explainEdit(scope, affected.length, untouched.length),
+    ineligible,
+    explanation: explainEdit(scope, affected.length, ineligible.length),
   };
 }
 
@@ -178,19 +189,23 @@ export function planPauseOrEnd(
       confirm.length === 0
         ? `${cancel.length} future ${cancel.length === 1 ? 'occurrence' : 'occurrences'} cancelled.`
         : `${cancel.length} cancelled. ${confirm.length} inside the ` +
-          `${protectionHours}-hour window need the desk to confirm each one.`,
+          `${protectionHours}-hour window ${confirm.length === 1 ? 'needs' : 'need'} ` +
+          'the desk to confirm each one.',
   };
 }
 
 function explainEdit(
   scope: EditScope,
   affected: number,
-  untouched: number,
+  ineligible: number,
 ): string {
+  // Only the IN-SCOPE ones that cannot be touched are worth mentioning.
+  // Occurrences outside the chosen scope were never candidates, and saying
+  // "20 left alone" about them reads as a warning when it is just arithmetic.
   const tail =
-    untouched === 0
+    ineligible === 0
       ? ''
-      : ` ${untouched} left alone: already started, or already closed.`;
+      : ` ${ineligible} left alone: already started, or already closed.`;
 
   switch (scope) {
     case 'this_occurrence':

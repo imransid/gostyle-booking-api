@@ -1,0 +1,356 @@
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Query,
+  UnprocessableEntityException,
+} from '@nestjs/common';
+import {
+  ApiCreatedResponse,
+  ApiNotFoundResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiProperty,
+  ApiPropertyOptional,
+  ApiTags,
+  ApiUnprocessableEntityResponse,
+} from '@nestjs/swagger';
+import {
+  IsArray,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  Matches,
+  Max,
+  Min,
+  ValidateNested,
+} from 'class-validator';
+import { Type } from 'class-transformer';
+import {
+  CreateSeriesHandler,
+  SeriesLifecycleHandler,
+  SeriesPanelHandler,
+  type LifecycleResult,
+  type SeriesPanelView,
+  type SeriesView,
+} from '@application/commands/series.handler';
+import {
+  MaterialiseSeriesHandler,
+  type MaterialiseResult,
+} from '@application/commands/materialise-series.handler';
+import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
+import type { EditScope } from '@domain/booking/series-edit';
+import type {
+  EndCondition,
+  Pattern,
+  Weekday,
+} from '@domain/booking/recurrence';
+
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+export class PatternDto {
+  @ApiProperty({
+    enum: ['weekly', 'every_n_weeks', 'monthly_on_date', 'custom'],
+  })
+  @IsIn(['weekly', 'every_n_weeks', 'monthly_on_date', 'custom'])
+  kind!: 'weekly' | 'every_n_weeks' | 'monthly_on_date' | 'custom';
+
+  @ApiPropertyOptional({
+    example: [2, 4],
+    description: '0 is Sunday, 6 is Saturday.',
+  })
+  @IsOptional()
+  @IsArray()
+  @IsInt({ each: true })
+  @Min(0, { each: true })
+  @Max(6, { each: true })
+  weekdays?: number[];
+
+  @ApiPropertyOptional({ example: 6 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(52)
+  weeks?: number;
+
+  @ApiPropertyOptional({ example: 15 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(31)
+  dayOfMonth?: number;
+
+  @ApiPropertyOptional({ example: ['2026-09-04', '2026-09-20'] })
+  @IsOptional()
+  @IsArray()
+  @Matches(DAY, { each: true })
+  dates?: string[];
+}
+
+export class EndDto {
+  @ApiProperty({ enum: ['never', 'on_date', 'after_count'] })
+  @IsIn(['never', 'on_date', 'after_count'])
+  kind!: 'never' | 'on_date' | 'after_count';
+
+  @ApiPropertyOptional({ example: '2027-03-01' })
+  @IsOptional()
+  @Matches(DAY)
+  date?: string;
+
+  @ApiPropertyOptional({ example: 12 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  count?: number;
+}
+
+export class CourseDto {
+  @ApiProperty({ example: 180000, description: 'Net of VAT, in fils.' })
+  @IsInt()
+  @Min(0)
+  totalNetFils!: number;
+
+  @ApiProperty({ example: 6 })
+  @IsInt()
+  @Min(1)
+  visits!: number;
+}
+
+export class CreateSeriesDto {
+  @ApiProperty()
+  @IsString()
+  branchId!: string;
+
+  @ApiProperty()
+  @IsString()
+  customerId!: string;
+
+  @ApiProperty({ example: '2026-09-01' })
+  @Matches(DAY)
+  anchorDay!: string;
+
+  @ApiProperty({ example: 1080, description: '1080 is 18:00.' })
+  @IsInt()
+  @Min(DAY_START_MIN)
+  @Max(DAY_END_MIN - 1)
+  startMin!: number;
+
+  @ApiProperty({ type: PatternDto })
+  @ValidateNested()
+  @Type(() => PatternDto)
+  pattern!: PatternDto;
+
+  @ApiProperty({ type: EndDto })
+  @ValidateNested()
+  @Type(() => EndDto)
+  end!: EndDto;
+
+  @ApiProperty({
+    enum: ['auto_confirm_on_schedule', 'ask_each_time', 'vip_standing'],
+  })
+  @IsIn(['auto_confirm_on_schedule', 'ask_each_time', 'vip_standing'])
+  autoConfirmRule!:
+    'auto_confirm_on_schedule' | 'ask_each_time' | 'vip_standing';
+
+  @ApiProperty({ example: 'blow-dry' })
+  @IsString()
+  serviceId!: string;
+
+  @ApiPropertyOptional({ example: 'maya' })
+  @IsOptional()
+  @IsString()
+  preferredStaffId?: string;
+
+  @ApiPropertyOptional({ type: CourseDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => CourseDto)
+  course?: CourseDto;
+}
+
+export class MaterialiseDto {
+  @ApiProperty({ example: '2026-09-01', description: "The branch's today." })
+  @Matches(DAY)
+  today!: string;
+}
+
+/**
+ * The series surface.
+ *
+ * Everything here is a thin translation. The decisions live in the domain and
+ * the handlers; a controller that started deciding would be a second place to
+ * look when the answer is wrong.
+ */
+@ApiTags('series')
+@Controller('series')
+export class SeriesController {
+  constructor(
+    private readonly create: CreateSeriesHandler,
+    private readonly panel: SeriesPanelHandler,
+    private readonly lifecycle: SeriesLifecycleHandler,
+    private readonly materialiser: MaterialiseSeriesHandler,
+  ) {}
+
+  @Post()
+  @ApiOperation({
+    summary: 'Create a recurring series',
+    description:
+      'Expands the pattern to the 70-day horizon and stores the wanted ' +
+      'occurrences. Nothing is booked until materialisation runs.',
+  })
+  @ApiCreatedResponse({ description: 'The series and its first occurrences.' })
+  @ApiUnprocessableEntityResponse({
+    description:
+      'The pattern produces no visits, or the tier cannot hold a standing reservation.',
+  })
+  async createSeries(@Body() dto: CreateSeriesDto): Promise<SeriesView> {
+    return this.create.execute({
+      branchId: dto.branchId,
+      customerId: dto.customerId,
+      anchorDay: dto.anchorDay,
+      startMin: dto.startMin,
+      pattern: toPattern(dto.pattern),
+      end: toEnd(dto.end),
+      autoConfirmRule: dto.autoConfirmRule,
+      serviceId: dto.serviceId,
+      preferredStaffId: dto.preferredStaffId ?? null,
+      course: dto.course ?? null,
+    });
+  }
+
+  @Get(':id')
+  @ApiOperation({
+    summary: 'The series panel: timeline, health and course meter',
+  })
+  @ApiOkResponse({ description: 'The occurrence timeline with health.' })
+  @ApiNotFoundResponse()
+  async getPanel(
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<SeriesPanelView> {
+    return this.panel.execute(id);
+  }
+
+  @Get(':id/occurrences')
+  @ApiOperation({ summary: 'The occurrence timeline alone' })
+  async getOccurrences(
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<SeriesPanelView['occurrences']> {
+    return (await this.panel.execute(id)).occurrences;
+  }
+
+  @Post(':id/materialise')
+  @ApiOperation({
+    summary: 'Run the occurrences through the availability engine',
+    description:
+      'Tops the calendar up to the horizon, then seats every planned ' +
+      'occurrence inside the 90-day booking horizon. The repair ladder runs ' +
+      'on anything that no longer fits.',
+  })
+  async materialise(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: MaterialiseDto,
+  ): Promise<MaterialiseResult> {
+    return this.materialiser.run(id, dto.today);
+  }
+
+  @Post(':id/pause')
+  @ApiOperation({
+    summary: 'Pause the series',
+    description:
+      'Cancels unstarted future occurrences beyond the 48-hour protection ' +
+      'window. Anything inside it is returned for the desk to confirm one at a time.',
+  })
+  async pause(
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<LifecycleResult> {
+    return this.lifecycle.pauseOrEnd(id, 'paused');
+  }
+
+  @Post(':id/resume')
+  @ApiOperation({ summary: 'Resume a paused series' })
+  async resume(
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<LifecycleResult> {
+    return this.lifecycle.resume(id);
+  }
+
+  @Post(':id/end')
+  @ApiOperation({ summary: 'End the series for good' })
+  async end(
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<LifecycleResult> {
+    return this.lifecycle.pauseOrEnd(id, 'ended');
+  }
+
+  @Post(':id/occurrences/:occurrenceId/skip')
+  @ApiOperation({
+    summary: 'Skip one occurrence',
+    description: 'The slot is released and the series continues.',
+  })
+  async skip(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Param('occurrenceId', new ParseUUIDPipe()) occurrenceId: string,
+  ): Promise<LifecycleResult> {
+    return this.lifecycle.skip(id, occurrenceId);
+  }
+
+  @Get(':id/occurrences/:occurrenceId/edit-scope')
+  @ApiOperation({
+    summary: 'What would an edit at this scope touch?',
+    description:
+      'Editing asks for scope every time. This is the preview the desk sees ' +
+      'before choosing, so nobody rewrites a year of visits by accident.',
+  })
+  async previewEdit(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Param('occurrenceId', new ParseUUIDPipe()) occurrenceId: string,
+    @Query('scope') scope: string,
+  ): Promise<{
+    affected: readonly string[];
+    detached: readonly string[];
+    untouched: readonly string[];
+    ineligible: readonly string[];
+    explanation: string;
+  }> {
+    const legal: EditScope[] = [
+      'this_occurrence',
+      'this_and_future',
+      'entire_series',
+    ];
+    const chosen = legal.find((s) => s === scope);
+    if (chosen === undefined) {
+      throw new UnprocessableEntityException(
+        `scope must be one of: ${legal.join(', ')}`,
+      );
+    }
+    return this.lifecycle.previewEdit(id, occurrenceId, chosen);
+  }
+}
+
+function toPattern(dto: PatternDto): Pattern {
+  switch (dto.kind) {
+    case 'weekly':
+      return { kind: 'weekly', weekdays: (dto.weekdays ?? []) as Weekday[] };
+    case 'every_n_weeks':
+      return { kind: 'every_n_weeks', weeks: dto.weeks ?? 1 };
+    case 'monthly_on_date':
+      return { kind: 'monthly_on_date', dayOfMonth: dto.dayOfMonth ?? 1 };
+    case 'custom':
+      return { kind: 'custom', dates: dto.dates ?? [] };
+  }
+}
+
+function toEnd(dto: EndDto): EndCondition {
+  switch (dto.kind) {
+    case 'never':
+      return { kind: 'never' };
+    case 'on_date':
+      return { kind: 'on_date', date: dto.date ?? '' };
+    case 'after_count':
+      return { kind: 'after_count', count: dto.count ?? 1 };
+  }
+}

@@ -73,7 +73,15 @@ export type ConfirmOutcome =
   /** Somebody else got the slot between the hold and the confirm. */
   | { readonly kind: 'slot_taken' };
 
-function isExclusionViolation(e: unknown): boolean {
+/**
+ * Postgres 23P01, however Prisma happens to have wrapped it.
+ *
+ * Exported because every path that writes a reservation needs the same
+ * answer, and a second copy that only checked the top-level `code` would
+ * miss the driver-adapter shape and turn a lost race into a 500. That is
+ * exactly what it did before this was shared.
+ */
+export function isExclusionViolation(e: unknown): boolean {
   if (typeof e !== 'object' || e === null) return false;
   if ((e as { code?: unknown }).code === '23P01') return true;
   return (
