@@ -507,3 +507,158 @@ model GroupParticipant {
   @@index([bookingId], map: "participant_booking_idx")
   @@map("group_participant")
 }
+
+// ============================================================ series
+// A recurring booking DEFINITION and the occurrences it wants.
+//
+// The definition is the series. Each generated visit is an occurrence, which
+// is an ordinary booking with a link back. Everything that works on a booking
+// works on an occurrence unchanged.
+
+enum RecurrencePattern {
+  weekly
+  every_n_weeks
+  monthly_on_date
+  custom
+
+  @@map("recurrence_pattern")
+}
+
+enum SeriesEndKind {
+  never
+  on_date
+  after_count
+
+  @@map("series_end_kind")
+}
+
+enum AutoConfirmRule {
+  auto_confirm_on_schedule
+  ask_each_time
+  vip_standing
+
+  @@map("auto_confirm_rule")
+}
+
+enum SeriesStatus {
+  active
+  paused
+  ended
+  completed
+
+  @@map("series_status")
+}
+
+enum OccurrenceState {
+  /// Wanted, not yet run through the availability engine.
+  planned
+  /// A booking exists.
+  materialised
+  /// The engine could not seat it. Alternatives are attached.
+  needs_attention
+  /// Deliberately skipped; the series continues.
+  skipped
+  /// Edited with "this occurrence only". It no longer follows the series.
+  detached
+
+  @@map("occurrence_state")
+}
+
+model BookingSeries {
+  id String @id @default(uuid()) @db.Uuid
+
+  branchId   String @map("branch_id") @db.Uuid
+  customerId String @map("customer_id") @db.Uuid
+
+  /// The first day the series may land on. Also fixes the weekday for
+  /// every_n_weeks: the weekday is NOT a second field, because two places to
+  /// say which day it is means one of them eventually disagrees.
+  anchorDay DateTime @map("anchor_day") @db.Date
+  startMin  Int      @map("start_min") @db.SmallInt
+
+  pattern RecurrencePattern
+
+  /// Per-pattern payload. Exactly one shape is populated, and which one is a
+  /// CHECK constraint in the migration rather than a convention.
+  weekdays      Int[]      @default([]) @db.SmallInt
+  intervalWeeks Int?       @map("interval_weeks") @db.SmallInt
+  dayOfMonth    Int?       @map("day_of_month") @db.SmallInt
+  customDates   DateTime[] @default([]) @map("custom_dates") @db.Date
+
+  endKind  SeriesEndKind @default(never) @map("end_kind")
+  endDate  DateTime?     @map("end_date") @db.Date
+  endCount Int?          @map("end_count") @db.SmallInt
+
+  autoConfirmRule AutoConfirmRule @map("auto_confirm_rule")
+  status          SeriesStatus    @default(active)
+
+  /// What the series books. Resolved per occurrence against the live
+  /// catalogue; this is the definition, not the price.
+  serviceId        String  @map("service_id") @db.Uuid
+  preferredStaffId String? @map("preferred_staff_id") @db.Uuid
+
+  /// The price the series was sold at. An occurrence priced differently is a
+  /// change against the baseline, which the panel discloses.
+  baselinePriceFils Int @default(0) @map("baseline_price_fils")
+
+  /// Hold the baseline for this client even when the catalogue moves.
+  grandfathered Boolean @default(false)
+
+  /// How far the calendar is real. The nightly job tops this up to 70 days.
+  materialisedThrough DateTime? @map("materialised_through") @db.Date
+
+  /// A course is sold once and drawn down per visit. All three move together
+  /// or none of them exist: enforced as a CHECK, not as a habit.
+  courseTotalNetFils Int? @map("course_total_net_fils")
+  courseVisits       Int? @map("course_visits") @db.SmallInt
+  courseDrawn        Int  @default(0) @map("course_drawn") @db.SmallInt
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  occurrences SeriesOccurrence[]
+
+  @@index([branchId, anchorDay], map: "series_branch_idx")
+  @@index([customerId], map: "series_customer_idx")
+  @@map("booking_series")
+}
+
+model SeriesOccurrence {
+  id       String        @id @default(uuid()) @db.Uuid
+  seriesId String        @map("series_id") @db.Uuid
+  series   BookingSeries @relation(fields: [seriesId], references: [id], onDelete: Cascade)
+
+  /// 0-based ordinal within the whole series, counted from the anchor. It is
+  /// what makes "the twelfth of twenty" survive a top-up eighteen months on.
+  index Int @db.SmallInt
+
+  plannedDay      DateTime @map("planned_day") @db.Date
+  plannedStartMin Int      @map("planned_start_min") @db.SmallInt
+
+  /// The month had no such date and this fell back to the last day.
+  movedFromDayOfMonth Int? @map("moved_from_day_of_month") @db.SmallInt
+
+  state OccurrenceState @default(planned)
+
+  /// THE OCCURRENCE IS AN ORDINARY BOOKING, exactly as a group's lane is.
+  ///
+  /// Null while planned, and null for needs_attention: an occurrence the
+  /// engine could not seat has no slot, so it cannot be a booking without
+  /// inventing start and end times it does not have.
+  ///
+  /// The link lives HERE and nowhere else. Recording it on booking as well
+  /// would be the same fact in two tables, and the second one is the one that
+  /// goes stale.
+  bookingId String? @unique @map("booking_id") @db.Uuid
+
+  /// Up to three nearest alternatives, attached when the ladder could not
+  /// repair the occurrence automatically.
+  alternatives Json? @db.JsonB
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([seriesId, index], map: "occurrence_ordinal_uniq")
+  @@index([seriesId, plannedDay], map: "occurrence_series_day_idx")
+  @@map("series_occurrence")
+}
