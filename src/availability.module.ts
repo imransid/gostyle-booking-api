@@ -19,11 +19,14 @@ import { RescheduleHandler } from '@application/commands/reschedule.handler';
 import { WaitlistHandler } from '@application/commands/waitlist.handler';
 import { WaitlistController } from '@interface/http/waitlist.controller';
 import { WebhooksController } from '@interface/http/webhooks.controller';
+import { GroupsController } from '@interface/http/groups.controller';
+import { GroupHoldHandler } from '@application/commands/group-hold.handler';
 import { PaymentWebhookHandler } from '@application/commands/payment-webhook.handler';
 import { LifecycleHandler } from '@application/commands/lifecycle.handler';
 
 @Module({
   controllers: [
+    GroupsController,
     WebhooksController,
     WaitlistController,
     AvailabilityController,
@@ -33,6 +36,7 @@ import { LifecycleHandler } from '@application/commands/lifecycle.handler';
     LifecycleController,
   ],
   providers: [
+    GroupHoldHandler,
     PaymentWebhookHandler,
     WaitlistHandler,
     RescheduleHandler,

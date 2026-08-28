@@ -11,6 +11,7 @@ import { PaymentLinkSweeper } from '../scheduling/payment-link-sweeper.service';
 import { PAYMENT_GATEWAY } from '@application/ports/payment-gateway.port';
 import { SimulatedGateway } from '../payments/simulated-gateway';
 import { PaymentWebhookRepository } from './payment-webhook.repository';
+import { GroupHoldRepository } from './group-hold.repository';
 import { ReminderScheduler } from '../scheduling/reminder-scheduler.service';
 import { CUSTOMER_CONTEXT } from '@application/ports/customer-context.port';
 import { FixtureCustomerContext } from '../fixtures/fixture-customer-context';
@@ -31,6 +32,7 @@ import { HoldSweeper } from '../scheduling/hold-sweeper.service';
 @Global()
 @Module({
   providers: [
+    GroupHoldRepository,
     PaymentWebhookRepository,
     SimulatedGateway,
     // One line changes when a real provider is chosen.
@@ -70,6 +72,7 @@ import { HoldSweeper } from '../scheduling/hold-sweeper.service';
     FixtureBookingContext,
   ],
   exports: [
+    GroupHoldRepository,
     PaymentWebhookRepository,
     PAYMENT_GATEWAY,
     SimulatedGateway,
