@@ -21,6 +21,7 @@ import { WaitlistController } from '@interface/http/waitlist.controller';
 import { WebhooksController } from '@interface/http/webhooks.controller';
 import { GroupsController } from '@interface/http/groups.controller';
 import { GroupHoldHandler } from '@application/commands/group-hold.handler';
+import { GroupConfirmHandler } from '@application/commands/group-confirm.handler';
 import { PaymentWebhookHandler } from '@application/commands/payment-webhook.handler';
 import { LifecycleHandler } from '@application/commands/lifecycle.handler';
 
@@ -36,6 +37,7 @@ import { LifecycleHandler } from '@application/commands/lifecycle.handler';
     LifecycleController,
   ],
   providers: [
+    GroupConfirmHandler,
     GroupHoldHandler,
     PaymentWebhookHandler,
     WaitlistHandler,

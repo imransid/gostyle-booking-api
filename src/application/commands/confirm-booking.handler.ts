@@ -310,7 +310,15 @@ export class ConfirmBookingHandler {
  * The catalogue in the fixture carries no prices yet, so they live here until
  * the real catalogue service lands. Fils, never decimals.
  */
-const PRICE_FILS: Record<string, number> = {
+/**
+ * The catalogue, until a catalogue service answers over gRPC.
+ *
+ * Exported rather than copied. A second table would have been two
+ * sources of truth for what things cost, and the group path would have
+ * priced parties on different numbers than the single path used for the
+ * bookings inside them: correct-looking in every test that checked shape.
+ */
+export const PRICE_FILS: Record<string, number> = {
   'haircut-finish': 16000,
   'blow-dry': 14000,
   'fringe-trim': 6000,
@@ -326,7 +334,7 @@ const PRICE_FILS: Record<string, number> = {
   'hair-wash': 4000,
 };
 
-function priceOf(serviceId: string): number {
+export function priceOf(serviceId: string): number {
   return PRICE_FILS[serviceId] ?? 0;
 }
 

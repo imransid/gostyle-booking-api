@@ -27,6 +27,13 @@ import {
   GroupHoldHandler,
   type GroupHoldView,
 } from '@application/commands/group-hold.handler';
+import {
+  GroupConfirmHandler,
+  type GroupConfirmView,
+} from '@application/commands/group-confirm.handler';
+import { ApiGoneResponse, ApiNotFoundResponse } from '@nestjs/swagger';
+import { IsUUID } from 'class-validator';
+import { Param } from '@nestjs/common';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
 import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
@@ -103,10 +110,29 @@ export class GroupHoldDto {
   participants!: ParticipantDto[];
 }
 
+export class GroupConfirmDto {
+  @ApiProperty({
+    description: 'The party hold returned by POST /groups/holds.',
+  })
+  @IsUUID()
+  holdId!: string;
+
+  @ApiProperty({ type: [ParticipantDto], minItems: 2, maxItems: 8 })
+  @IsArray()
+  @ArrayMinSize(2)
+  @ArrayMaxSize(8)
+  @ValidateNested({ each: true })
+  @Type(() => ParticipantDto)
+  participants!: ParticipantDto[];
+}
+
 @ApiTags('groups')
 @Controller('groups')
 export class GroupsController {
-  constructor(private readonly handler: GroupHoldHandler) {}
+  constructor(
+    private readonly handler: GroupHoldHandler,
+    private readonly confirms: GroupConfirmHandler,
+  ) {}
 
   @Post('holds')
   @ApiOperation({
@@ -141,6 +167,39 @@ export class GroupsController {
         guestName: p.guestName ?? (p.customerId === undefined ? p.label : null),
         preferredStaffId: p.preferredStaffId ?? null,
       })),
+    });
+  }
+
+  @Post(':id/confirm')
+  @ApiOperation({
+    summary: 'Turn a held party into one booking per participant',
+    description:
+      'THE PLAN IS RE-RUN on fresh masks. The hold protected these lanes ten ' +
+      'minutes ago; this asks again whether the party still works. If it no ' +
+      'longer does, nothing is written and nothing is charged.',
+  })
+  @ApiCreatedResponse({
+    description: 'Confirmed, one booking per participant.',
+  })
+  @ApiGoneResponse({ description: 'The party hold expired.' })
+  @ApiConflictResponse({
+    description: 'The party no longer fits, or the group is not a draft.',
+  })
+  @ApiNotFoundResponse({ description: 'No such group.' })
+  confirm(
+    @Param('id') id: string,
+    @Body() dto: GroupConfirmDto,
+    @CurrentActor() actor: Actor,
+  ): Promise<GroupConfirmView> {
+    return this.confirms.execute({
+      groupId: id,
+      holdId: dto.holdId,
+      participants: dto.participants.map((p) => ({
+        label: p.label,
+        serviceIds: p.serviceIds,
+        preferredStaffId: p.preferredStaffId ?? null,
+      })),
+      actorId: actor.id,
     });
   }
 }
