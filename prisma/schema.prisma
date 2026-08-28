@@ -459,6 +459,14 @@ model BookingGroup {
   /// pending, and so on.
   status String @default("draft")
 
+  /// How many participants have not left.
+  ///
+  /// Stored because the STATUS ALONE CANNOT CARRY THE INTERESTING CHANGE.
+  /// A party of three losing one is still confirmed, so a listener that only
+  /// wrote on a status change stayed silent at exactly the moment the party
+  /// dropped toward being a single booking. The count is what actually moved.
+  activeCount Int @default(0) @map("active_count") @db.SmallInt
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 

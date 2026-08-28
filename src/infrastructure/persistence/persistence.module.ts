@@ -5,6 +5,7 @@ import { ReminderRepository } from './reminder.repository';
 import { RescheduleRepository } from './reschedule.repository';
 import { WaitlistRepository } from './waitlist.repository';
 import { WaitlistListener } from '../messaging/waitlist-listener';
+import { GroupStatusListener } from '../messaging/group-status-listener';
 import { WaitlistSweeper } from '../scheduling/waitlist-sweeper.service';
 import { NoShowSweeper } from '../scheduling/no-show-sweeper.service';
 import { PaymentLinkSweeper } from '../scheduling/payment-link-sweeper.service';
@@ -62,9 +63,16 @@ import { HoldSweeper } from '../scheduling/hold-sweeper.service';
     LoggingEventPublisher,
     {
       provide: EVENT_PUBLISHER,
-      useFactory: (next: LoggingEventPublisher, waitlist: WaitlistRepository) =>
-        new WaitlistListener(next, waitlist),
-      inject: [LoggingEventPublisher, WaitlistRepository],
+      // The chain, innermost last: an event passes the group listener, then
+      // the waitlist listener, then reaches the real publisher. Each link
+      // does its own job and forwards, so adding a third changes one line.
+      useFactory: (
+        next: LoggingEventPublisher,
+        waitlist: WaitlistRepository,
+        prisma: PrismaService,
+      ) =>
+        new GroupStatusListener(new WaitlistListener(next, waitlist), prisma),
+      inject: [LoggingEventPublisher, WaitlistRepository, PrismaService],
     },
     LifecycleRepository,
     BookingRepository,

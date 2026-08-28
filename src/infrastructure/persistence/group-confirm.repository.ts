@@ -262,7 +262,7 @@ export class GroupConfirmRepository {
       //    just confirmed, so the group is confirmed.
       await tx.bookingGroup.update({
         where: { id: input.groupId },
-        data: { status: 'confirmed' },
+        data: { status: 'confirmed', activeCount: made.length },
       });
 
       await tx.eventOutbox.create({
