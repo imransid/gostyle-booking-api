@@ -64,13 +64,17 @@ export class EligibleStaffQueryDto {
  * Stage 2 of the wizard needs this: the services are chosen, no slot has been
  * picked, and the operator has to be told who can do the work and why the
  * person they asked for cannot.
+ *
+ * Under /v1/bookings, in its own controller, registered before
+ * BookingsController -- see the note on SettingsController for why that
+ * ordering is load-bearing.
  */
 @ApiTags('availability')
-@Controller('eligible-staff')
+@Controller('bookings')
 export class EligibleStaffController {
   constructor(private readonly handler: GetEligibleStaffHandler) {}
 
-  @Get()
+  @Get('eligible-staff')
   @ApiOperation({
     summary: 'Which professionals can take this chain',
     description:
