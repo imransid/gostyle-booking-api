@@ -175,8 +175,12 @@ describe('the hold clock', () => {
   });
 
   it('renders the countdown the wizard shows', () => {
-    expect(formatCountdown(hold, T0)).toBe('10:00');
-    expect(formatCountdown(hold, T0 + 9 * 60_000 + 15_000)).toBe('0:45');
+    // Derived from the constant, not written out: the TTL has already moved
+    // once (ten minutes to fifteen) and a hand-typed "10:00" is exactly the
+    // thing that then fails for the wrong reason.
+    const mins = HOLD_TTL_MS / 60_000;
+    expect(formatCountdown(hold, T0)).toBe(`${mins}:00`);
+    expect(formatCountdown(hold, T0 + HOLD_TTL_MS - 45_000)).toBe('0:45');
     expect(formatCountdown(hold, T0 + HOLD_TTL_MS)).toBe('0:00');
   });
 

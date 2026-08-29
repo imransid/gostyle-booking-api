@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { quote, settle, VAT_PERCENT, type SettlementInput } from './quote';
+import {
+  quote,
+  settle,
+  VAT_PERCENT,
+  DEFAULT_PROMO_PERCENT,
+  type SettlementInput,
+} from './quote';
 import { Money } from '../shared/money';
 
 const aed = (f: number): string => Money.fils(f).toString();
@@ -170,7 +176,7 @@ function bill(over: Partial<SettlementInput> = {}) {
     addOnFils: 0,
     retailFils: 0,
     tier: 'none',
-    promoApplies: false,
+    promo: null,
     depositAppliedFils: 0,
     loyaltyRedeemFils: 0,
     ...over,
@@ -205,10 +211,59 @@ describe('the settlement arithmetic', () => {
   });
 
   it('a promo stacks on top of the tier discount, not beside it', () => {
-    const s = bill({ tier: 'gold', promoApplies: true });
+    const s = bill({ tier: 'gold', promo: { code: 'HOUSE', percent: 10 } });
     // 10% of (480 - 48) = 43.20
     expect(aed(s.promoFils)).toBe('AED 43.20');
     expect(aed(s.baseFils)).toBe('AED 388.80');
+  });
+});
+
+describe('the promo rate rides on the code', () => {
+  it('takes the rate the code carries, not a house-wide percentage', () => {
+    const twenty = bill({ promo: { code: 'SUMMER20', percent: 20 } });
+    const five = bill({ promo: { code: 'FRIEND5', percent: 5 } });
+    expect(aed(twenty.promoFils)).toBe('AED 96.00'); // 20% of 480
+    expect(aed(five.promoFils)).toBe('AED 24.00'); //  5% of 480
+  });
+
+  it('falls back to the house default when the code names no rate', () => {
+    const s = bill({ promo: { code: 'PLAIN' } });
+    expect(s.promoPercent).toBe(DEFAULT_PROMO_PERCENT);
+    expect(aed(s.promoFils)).toBe('AED 48.00');
+  });
+
+  it('names the code on the settlement so the receipt can print it', () => {
+    const s = bill({ promo: { code: 'SUMMER20', percent: 20 } });
+    expect(s.promoCode).toBe('SUMMER20');
+    expect(s.promoPercent).toBe(20);
+  });
+
+  it('reports no code and no rate when none was presented', () => {
+    const s = bill();
+    expect(s.promoCode).toBeNull();
+    expect(s.promoPercent).toBe(0);
+    expect(s.promoFils).toBe(0);
+  });
+
+  it('a zero-rate code takes nothing and names nothing', () => {
+    const s = bill({ promo: { code: 'EXPIRED', percent: 0 } });
+    expect(s.promoFils).toBe(0);
+    expect(s.promoCode).toBeNull();
+  });
+
+  it('still stacks after the tier discount at any rate', () => {
+    const s = bill({ tier: 'gold', promo: { code: 'SUMMER20', percent: 20 } });
+    // 20% of (480 - 48) = 86.40
+    expect(aed(s.promoFils)).toBe('AED 86.40');
+  });
+
+  it('refuses a rate outside 0 to 100', () => {
+    expect(() => bill({ promo: { code: 'BAD', percent: 120 } })).toThrow(
+      /0 to 100/,
+    );
+    expect(() => bill({ promo: { code: 'BAD', percent: -5 } })).toThrow(
+      /0 to 100/,
+    );
   });
 });
 

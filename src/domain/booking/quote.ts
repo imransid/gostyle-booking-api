@@ -129,7 +129,29 @@ export function quote(input: QuoteInput): Quote {
 
 // ---------------------------------------------------------------- settlement
 
-export const PROMO_PERCENT = 10;
+/**
+ * What a promo code is worth when it does not name a rate of its own.
+ *
+ * The rate belongs to the CODE, not to the register. A flat `promoApplies:
+ * true` meant every code in the salon was worth the same ten per cent, so
+ * "SUMMER20" and "FRIEND5" both took ten — the first under-charging the
+ * customer, the second over-charging them, and neither visible on the receipt
+ * because the code was never carried through to it.
+ */
+export const DEFAULT_PROMO_PERCENT = 10;
+
+/**
+ * One promotion, as presented at the register.
+ *
+ * The registry of valid codes is not this service's: marketing owns which
+ * codes exist and what each is worth. What the settlement needs is the rate
+ * that applies to THIS ticket and the code to print on it.
+ */
+export interface PromoCode {
+  readonly code: string;
+  /** 0 to 100. Omitted means DEFAULT_PROMO_PERCENT. */
+  readonly percent?: number;
+}
 
 export interface SettlementInput {
   readonly serviceFils: number;
@@ -137,7 +159,8 @@ export interface SettlementInput {
   /** Products sold at the till. Never discounted by tier, never tipped on. */
   readonly retailFils: number;
   readonly tier: Tier;
-  readonly promoApplies: boolean;
+  /** The promotion presented at the register, or null when there is none. */
+  readonly promo?: PromoCode | null;
   /** A percentage of the tippable base, or a custom amount. Not both. */
   readonly tipPercent?: number;
   readonly tipFils?: number;
@@ -152,6 +175,10 @@ export interface Settlement {
   readonly subtotalFils: number;
   readonly tierDiscountFils: number;
   readonly promoFils: number;
+  /** The code that produced the promo line, so the receipt can name it. */
+  readonly promoCode: string | null;
+  /** The rate actually applied. 0 when no code was presented. */
+  readonly promoPercent: number;
   readonly baseFils: number;
   readonly tipFils: number;
   readonly vatFils: number;
@@ -169,7 +196,7 @@ export interface Settlement {
  *
  *   subtotal        = services + add-ons + retail
  *   tier discount   = 10% of the SERVICE subtotal for a Gold customer
- *   promo           = 10% of (service subtotal - tier discount)
+ *   promo           = the code's own rate x (service subtotal - tier discount)
  *   base            = subtotal - tier discount - promo
  *   tip             = percentage of (base - retail), or a custom amount
  *   VAT             = 5% of base, or 0 under a manager's exemption
@@ -199,9 +226,27 @@ export function settle(input: SettlementInput): Settlement {
   // On services, never on retail.
   const tierDiscount = serviceSubtotal.percent(tierDiscountPercent(input.tier));
 
-  const promo = input.promoApplies
-    ? serviceSubtotal.minus(tierDiscount).percent(PROMO_PERCENT)
-    : Money.ZERO;
+  // The rate rides on the code. A code with no rate of its own falls back to
+  // the house default rather than silently taking nothing.
+  const promoPercent =
+    input.promo === undefined || input.promo === null
+      ? 0
+      : (input.promo.percent ?? DEFAULT_PROMO_PERCENT);
+
+  if (
+    promoPercent < 0 ||
+    promoPercent > 100 ||
+    !Number.isFinite(promoPercent)
+  ) {
+    throw new Error(
+      `A promo code is worth 0 to 100 per cent, got ${promoPercent}`,
+    );
+  }
+
+  const promo =
+    promoPercent === 0
+      ? Money.ZERO
+      : serviceSubtotal.minus(tierDiscount).percent(promoPercent);
 
   const base = subtotal.minus(tierDiscount).minus(promo);
 
@@ -226,6 +271,8 @@ export function settle(input: SettlementInput): Settlement {
     subtotalFils: subtotal.fils,
     tierDiscountFils: tierDiscount.fils,
     promoFils: promo.fils,
+    promoCode: promoPercent === 0 ? null : (input.promo?.code ?? null),
+    promoPercent,
     baseFils: base.fils,
     tipFils: tip.fils,
     vatFils: vat.fils,

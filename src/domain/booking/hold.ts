@@ -104,11 +104,23 @@ export function judgeToken(
 
 // ---------------------------------------------------------------- the TTL
 
-/** Ten minutes in specification. */
-export const HOLD_TTL_MS = 10 * 60 * 1000;
+/**
+ * Fifteen minutes, per the front-end contract.
+ *
+ * The booking-flow document says ten (Table 7.8, Table 19.3). The contract the
+ * front end is built against says fifteen, and it is the later of the two, so
+ * it wins. Noted here rather than silently, because a reader coming from the
+ * document will otherwise think this is a typo.
+ */
+export const HOLD_TTL_MS = 15 * 60 * 1000;
 
-/** One silent extension while a 3-D Secure challenge is in flight. */
-export const THREE_DS_GRACE_MS = 5 * 60 * 1000;
+/**
+ * One silent extension while a 3-D Secure challenge is in flight.
+ *
+ * Ten minutes, per the front-end contract; the document says five. Same
+ * precedence as the TTL above.
+ */
+export const THREE_DS_GRACE_MS = 10 * 60 * 1000;
 
 /** Under this, the countdown in the wizard turns urgent. */
 export const URGENT_THRESHOLD_MS = 60 * 1000;

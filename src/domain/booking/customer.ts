@@ -385,7 +385,7 @@ export function requirementFor(input: RequirementInput): Requirement {
   }
 
   // ---- the amount, clamped ------------------------------------------------
-  const { amount, note } = clamp(winner.amount, total, winner.kind);
+  const { amount, note } = clamp(winner.amount, total);
 
   return {
     kind: kindOf(amount, total),
@@ -479,14 +479,19 @@ function stricter(a: Rung, b: Rung): boolean {
  * Raised to the branch floor, capped at the branch ceiling, and the wizard is
  * told when a clamp bites.
  *
- * Full payment is exempt from the ceiling: it is the price, not a deposit,
- * and capping AED 5,000 of prepayment at AED 500 would leave the salon
- * carrying the rest.
+ * THE CEILING APPLIES TO EVERY REQUIREMENT, full payment included. An earlier
+ * version exempted 'full' on the reasoning that it is the price rather than a
+ * deposit — but §8.2 states one rule with no exception ("capped at the branch
+ * ceiling of AED 500"), and the exemption meant the single largest amount the
+ * engine can ask for was the one amount nothing bounded.
+ *
+ * A full requirement that hits the ceiling stops being full: kindOf() reads
+ * the clamped amount against the total and reports 'deposit', which is what it
+ * now is. The remainder is due at the register like any other balance.
  */
 function clamp(
   amount: Money,
   total: Money,
-  kind: RequirementKind,
 ): { amount: Money; note: string | null } {
   // Nothing can ever exceed the price. A fixed service deposit of AED 400 on
   // a AED 5 service would otherwise sail straight through: kindOf calls it
@@ -496,8 +501,6 @@ function clamp(
   if (amount.greaterThan(total)) {
     return { amount: total, note: 'capped at the service total' };
   }
-
-  if (kind === 'full') return { amount, note: null };
 
   // Both bounds are themselves capped at the total, or a AED 5 service with a
   // 10% rule would be raised to a AED 10 "deposit" costing twice the service.

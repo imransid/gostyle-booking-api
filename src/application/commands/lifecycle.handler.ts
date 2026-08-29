@@ -40,6 +40,10 @@ export interface LifecycleView {
     readonly subtotal: string;
     readonly tierDiscount: string;
     readonly promo: string;
+    /** The code that produced the promo line, so the receipt can name it. */
+    readonly promoCode: string | null;
+    /** The rate actually applied. 0 when no code was presented. */
+    readonly promoPercent: number;
     readonly base: string;
     readonly tip: string;
     readonly vat: string;
@@ -72,8 +76,11 @@ export interface LifecycleCommand {
     readonly tipFils?: number;
     readonly tipPercent?: number;
     readonly loyaltyRedeemFils?: number;
-    /** The caller validated the code. No code table lives here yet. */
-    readonly promoApplies?: boolean;
+    /**
+     * The promotion presented at the register. The caller validated the code
+     * and resolved its rate; marketing owns the registry, not this service.
+     */
+    readonly promo?: { readonly code: string; readonly percent?: number };
     readonly taxExemptReason?: string;
     readonly rail?: string;
   };
@@ -135,7 +142,7 @@ export class LifecycleHandler {
         addOnFils: 0,
         retailFils: co.retailFils ?? 0,
         tier: customer.tier,
-        promoApplies: co.promoApplies ?? false,
+        promo: co.promo ?? null,
         ...(co.tipFils !== undefined ? { tipFils: co.tipFils } : {}),
         ...(co.tipPercent !== undefined ? { tipPercent: co.tipPercent } : {}),
         // From the LEDGER, not the booking row. A goodwill credit or a partial
@@ -195,6 +202,8 @@ export class LifecycleHandler {
               subtotal: Money.fils(settlement.subtotalFils).toString(),
               tierDiscount: Money.fils(settlement.tierDiscountFils).toString(),
               promo: Money.fils(settlement.promoFils).toString(),
+              promoCode: settlement.promoCode,
+              promoPercent: settlement.promoPercent,
               base: Money.fils(settlement.baseFils).toString(),
               tip: Money.fils(settlement.tipFils).toString(),
               vat: Money.fils(settlement.vatFils).toString(),

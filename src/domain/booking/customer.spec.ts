@@ -391,12 +391,36 @@ describe('the amount', () => {
     expect(req().clampNote).toBeUndefined();
   });
 
-  it('FULL PAYMENT IS EXEMPT: it is the price, not a deposit', () => {
+  it('THE CEILING APPLIES TO FULL PAYMENT TOO', () => {
+    // Previously exempt on the reasoning that full payment is the price
+    // rather than a deposit. Section 8.2 states one rule with no exception,
+    // and the exemption left the largest amount the engine can ask for as the
+    // one amount nothing bounded.
     const r = req({
       totalFils: 500000,
       service: { name: 'Bridal', percent: 100, fixedFils: null },
     });
-    expect(r.amountFils).toBe(500000);
+    expect(r.amountFils).toBe(DEPOSIT_CEILING.fils);
+    expect(r.clampNote).toBe('capped at the branch ceiling');
+  });
+
+  it('a full requirement capped at the ceiling stops being full', () => {
+    // It no longer meets the total, so it is a deposit, and the balance is
+    // due at the register like any other.
+    const r = req({
+      totalFils: 500000,
+      service: { name: 'Bridal', percent: 100, fixedFils: null },
+    });
+    expect(r.kind).toBe('deposit');
+  });
+
+  it('full payment under the ceiling is still asked in full', () => {
+    const r = req({
+      totalFils: 40000, // AED 400, under the AED 500 ceiling
+      service: { name: 'Keratin', percent: 100, fixedFils: null },
+    });
+    expect(r.amountFils).toBe(40000);
+    expect(r.kind).toBe('full');
     expect(r.clampNote).toBeUndefined();
   });
 

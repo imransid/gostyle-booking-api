@@ -14,6 +14,7 @@ import {
   type BookingContextReader,
 } from '@application/ports/booking-context.port';
 import { DAILY_BOOKING_CAP, formatMinute } from '@domain/availability/grid';
+import { HOLD_TTL_MS } from '@domain/booking/hold';
 import type { GroupMode } from '@domain/availability/party';
 
 export interface GroupHoldCommand {
@@ -46,8 +47,6 @@ export interface GroupHoldView {
     readonly end: string;
   }[];
 }
-
-const HOLD_TTL_MS = 10 * 60 * 1000;
 
 @Injectable()
 export class GroupHoldHandler {

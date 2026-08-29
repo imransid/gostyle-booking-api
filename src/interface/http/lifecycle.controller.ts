@@ -10,6 +10,7 @@ import {
 import {
   IsIn,
   IsInt,
+  IsObject,
   IsOptional,
   IsString,
   IsUUID,
@@ -90,12 +91,15 @@ export class LifecycleDto {
   loyaltyRedeemMinor?: number;
 
   @ApiPropertyOptional({
+    example: { code: 'SUMMER20', percent: 20 },
     description:
-      'The caller has already validated the code. No code table lives in ' +
-      'this service yet.',
+      'The promotion presented at the register. The caller validates the ' +
+      'code and resolves its rate; marketing owns the registry, not this ' +
+      'service. Omit percent to use the house default of 10.',
   })
   @IsOptional()
-  promoApplies?: boolean;
+  @IsObject()
+  promo?: { code: string; percent?: number };
 
   @ApiPropertyOptional({
     example: 'diplomatic exemption on file',
@@ -296,9 +300,7 @@ export class LifecycleController {
         ...(dto.loyaltyRedeemMinor !== undefined
           ? { loyaltyRedeemFils: dto.loyaltyRedeemMinor }
           : {}),
-        ...(dto.promoApplies !== undefined
-          ? { promoApplies: dto.promoApplies }
-          : {}),
+        ...(dto.promo !== undefined ? { promo: dto.promo } : {}),
         ...(dto.taxExemptReason !== undefined
           ? { taxExemptReason: dto.taxExemptReason }
           : {}),

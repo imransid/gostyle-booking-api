@@ -1,7 +1,7 @@
 # AUDIT-2 — the booking API against the Booking Flow documentation
 
 Audited: `GoStyle_Booking_Flow_Documentation.pdf` v1.0 (73 pages) against this
-repository at commit `3671f27`, section by section, table by table, number by
+repository at commit `e856885`, section by section, table by table, number by
 number.
 
 **Nothing was changed. This is a report.**
@@ -22,17 +22,23 @@ Three honest caveats:
 1. **There is no `AUDIT.md` in this repository or anywhere in its git history.**
    I could not match a prior format, so I have used the three lists you asked
    for and added the four extra buckets you asked me to flag.
-2. **8 of the 19 auditors were killed by an interrupt mid-run.** Their sections
-   (§7 ranking/hold, §8 pay-and-confirm, §9–10 lifecycle, §11–12 timers and
-   concurrency, §13 day-of, §14 exceptions, §15.1 group, §15.2 series) are
-   covered by my own direct audit instead, which is why those entries are the
-   ones marked [verified]. Coverage is complete; the *method* differs by section.
-   The eleven that survived — including the dedicated numbers pass — are folded
-   in below.
-3. **The adversarial verification pass did not complete.** Agent-reported
-   findings I did not personally re-check are marked *[agent]*. I corrected two
-   agent verdicts while writing this (noted inline), so treat unmarked agent
-   claims as good but not gold.
+2. **8 of the 19 auditors never produced a result.** Two died when the machine
+   slept mid-response (§15.1 group, §15.2 series) and six stalled through all
+   six retries (§7 ranking/hold, §8 pay-and-confirm, §9–10 lifecycle, §11–12
+   timers and concurrency, §13 day-of, §14 exceptions). Those sections are
+   covered by **my own direct reading** instead — which is why nearly every
+   entry in them is marked *[verified]*. Coverage is complete; the *method*
+   differs by section. The completeness critic also failed (network), so there
+   was no independent sweep for things every auditor missed.
+3. **The adversarial verification pass did complete, and it matters.** It
+   re-checked 186 negative findings and **refuted 30 of them — 16%.** Every
+   refutation has been applied below; nine of them changed or removed a claim
+   in an earlier draft of this file, and I re-verified each against the document
+   and the code myself before accepting it. Findings still marked *[agent]* are
+   ones the verifier upheld but I did not personally re-open.
+
+   That 16% is the most useful number in this report for judging the rest of
+   it: roughly one in six confident-sounding automated findings was wrong.
 
 ### Scope key
 
@@ -54,23 +60,29 @@ and it is the one that matters.
 
 ## Summary
 
+Agent findings, 11 sections, **after the verification pass corrected them**:
+
 | | All scopes | Backend only |
 |---|---|---|
-| Agent findings, 11 sections | 520 | 443 |
-| — MATCH | 258 | 254 |
-| — WRONG | 118 | 118 |
+| Total | 520 | 443 |
+| — MATCH | 273 | 269 |
+| — WRONG | 107 | 107 |
 | — MISSING | 121 | 54 |
-| — INVENTED | 12 | 9 |
+| — INVENTED | 8 | 5 |
 | — DOC CONTRADICTION | 4 | 3 |
 | — CONSTANT MISMATCH | 7 | 5 |
+
+Verification moved 30 findings: **21 alleged defects turned out not to be
+defects at all**, and 9 were re-classified (6 → WRONG, 3 → MISSING). The raw
+pre-verification numbers were 258 MATCH / 118 WRONG / 12 INVENTED.
 
 Scope split of all 520: backend 443, ui 39, external 31, infra 7. Two-thirds of
 the MISSING list is wizard, message-template or another-service work — which is
 why the backend column, not the raw total, is the honest headline.
 
-My own direct audit covers §7–§15.2 (the eight sections lost to the interrupt)
-plus re-verification of every severe agent claim, and adds 3 further doc
-contradictions.
+My own direct audit covers §7–§15.2 (the eight sections that never returned)
+plus re-verification of every severe agent claim, and adds 3 of the 6 surviving
+doc contradictions (D2, D3, D4).
 
 **The headline.** The *domain* is in excellent shape: the arithmetic, the
 policies and the constants are faithful to the document, often to the fil. The
@@ -257,9 +269,10 @@ changes which offers are reachable.
   required by §7.3 step 10. *[verified]*
 - **W16.** `GET /series/:id/occurrences` strips the health §17.2 requires it to
   carry. *[agent]*
-- **W17.** `POST /bookings/:id/cancel` applies the outcome in the same call;
-  §17.2 requires it to return the computed outcome *before* the final confirm
-  flag. *[agent]*
+- **W17 — withdrawn.** I claimed cancel must return the outcome before a final
+  confirm flag. §17.2 asks for "Cancel with a reason. Returns the computed
+  outcome", which the endpoint does; the two-step confirmation is a wizard
+  affordance, not a backend contract.
 - **W18.** The reschedule endpoint bypasses `checkTransition`, so the mandatory
   reason of §14.1 step 2 and §16.6 is not enforced — an empty string is accepted
   and written to history. *[agent]*
@@ -275,10 +288,17 @@ changes which offers are reachable.
   `waitlist.offer_sent`; money events are emitted under gateway verbs matching
   none of the four documented names; `booking.skipped` is never emitted because
   the skip path bypasses the lifecycle. *[verified]*
-- **W23.** §17.4's audit trail cannot be assembled as described: nothing records
-  the creation itself, the webhook changes status with no history row, reminder
-  sends never append to history, and the check-in row can never name a chair
-  because no chair is ever assigned. *[agent]*
+- **W23.** §17.4's audit trail is partly assemblable. Two of my earlier claims
+  were wrong and are withdrawn: the creation **is** recorded (no booking row
+  exists before confirm, so the `held→confirmed` row at
+  `booking.repository.ts:220-230`, carrying the requirement source as its
+  reason, *is* the creation record), and a repair **does** reach the trail (the
+  rung is written into the reschedule reason at
+  `roster-change.handler.ts:228`). What genuinely does not reach the history:
+  the payment webhook changes status without writing a row, reminder sends are
+  timestamped on the booking but never appended, the check-in row can never name
+  a chair because none is ever assigned, and a repair never names the
+  professional who was replaced. *[verified]*
 - **W24.** §18 Concurrency: "Hold creation limited per customer to stop slot
   hoarding" has no implementation at all. *[verified]*
 - **W25.** §18 Security: branch scoping is caller-supplied; there is no
@@ -311,7 +331,7 @@ In the document, absent from the code. Backend-scope first.
 | §17.2 | `POST /bookings/:id/payment-link` (the window rules and its sweeper both exist, but nothing can issue a link on demand). |
 | §17.2 | `PATCH /series/:id`, `POST /groups/:id/participants`, `DELETE /waitlist/:id`, `POST /callbacks/notifications`. |
 | §17.3 | `booking.held`, `hold.expired`, `series.at_risk` (health is computed, never published), `conflict.detected`, `conflict.resolved`, `risk.band_changed`, `risk.require_deposit_set`, `waitlist.offer_accepted`, `waitlist.offer_expired`. |
-| §17.1 | Booking-record concepts with no column: tier, category, deposit outcome/disposition, the outstanding-gate marker, add-ons, in-session extras, the conflict marker, consent state. *[verified — `gate` and `conflict` look present to a naive grep but only match `gatewayRef` and a comment]* |
+| §17.1 | Booking-record concepts with no column: tier, category, deposit outcome/disposition, the outstanding-gate marker, add-ons, in-session extras, consent state. *[verified — `gate` looks present to a naive grep but only matches `gatewayRef`]* **The conflict marker is not in this list**: it exists, on `RosterChangeItem.rung`/`.proposal` (`schema.prisma:734-739`), just not as a column on the booking as §17.1 describes. That is a shape difference, filed under WRONG, not a gap. |
 | §16.2 | Archived services: `Service` has no active/archived flag and `loadCatalogue` filters nothing. |
 | §16.3 | Calendar resize re-validation — no endpoint changes a booking's duration. |
 | §18 | Money-invariant sweeps ("captured implies confirmed or refunded, tenders equal totals"), and every alert on them. |
@@ -337,17 +357,16 @@ concept · §18 accessibility and localisation.
 
 | Code | Doc position |
 |---|---|
-| `Badge = ... \| 'FLUSH'` (`ranking.ts:204`) | Table 7.6 and Appendix B define five badges; FLUSH is not one of them. *[verified]* |
 | `requiredLevel` 1–3 on services, compared against a held skill level | §6.6 has skills but **no notion of skill levels**. |
 | `POST /bookings` defaults an unsupplied `customerId` to the fixture customer `'dana'` (`bookings.controller.ts:54`) | The doc never describes a default customer; §16.1 requires a resolved customer. *[verified]* |
 | `expandPackage` throws a raw `Error` when a package costs more than its parts | Nothing in §15.4 constrains package price against part total; this turns a catalogue pricing mistake into a 500. |
 | Three packages (`colour-and-finish`, `bridal-morning`, `hands-and-feet`) | §6.5 names exactly one package, **Bridal glow**, which does not exist in the code. |
 | `Wash and condition` (15 min, AED 40) | Not a row in Table 6.1. |
 | `PaymentRail.internal` | Table 8.5 lists five rails; `internal` is a sixth, used for forfeits and course draws. |
-| Six event-name families not in Table 17.3 (`occurrence.*`, `roster_change.*`, `walk_in.*`, `reminder.*`, `series.paused/ended`, `group.<status>`) | |
+| ~~Six event-name families not in Table 17.3~~ | **Withdrawn.** Every one of the six is a documented concept (the reminder rungs are Table 13.1, occurrences are §15.2, walk-ins §15.3, the roster worklist §14.8). The names differ from Table 17.3; that is the naming defect already filed as W22, not an invention. |
 | `not_preferred` ineligibility reason | Not one of Table 7.7's six verdicts. |
-| `SKIPS_AT_RISK = 3` adds **a fourth reason a series is flagged At risk** (`series-health.ts:37,70`) | Appendix B and §15.2.3 give exactly three: an occurrence needs attention, two confirmations expired, or a no-show. Skipping is not among them. *[verified]* |
-| `GOODWILL_PERCENT = 10` (`disruption-ladder.ts:45`) | §14.6 rung 4 and Table 8.4 say a goodwill credit is given and never say how much. The code picks 10% of the booking price; its own comment flags this as awaiting a business decision. |
+| The **threshold** `SKIPS_AT_RISK = 3` (`series-health.ts:37`) | Table 10.2 does say "skip counted in health", so the *rule* is documented — but the document never says how many skips make a series At risk. The number 3 is the code's own. *(Corrected: an earlier draft called the whole rule invented. It is not.)* |
+| The **figure** `GOODWILL_PERCENT = 10` (`disruption-ladder.ts:45`) | The goodwill credit itself is documented in at least six places (§14.6 rung 4, Table 8.4, §14.3). What no passage states is the amount. The code picks 10% of the booking price and its own comment flags this as awaiting a business decision. |
 | Sweep cadences, batch sizes and retry counts: `SWEEP_INTERVAL_MS 30s`, `REMINDER_INTERVAL_MS 60s`, `NO_SHOW_SWEEP_MS 60s`, `WAITLIST_SWEEP_MS 30s`, `LINK_SWEEP_MS 60s`, `RELAY_INTERVAL_MS 1s`, `RELAY_BATCH_SIZE 50`, `MAX_ATTEMPTS 10`, `MATERIALISE_BATCH 200` | Table 11.1 says only when timers *fire*. The document never specifies how often a sweeper ticks, how many rows it takes, or how often a failed event is retried. *(infra scope — reasonable engineering, simply unsourced.)* |
 | The DB demands a reason for `confirmed→no_show`; the domain gate does not | A reasonless no-show passes the domain and is refused by Postgres. |
 
@@ -355,23 +374,26 @@ concept · §18 accessibility and localisation.
 
 ## DOC CONTRADICTIONS
 
-**D1. The sliver threshold contradicts the fragmentation penalty.**
-Table 7.5 penalises "a gap of 1 to 19 minutes"; Table 19.3 and §14.7 define a
-sliver as anything **under 25**. So a 20–24 minute gap is stranded time that
-earns no ranking penalty: the engine will happily create a gap that §14.7 then
-proposes consent moves to close. The code faithfully reproduces both numbers
-(`ranking.ts:35` = 19, `grid.ts:29` = 25), so this is the document's
-inconsistency, not the code's. *(An auditor filed this as CONSTANT_MISMATCH; I
-have re-classified it — both numbers are correct against their own tables.)*
+**D1 — withdrawn, but worth knowing.** An earlier draft called the 19-minute
+fragmentation bound and the 25-minute sliver threshold a contradiction. On
+challenge that does not hold: the document states each explicitly for a
+different purpose (Table 7.5 prices a gap of 1–19 in the ranking; Table 19.3 and
+§14.7 define unsellable as under 25), and the code reproduces both correctly
+(`ranking.ts:35` = 19, `grid.ts:29` = 25). Not a defect in either.
 
-**D2. The waitlist tie-breaks can never fire.** §14.5.2 ranks by join order
+  The *consequence* is still worth a product decision: a 20–24 minute gap is
+  stranded time that earns no ranking penalty, so the engine can create a gap
+  that §14.7 will later propose consent moves to close. That is a gap between two
+  rules, not an error in either.
+
+**D2. The waitlist tie-breaks can never fire.** *[verified]* §14.5.2 ranks by join order
 first, with tier and fit tightness as tie-breaks "when join order ties". Join
 times are millisecond timestamps and never tie, so Table 14.4's keys 2 and 3 are
 unreachable as specified. The code implements it exactly as written and says so
 in a comment at `waitlist.ts` `rank()` rather than quietly improving it — the
 right call, but the document needs a decision (bucket join order by day?).
 
-**D3. Series ladder vs disruption ladder shift sizes.** §15.2.3 rung 3 allows
+**D3. Series ladder vs disruption ladder shift sizes.** *[verified]* §15.2.3 rung 3 allows
 "15 or 30 minutes"; §14.6 rung 2 allows "15, 30 or 45". Both are implemented as
 written (`series-ladder.ts:23`, `disruption-ladder.ts:36`). This is probably
 deliberate — but the document never says so, and the two ladders are described
@@ -382,16 +404,16 @@ list names series edit scope (preview only), booking-time add-ons (hardcoded to
 zero, never extend duration), post-settlement reversal (never written) and
 service-archive blast radius (no archived flag exists). *[verified]*
 
-**D5. Daily cap: configurable or not?** Appendix C lists `maxPerDayPerStaff` as
+**D5. Daily cap: configurable or not?** *[agent]* Appendix C lists `maxPerDayPerStaff` as
 a branch-scoped setting; §20 lists "per-professional daily cap as a configurable
 branch setting" as an open P3 gap.
 
-**D6. Channel lists disagree.** §3.1's glossary enumerates app / front desk /
+**D6. Channel lists disagree.** *[agent]* §3.1's glossary enumerates app / front desk /
 walk-in / recurring / group; §3.3's Table 3.3 enumerates front desk / online /
 walk-in / recurring materialiser / waitlist accept. `group` appears only in the
 first, `waitlist accept` only in the second.
 
-**D7. Entry-point count.** §4's preamble says all nine entry points produce the
+**D7. Entry-point count.** *[agent]* §4's preamble says all nine entry points produce the
 same draft and differ only in pre-fill and opening stage; rows 6, 7 and 8 of
 Table 4.1 then say they never enter the wizard at all (confirm path directly,
 waitlist join, reschedule drawer).
@@ -441,13 +463,29 @@ Two numbers in the code the document never states: `SKIPS_AT_RISK = 3`
 (`disruption-ladder.ts:45`) — the latter is flagged in its own comment as
 awaiting a business decision.
 
-### Appendix C — the values are right, the configurability is not
+### Appendix C — the values are right; most of the scoping is not
 
-All 15 settings exist as **hardcoded TypeScript constants**. `DEFAULT_BRANCH` is
-a single frozen object (`customer.ts:152`), and there is **no Branch or
-configuration table among the 17 Prisma models**. Appendix C's entire
-"Scope: Branch / Service / Channel / Professional" column is unimplemented: no
-setting can vary by branch, and `depositPercentPresets` does not exist at all.
+*(Corrected on challenge. An earlier draft said none of the settings was
+configurable, which is too strong.)* Three tiers:
+
+- **Genuinely scoped as the doc says.** Row 1, `requirement | Service`, is real
+  data: `Service.depositPercent` and `Service.depositFixedFils`
+  (`feasible.ts:55-56`) are read per service by rung 3, so two services can and
+  do carry different deposit rules. `overlapEnabled | Professional` is likewise
+  a per-professional flag.
+- **Shape without a source.** `BranchRules` (`customer.ts:145-158`) models
+  `onlineDefault`, `peakEscalation` and `peakWindows` exactly as Appendix C
+  scopes them — but `DEFAULT_BRANCH` is the **only instance ever constructed**,
+  passed literally at both call sites (`confirm-booking.handler.ts:172`,
+  `materialise-series.handler.ts:314`). No branch's settings are ever loaded,
+  and there is **no Branch or configuration table among the 17 Prisma models**.
+- **Plain module constants, no scoping at all.** The deposit floor and ceiling,
+  `firstVisitRequirement`, `riskDeposit`, `nonRefundableWindowHours`,
+  `lateCancelWindowHours`, granularity, lead times, `maxLeadDays`,
+  `seriesHorizonDays` and `maxPerDayPerStaff` — every one a `const` that cannot
+  vary by anything.
+
+`depositPercentPresets` does not exist at all.
 
 ---
 
@@ -479,21 +517,48 @@ is true at runtime.
 
 ## Coverage and confidence
 
-Every section §1–§20 and Appendices A–C was audited. Sections §7–§15.2 were
-covered by my own direct reading rather than by an agent (see caveat 2);
-§1–§6, §15.3–§18, the appendices and a dedicated end-to-end numbers pass were
-covered by agents, and I re-verified every severe claim among them by opening
-the code myself. Findings marked *[verified]* are ones I proved directly;
-*[agent]* findings did not receive the adversarial second pass, which did not
-complete.
+Every section §1–§20 and Appendices A–C was audited.
+
+| Sections | Method |
+|---|---|
+| §1–§6, §15.3–§18, Appendices A–C, and an end-to-end numbers pass | 11 agents, then an adversarial verifier that refuted 30 of their 186 negative findings |
+| §7 ranking/hold, §8 pay-and-confirm, §9–10 lifecycle, §11–12 timers and concurrency, §13 day-of, §14 exceptions, §15.1 group, §15.2 series | **My own direct reading** — these 8 auditors never returned (2 died when the machine slept, 6 stalled through all retries) |
+
+Findings marked *[verified]* I proved directly by opening the code. *[agent]*
+findings were upheld by the verifier but not re-opened by me. Every severe
+finding in this report is *[verified]*.
 
 The independent numbers pass and my own arrived at the same answer on every
-value in Table 19.3, which is the strongest corroboration in this report: the
-two mismatches (group deposit default, hold TTL) were found twice, separately.
+value in Table 19.3, which is the strongest corroboration here: the two
+mismatches — group deposit default and hold TTL — were found twice, separately,
+by different methods.
 
-Two agent verdicts were corrected while writing: the sliver-threshold
-"constant mismatch" (D1, actually a doc inconsistency) and the "no code compares
-the actor to manager" claim (W8, actually roles exist but nothing is
-manager-exclusive).
+**The one gap in the method.** The completeness critic, whose job was to find
+rules that fell between two auditors' ranges, failed on a network error and was
+not re-run. So this audit is thorough on everything it looked at, and cannot
+prove it looked at everything. The likeliest blind spots are boundaries between
+section ranges and the figures, whose captions carry rules the extracted text
+renders poorly.
+
+**What the verification pass changed in this file.** Nine claims in an earlier
+draft were withdrawn or narrowed after challenge, each re-checked by me against
+both the document and the code before I accepted the correction:
+
+| Claim | Outcome |
+|---|---|
+| `FLUSH` badge is invented | **Withdrawn.** §7.7 requires each offer row to carry "whether the start is flush with the diary" (doc line 3539). |
+| `SKIPS_AT_RISK` is a fourth, invented At-risk reason | **Narrowed.** Table 10.2 says "skip counted in health" (doc line 5271). Only the threshold of 3 is unsourced. |
+| `GOODWILL_PERCENT` is invented | **Narrowed.** Goodwill is documented in six places; only the 10% figure is the code's own. |
+| Six event families are invented | **Withdrawn.** All six are documented concepts; the *names* differ, which is W22. |
+| Sliver 19 vs 25 is a doc contradiction | **Withdrawn (D1).** Two different quantities, each stated explicitly for its own purpose. |
+| Cancel must preview before applying | **Withdrawn (W17).** §17.2 asks only that it return the computed outcome. |
+| Nothing records the booking's creation | **Withdrawn (W23).** No booking row exists before confirm, so the `held→confirmed` row *is* the creation record. |
+| A repair leaves no trail | **Withdrawn (W23).** The rung is written into the reschedule reason. |
+| The conflict marker is missing | **Re-classified.** It exists on `RosterChangeItem`, not on the booking — a shape difference, not a gap. |
+| No Appendix C setting is configurable | **Narrowed.** Per-service and per-professional scoping are real; per-branch has a shape with no source. |
+
+Two further corrections were mine, made while writing: the findings total is 520
+(I had double-added an intermediate snapshot to 648), and the summary originally
+presented all-scope counts as if they were backend-only.
 
 Nothing in the repository was modified.
