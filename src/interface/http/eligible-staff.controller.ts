@@ -47,7 +47,7 @@ export class EligibleStaffQueryDto {
   @IsArray()
   @ArrayNotEmpty({ message: 'pick at least one service' })
   @IsString({ each: true })
-  services!: string[];
+  serviceIds!: string[];
 
   @ApiPropertyOptional({
     example: 'maya',
@@ -90,7 +90,7 @@ export class EligibleStaffController {
     return this.handler.execute({
       branchId: q.branch,
       tradingDay: q.day,
-      serviceIds: q.services,
+      serviceIds: q.serviceIds,
       preferredStaffId: q.staffId ?? null,
     });
   }

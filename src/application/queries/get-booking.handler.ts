@@ -26,6 +26,10 @@ export interface BookingDetailView {
   readonly depositMinor: number;
   readonly deposit: string;
   readonly requirementSource: string | null;
+  /**
+   * How the booking was made: DESK, ONLINE, RECURRING, WALK_IN, GROUP.
+   * Shouted like every other enum the front end receives.
+   */
   readonly channel: string;
   readonly moveCount: number;
   readonly overbooked: boolean;
@@ -100,7 +104,7 @@ export class GetBookingHandler {
       depositMinor: b.depositFils,
       deposit: Money.fils(b.depositFils).toString(),
       requirementSource: b.requirementSource,
-      channel: b.channel,
+      channel: shout(b.channel),
       moveCount: b.moveCount,
       overbooked: b.overbooked,
       overbookReason: b.overbookReason,

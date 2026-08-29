@@ -60,7 +60,8 @@ export interface QuoteView {
   readonly branchId: string;
   readonly tradingDay: string;
   readonly startMin: number;
-  readonly channel: string;
+  /** Echoed in the contract's vocabulary, not the domain's. */
+  readonly channel: Shouted<'desk' | 'online'>;
   readonly tier: Shouted<Tier>;
   /** After any package expanded, in chain order. */
   readonly serviceIds: readonly string[];
@@ -203,7 +204,7 @@ export class GetQuoteHandler {
       branchId: q.branchId,
       tradingDay: q.tradingDay,
       startMin: q.startMin,
-      channel: q.channel,
+      channel: shout(q.channel),
       tier: shout(customer.tier),
       serviceIds: selection.serviceIds,
       packages: selection.expansions.map((e) => ({

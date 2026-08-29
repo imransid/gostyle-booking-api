@@ -23,8 +23,12 @@ import {
   type QuoteView,
 } from '@application/queries/get-quote.handler';
 import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
+import { unshout } from '@application/contract/wire';
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** The domain words the shouted request enum folds back down to. */
+const CHANNELS = ['desk', 'online'] as const;
 
 export class QuoteDto {
   @ApiPropertyOptional({ example: 'marina-walk', default: 'marina-walk' })
@@ -44,16 +48,16 @@ export class QuoteDto {
   @IsArray()
   @ArrayNotEmpty({ message: 'pick at least one service' })
   @IsString({ each: true })
-  services!: string[];
+  serviceIds!: string[];
 
   @ApiProperty({ example: 'dana' })
   @IsString()
   customerId!: string;
 
-  @ApiPropertyOptional({ enum: ['desk', 'online'], default: 'desk' })
+  @ApiPropertyOptional({ enum: ['DESK', 'ONLINE'], default: 'DESK' })
   @IsOptional()
-  @IsIn(['desk', 'online'])
-  channel: 'desk' | 'online' = 'desk';
+  @IsIn(['DESK', 'ONLINE'])
+  channel: 'DESK' | 'ONLINE' = 'DESK';
 
   @ApiPropertyOptional({
     example: 900,
@@ -97,9 +101,9 @@ export class QuoteController {
     return this.handler.execute({
       branchId: dto.branchId,
       tradingDay: dto.day,
-      serviceIds: dto.services,
+      serviceIds: dto.serviceIds,
       customerId: dto.customerId,
-      channel: dto.channel,
+      channel: unshout(dto.channel, CHANNELS)!,
       startMin: dto.startMin,
     });
   }
