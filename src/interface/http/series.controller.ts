@@ -3,11 +3,11 @@ import {
   Controller,
   Get,
   Param,
-  ParseUUIDPipe,
   Post,
   Query,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { ResourceIdPipe } from './resource-id.pipe';
 import {
   ApiCreatedResponse,
   ApiNotFoundResponse,
@@ -244,7 +244,7 @@ export class SeriesController {
   @ApiOkResponse({ description: 'The occurrence timeline with health.' })
   @ApiNotFoundResponse()
   async getPanel(
-    @Param('id', new ParseUUIDPipe()) id: string,
+    @Param('id', ResourceIdPipe) id: string,
   ): Promise<SeriesPanelView> {
     return this.panel.execute(id);
   }
@@ -252,7 +252,7 @@ export class SeriesController {
   @Get(':id/occurrences')
   @ApiOperation({ summary: 'The occurrence timeline alone' })
   async getOccurrences(
-    @Param('id', new ParseUUIDPipe()) id: string,
+    @Param('id', ResourceIdPipe) id: string,
   ): Promise<SeriesPanelView['occurrences']> {
     return (await this.panel.execute(id)).occurrences;
   }
@@ -266,7 +266,7 @@ export class SeriesController {
       'on anything that no longer fits.',
   })
   async materialise(
-    @Param('id', new ParseUUIDPipe()) id: string,
+    @Param('id', ResourceIdPipe) id: string,
     @Body() dto: MaterialiseDto,
   ): Promise<MaterialiseResult> {
     return this.materialiser.run(id, dto.today);
@@ -280,7 +280,7 @@ export class SeriesController {
       'window. Anything inside it is returned for the desk to confirm one at a time.',
   })
   async pause(
-    @Param('id', new ParseUUIDPipe()) id: string,
+    @Param('id', ResourceIdPipe) id: string,
   ): Promise<LifecycleResult> {
     return this.lifecycle.pauseOrEnd(id, 'paused');
   }
@@ -288,16 +288,14 @@ export class SeriesController {
   @Post(':id/resume')
   @ApiOperation({ summary: 'Resume a paused series' })
   async resume(
-    @Param('id', new ParseUUIDPipe()) id: string,
+    @Param('id', ResourceIdPipe) id: string,
   ): Promise<LifecycleResult> {
     return this.lifecycle.resume(id);
   }
 
   @Post(':id/end')
   @ApiOperation({ summary: 'End the series for good' })
-  async end(
-    @Param('id', new ParseUUIDPipe()) id: string,
-  ): Promise<LifecycleResult> {
+  async end(@Param('id', ResourceIdPipe) id: string): Promise<LifecycleResult> {
     return this.lifecycle.pauseOrEnd(id, 'ended');
   }
 
@@ -307,8 +305,8 @@ export class SeriesController {
     description: 'The slot is released and the series continues.',
   })
   async skip(
-    @Param('id', new ParseUUIDPipe()) id: string,
-    @Param('occurrenceId', new ParseUUIDPipe()) occurrenceId: string,
+    @Param('id', ResourceIdPipe) id: string,
+    @Param('occurrenceId', ResourceIdPipe) occurrenceId: string,
   ): Promise<LifecycleResult> {
     return this.lifecycle.skip(id, occurrenceId);
   }
@@ -321,8 +319,8 @@ export class SeriesController {
       'before choosing, so nobody rewrites a year of visits by accident.',
   })
   async previewEdit(
-    @Param('id', new ParseUUIDPipe()) id: string,
-    @Param('occurrenceId', new ParseUUIDPipe()) occurrenceId: string,
+    @Param('id', ResourceIdPipe) id: string,
+    @Param('occurrenceId', ResourceIdPipe) occurrenceId: string,
     @Query('scope') scope: string,
   ): Promise<{
     affected: readonly string[];

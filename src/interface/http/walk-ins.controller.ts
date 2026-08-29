@@ -1,12 +1,5 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  ParseUUIDPipe,
-  Post,
-  Query,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { ResourceIdPipe } from './resource-id.pipe';
 import {
   ApiCreatedResponse,
   ApiNotFoundResponse,
@@ -137,7 +130,7 @@ export class WalkInsController {
   @ApiOkResponse({ description: 'The hold to confirm.' })
   @ApiNotFoundResponse()
   async seat(
-    @Param('id', new ParseUUIDPipe()) id: string,
+    @Param('id', ResourceIdPipe) id: string,
     @Body() dto: SeatWalkInDto,
   ): Promise<unknown> {
     return this.handler.seat(id, dto.startMin, dto.staffId);
@@ -146,7 +139,7 @@ export class WalkInsController {
   @Post(':id/leave')
   @ApiOperation({ summary: 'They gave up, or were sent to the waitlist' })
   async leave(
-    @Param('id', new ParseUUIDPipe()) id: string,
+    @Param('id', ResourceIdPipe) id: string,
   ): Promise<{ left: boolean }> {
     return this.handler.leave(id);
   }

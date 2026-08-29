@@ -1,12 +1,5 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Headers,
-  Param,
-  ParseUUIDPipe,
-  Post,
-} from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post } from '@nestjs/common';
+import { ResourceIdPipe } from './resource-id.pipe';
 import {
   ApiConflictResponse,
   ApiCreatedResponse,
@@ -129,9 +122,7 @@ export class BookingsController {
   })
   @ApiOkResponse({ description: 'The booking.' })
   @ApiNotFoundResponse({ description: 'No such booking.' })
-  get(
-    @Param('id', new ParseUUIDPipe()) id: string,
-  ): Promise<BookingDetailView> {
+  get(@Param('id', ResourceIdPipe) id: string): Promise<BookingDetailView> {
     return this.detail.execute(id);
   }
 
@@ -150,7 +141,7 @@ export class BookingsController {
     description: 'Not a live booking, or the start is too close.',
   })
   paymentLink(
-    @Param('id', new ParseUUIDPipe()) id: string,
+    @Param('id', ResourceIdPipe) id: string,
     @CurrentActor() actor: Actor,
   ): Promise<PaymentLinkView> {
     return this.links.execute(id, { kind: actor.kind, id: actor.id });

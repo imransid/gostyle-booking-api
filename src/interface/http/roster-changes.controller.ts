@@ -1,11 +1,5 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  ParseUUIDPipe,
-  Post,
-} from '@nestjs/common';
+import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { ResourceIdPipe } from './resource-id.pipe';
 import {
   ApiConflictResponse,
   ApiCreatedResponse,
@@ -135,7 +129,7 @@ export class RosterChangesController {
   @Get(':id')
   @ApiOperation({ summary: 'The worklist and whether the edit may commit' })
   @ApiNotFoundResponse()
-  async view(@Param('id', new ParseUUIDPipe()) id: string): Promise<unknown> {
+  async view(@Param('id', ResourceIdPipe) id: string): Promise<unknown> {
     return this.handler.view(id);
   }
 
@@ -150,8 +144,8 @@ export class RosterChangesController {
     description: 'The item is not open, or does not exist.',
   })
   async resolve(
-    @Param('id', new ParseUUIDPipe()) id: string,
-    @Param('itemId', new ParseUUIDPipe()) itemId: string,
+    @Param('id', ResourceIdPipe) id: string,
+    @Param('itemId', ResourceIdPipe) itemId: string,
     @Body() dto: ResolveItemDto,
     @CurrentActor() actor: Actor,
   ): Promise<WireGate> {
@@ -175,7 +169,7 @@ export class RosterChangesController {
   })
   @ApiOkResponse({ description: 'Committed, or the reason it was refused.' })
   @ApiConflictResponse({ description: 'The worklist is not clear.' })
-  async commit(@Param('id', new ParseUUIDPipe()) id: string): Promise<{
+  async commit(@Param('id', ResourceIdPipe) id: string): Promise<{
     committed: boolean;
     gate: WireGate;
     message: string;

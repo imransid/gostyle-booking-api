@@ -9,6 +9,7 @@ export default defineConfig({
       'src/domain/**/*.spec.ts',
       'src/application/**/*.spec.ts',
       'src/infrastructure/**/*.spec.ts',
+      'src/interface/**/*.spec.ts',
     ],
     environment: 'node',
   },
