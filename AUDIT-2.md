@@ -437,10 +437,10 @@ Every value in Table 19.3, checked against the constant that holds it.
 | Sliver threshold | 25 min | `grid.ts:29` = 25 | ✅ (see D1) |
 | Offer spacing | 25 min | `grid.ts:39` = 25 | ✅ |
 | Peak window | 17:00–20:00 | `customer.ts:155-156` 1020 / 1200 | ✅ (escalation default off, as Appendix C says) |
-| Deposit floor / ceiling | AED 10 / 500 | `customer.ts:178-179` | ✅ |
-| **Group deposit default** | **20% of the group total** | **no constant exists** | ❌ **MISMATCH** — and the group path never charges at all (W1) |
-| **Hold TTL** | **10:00** | `hold.ts:108` 10 min; **walk-in 5 min** (`walk-in.handler.ts:56`); **repair 1 min** (`roster-change.handler.ts:68`) | ❌ **MISMATCH** — three TTLs where the doc has one. `group-hold.handler.ts:49` also re-declares its own copy of the 10-minute value |
-| 3-D Secure grace | +5:00, once | `hold.ts:111` = 5 min | ✅ value — but `extendOnce` has no caller |
+| Deposit floor / ceiling | AED 10 / 500 | `customer.ts:178-179` | ✅ — and the ceiling now applies to **full payment** too (`eabacae`), closing the invented exemption this audit flagged |
+| **Group deposit default** | **20% of the group total** | **no constant exists** | ❌ **MISMATCH, STILL OPEN** — the group path still never charges (W1) |
+| **Hold TTL** | **10:00** | **15 min** (`hold.ts`), walk-in 5 min, repair 1 min | ⚠️ **DELIBERATE DIVERGENCE** — the front-end contract says fifteen and is later than this document, so it wins (`eabacae`). The group handler's private copy of the ten-minute value is gone; walk-in and repair keep their own distinctly-named TTLs on purpose |
+| 3-D Secure grace | +5:00, once | **10 min** (`hold.ts`) | ⚠️ **DELIBERATE DIVERGENCE** — front-end contract, same precedence as the TTL (`eabacae`). Still no caller: `extendOnce` remains unreachable |
 | Waitlist offer TTL | 15:00 | `waitlist.ts:51` = 15 min | ✅ |
 | Payment-link window | 6 h, capped at start−2 h | `payment-link.ts:13,22` | ✅ |
 | Arrival grace | 15 min, 20 VIP | `lifecycle.ts:309,311` | ✅ value — but `canCheckIn` has no caller (W6) |
@@ -512,6 +512,37 @@ read carefully and implemented faithfully as domain logic, then not connected.**
 The tests pass because they test the domain directly. A reader of the commit log
 would reasonably believe check-in is gated and the capture ladder runs; neither
 is true at runtime.
+
+---
+
+## What has been fixed since this audit was written
+
+Five commits act on it. The findings below are **closed**; everything else in
+this report still stands as written.
+
+| Audit finding | Closed by |
+|---|---|
+| Deposit ceiling exempted full payment (invented carve-out) | `eabacae` — the ceiling applies to every requirement; a full requirement that hits it becomes a deposit |
+| §17.2 `GET /bookings` / `GET /bookings/:id` — no read surface at all | `77380f6` — `GET /v1/bookings/{id}` returns the visit, its items, its ledger and its history in one call |
+| §17.2 `POST /bookings/:id/payment-link` missing | `77380f6` — with §8.4.1's window, and a refusal rather than a dead link inside the cutoff |
+| Appendix C values unreachable by the front end | `77380f6` — `GET /v1/settings`, imported from the owning modules so it cannot drift |
+| `OFFER_SPACING_MIN` duplicated | already fixed in `3671f27` before this audit was written |
+| Group holds kept a private copy of the hold TTL | `eabacae` — same duplication class; it imports the one definition now |
+| Promo was a flat house-wide 10% with no code on the receipt | `eabacae` — the rate rides on the code, and the settlement names it |
+| Request DTOs still spoke domain vocabulary (5 enums, incl. all three series enums) | `5db4141` — a front end holding the contract could not create a series at all before this |
+| `GET /v1/roster-changes/:id` returned a raw database row (4 leaks) | `5db4141` — a real view type, and `toWireProposal` renames the two integers the JSONB was smuggling past `tsc` |
+| `@Get('api/v1/me')` registered at `/v1/api/v1/me` | `5db4141` |
+
+Two bugs were found **only by running the new code**, both caught by CHECK
+constraints written months earlier, and both recorded in `77380f6`: a
+hard-coded `actorKind: 'staff'` with no actor id, and — worse — a
+`booking.update` and its audit insert that were not in one transaction, which
+left a booking in `PENDING_PAYMENT` with a link and no row saying who sent it.
+
+Still open and worth naming: **groups still confirm free** (W1), the daily cap
+still reads a frozen fixture number (W2), the lead time is still dropped at
+hold (W3), the confirm ladder is still one check of four (W4), and the
+feasibility token is still never compared (W5).
 
 ---
 
