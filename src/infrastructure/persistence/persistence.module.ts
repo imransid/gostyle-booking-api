@@ -1,5 +1,6 @@
 import { Global, Module } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
+import { TenantContext } from '../tenancy/tenant-context';
 import { OutboxRelay } from '../messaging/outbox-relay.service';
 import { ReminderRepository } from './reminder.repository';
 import { RescheduleRepository } from './reschedule.repository';
@@ -40,6 +41,7 @@ import { WalkInSeatedListener } from '../messaging/walk-in-seated-listener';
 @Global()
 @Module({
   providers: [
+    TenantContext,
     WalkInRepository,
     CompactionRepository,
     RosterChangeRepository,
@@ -108,6 +110,7 @@ import { WalkInSeatedListener } from '../messaging/walk-in-seated-listener';
     FixtureBookingContext,
   ],
   exports: [
+    TenantContext,
     WalkInRepository,
     CompactionRepository,
     RosterChangeRepository,

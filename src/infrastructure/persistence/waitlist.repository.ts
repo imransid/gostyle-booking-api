@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
+import { TenantContext } from '../tenancy/tenant-context';
 import { toUuid } from './hold.repository';
 import { SlugIndex } from './slug-uuid';
 import { STAFF_SLUGS } from '../fixtures/fixture-booking-context';
@@ -68,7 +69,10 @@ export class WaitlistRepository {
   /** booking_item.staff_id is a uuid; placeHold expects a slug. */
   private readonly staff = new SlugIndex(STAFF_SLUGS);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tenants: TenantContext,
+  ) {}
 
   /**
    * Offer a freed slot to the top candidate.
@@ -216,6 +220,7 @@ export class WaitlistRepository {
   }): Promise<{ entryId: string; position: number }> {
     const entry = await this.prisma.waitlistEntry.create({
       data: {
+        tenantId: this.tenants.current(),
         branchId: toUuid(input.branchId),
         customerId: toUuid(input.customerId),
         // The SAME normalisation booking_item gets. The catalogue speaks

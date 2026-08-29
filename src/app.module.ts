@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
@@ -10,6 +10,7 @@ import { PersistenceModule } from './infrastructure/persistence/persistence.modu
 
 import { APP_GUARD } from '@nestjs/core';
 import { BookingAuthGuard } from './auth/booking-auth.guard';
+import { TenantMiddleware } from './infrastructure/tenancy/tenant.middleware';
 
 @Module({
   imports: [
@@ -22,4 +23,13 @@ import { BookingAuthGuard } from './auth/booking-auth.guard';
   controllers: [AppController],
   providers: [AppService, { provide: APP_GUARD, useClass: BookingAuthGuard }],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  /**
+   * Every route, including the public ones. A walk-in joined without a token
+   * still belongs to a tenant, and the webhook that pays for it carries the
+   * same header.
+   */
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(TenantMiddleware).forRoutes('*');
+  }
+}

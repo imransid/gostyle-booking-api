@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from './prisma.service';
+import { TenantContext } from '../tenancy/tenant-context';
 import { toUuid } from './hold.repository';
 import { SlugIndex } from './slug-uuid';
 import { STAFF_SLUGS } from '../fixtures/fixture-booking-context';
@@ -47,11 +48,15 @@ export class RosterChangeRepository {
   /** Columns hold uuids; the engine names professionals by slug. */
   private readonly staff = new SlugIndex(STAFF_SLUGS);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tenants: TenantContext,
+  ) {}
 
   async open(input: OpenChangeInput): Promise<string> {
     const change = await this.prisma.rosterChange.create({
       data: {
+        tenantId: this.tenants.current(),
         branchId: toUuid(input.branchId),
         tradingDay: new Date(`${input.tradingDay}T00:00:00Z`),
         kind: input.kind,

@@ -2,6 +2,7 @@ import type { OccurrenceState } from '../../generated/prisma/enums';
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from './prisma.service';
+import { TenantContext } from '../tenancy/tenant-context';
 import { toUuid, branchInstant } from './hold.repository';
 import { SlugIndex } from './slug-uuid';
 import { isExclusionViolation } from './pg-errors';
@@ -119,7 +120,10 @@ export class SeriesRepository {
    */
   private readonly staff = new SlugIndex(STAFF_SLUGS);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tenants: TenantContext,
+  ) {}
 
   async create(
     input: CreateSeriesInput,
@@ -127,6 +131,7 @@ export class SeriesRepository {
     return this.prisma.$transaction(async (tx) => {
       const series = await tx.bookingSeries.create({
         data: {
+          tenantId: this.tenants.current(),
           branchId: toUuid(input.branchId),
           customerId: toUuid(input.customerId),
           anchorDay: new Date(`${input.anchorDay}T00:00:00Z`),
@@ -327,6 +332,7 @@ export class SeriesRepository {
 
         const booking = await tx.booking.create({
           data: {
+            tenantId: this.tenants.current(),
             code,
             branchId: toUuid(input.branchId),
             customerId: toUuid(input.customerId),

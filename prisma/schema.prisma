@@ -75,6 +75,15 @@ enum SegmentKind {
 // ============================================================ booking
 
 model Booking {
+
+  /// WHO THIS ROW BELONGS TO, captured and not yet enforced.
+  ///
+  /// Stamped from the X-Tenant-Id header on the way in (falling back to the
+  /// tenantId claim on the staff token). NOTHING FILTERS ON IT YET, and that
+  /// is deliberate: a filter added before every row carries a value silently
+  /// hides the rows written without one. Backfill first, then filter, then
+  /// make it NOT NULL -- in that order, and each step observable.
+  tenantId String? @map("tenant_id")
   id   String @id @default(uuid()) @db.Uuid
   code String @unique
 
@@ -385,6 +394,15 @@ enum WaitlistStatus {
 }
 
 model WaitlistEntry {
+
+  /// WHO THIS ROW BELONGS TO, captured and not yet enforced.
+  ///
+  /// Stamped from the X-Tenant-Id header on the way in (falling back to the
+  /// tenantId claim on the staff token). NOTHING FILTERS ON IT YET, and that
+  /// is deliberate: a filter added before every row carries a value silently
+  /// hides the rows written without one. Backfill first, then filter, then
+  /// make it NOT NULL -- in that order, and each step observable.
+  tenantId String? @map("tenant_id")
   id String @id @default(uuid()) @db.Uuid
 
   branchId   String @map("branch_id") @db.Uuid
@@ -441,6 +459,15 @@ enum GroupArrangement {
 }
 
 model BookingGroup {
+
+  /// WHO THIS ROW BELONGS TO, captured and not yet enforced.
+  ///
+  /// Stamped from the X-Tenant-Id header on the way in (falling back to the
+  /// tenantId claim on the staff token). NOTHING FILTERS ON IT YET, and that
+  /// is deliberate: a filter added before every row carries a value silently
+  /// hides the rows written without one. Backfill first, then filter, then
+  /// make it NOT NULL -- in that order, and each step observable.
+  tenantId String? @map("tenant_id")
   id String @id @default(uuid()) @db.Uuid
 
   branchId    String @map("branch_id") @db.Uuid
@@ -565,6 +592,15 @@ enum OccurrenceState {
 }
 
 model BookingSeries {
+
+  /// WHO THIS ROW BELONGS TO, captured and not yet enforced.
+  ///
+  /// Stamped from the X-Tenant-Id header on the way in (falling back to the
+  /// tenantId claim on the staff token). NOTHING FILTERS ON IT YET, and that
+  /// is deliberate: a filter added before every row carries a value silently
+  /// hides the rows written without one. Backfill first, then filter, then
+  /// make it NOT NULL -- in that order, and each step observable.
+  tenantId String? @map("tenant_id")
   id String @id @default(uuid()) @db.Uuid
 
   branchId   String @map("branch_id") @db.Uuid
@@ -686,6 +722,15 @@ enum WorklistItemState {
 }
 
 model RosterChange {
+
+  /// WHO THIS ROW BELONGS TO, captured and not yet enforced.
+  ///
+  /// Stamped from the X-Tenant-Id header on the way in (falling back to the
+  /// tenantId claim on the staff token). NOTHING FILTERS ON IT YET, and that
+  /// is deliberate: a filter added before every row carries a value silently
+  /// hides the rows written without one. Backfill first, then filter, then
+  /// make it NOT NULL -- in that order, and each step observable.
+  tenantId String? @map("tenant_id")
   id String @id @default(uuid()) @db.Uuid
 
   branchId   String   @map("branch_id") @db.Uuid
@@ -761,6 +806,15 @@ enum WalkInStatus {
 }
 
 model WalkInEntry {
+
+  /// WHO THIS ROW BELONGS TO, captured and not yet enforced.
+  ///
+  /// Stamped from the X-Tenant-Id header on the way in (falling back to the
+  /// tenantId claim on the staff token). NOTHING FILTERS ON IT YET, and that
+  /// is deliberate: a filter added before every row carries a value silently
+  /// hides the rows written without one. Backfill first, then filter, then
+  /// make it NOT NULL -- in that order, and each step observable.
+  tenantId String? @map("tenant_id")
   id String @id @default(uuid()) @db.Uuid
 
   branchId   String   @map("branch_id") @db.Uuid

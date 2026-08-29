@@ -4,6 +4,7 @@ import type {
 } from '../../generated/prisma/enums';
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
+import { TenantContext } from '../tenancy/tenant-context';
 import { isExclusionViolation } from './pg-errors';
 import { toUuid } from './hold.repository';
 
@@ -88,7 +89,10 @@ export type ConfirmOutcome =
 export class BookingRepository {
   private static readonly log = new Logger(BookingRepository.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tenants: TenantContext,
+  ) {}
 
   /**
    * Turn a hold into a booking. Nine writes, one COMMIT.
@@ -145,6 +149,7 @@ export class BookingRepository {
         // 2. The visit.
         const booking = await tx.booking.create({
           data: {
+            tenantId: this.tenants.current(),
             code,
             branchId: toUuid(input.branchId),
             customerId: toUuid(input.customerId),

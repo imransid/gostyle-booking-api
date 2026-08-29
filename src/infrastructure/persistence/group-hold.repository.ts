@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
+import { TenantContext } from '../tenancy/tenant-context';
 import { toUuid, branchInstant } from './hold.repository';
 import {
   planParty,
@@ -72,7 +73,10 @@ export type GroupHoldOutcome =
 export class GroupHoldRepository {
   private static readonly log = new Logger(GroupHoldRepository.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tenants: TenantContext,
+  ) {}
 
   /**
    * Hold every lane of a party, or none of them.
@@ -130,6 +134,7 @@ export class GroupHoldRepository {
         //    others.
         const group = await tx.bookingGroup.create({
           data: {
+            tenantId: this.tenants.current(),
             branchId: branch,
             organiserId: toUuid(input.organiserId),
             tradingDay: day,

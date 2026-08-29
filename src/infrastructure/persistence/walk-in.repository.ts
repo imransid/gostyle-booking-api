@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
+import { TenantContext } from '../tenancy/tenant-context';
 import { toUuid } from './hold.repository';
 import type { WalkIn } from '@domain/booking/walk-in';
 
@@ -21,13 +22,17 @@ export interface WalkInRow {
 
 @Injectable()
 export class WalkInRepository {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tenants: TenantContext,
+  ) {}
 
   async join(
     input: JoinWalkInInput,
   ): Promise<{ id: string; position: number }> {
     const entry = await this.prisma.walkInEntry.create({
       data: {
+        tenantId: this.tenants.current(),
         branchId: toUuid(input.branchId),
         tradingDay: new Date(`${input.tradingDay}T00:00:00Z`),
         customerId: input.customerId === null ? null : toUuid(input.customerId),

@@ -1,6 +1,7 @@
 import type { GroupStatus } from '@domain/booking/group-status';
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
+import { TenantContext } from '../tenancy/tenant-context';
 import { toUuid, branchInstant } from './hold.repository';
 import { planParty, type PartyContext } from '@domain/availability/party';
 import { Money } from '@domain/shared/money';
@@ -70,7 +71,10 @@ export type GroupConfirmOutcome =
 export class GroupConfirmRepository {
   private static readonly log = new Logger(GroupConfirmRepository.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tenants: TenantContext,
+  ) {}
 
   /**
    * Turn a held party into N bookings, or nothing at all.
@@ -194,6 +198,7 @@ export class GroupConfirmRepository {
 
         const booking = await tx.booking.create({
           data: {
+            tenantId: this.tenants.current(),
             code,
             branchId: branch,
             customerId: participant.customerId ?? toUuid(input.groupId),
