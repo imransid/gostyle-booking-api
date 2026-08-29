@@ -14,6 +14,8 @@ import {
   type Tier,
 } from '@domain/booking/customer';
 import { quote } from '@domain/booking/quote';
+import { linkWindow } from '@domain/booking/payment-link';
+import { branchInstant } from '@infrastructure/persistence/hold.repository';
 import { Money } from '@domain/shared/money';
 import { resolveSelection } from '@domain/booking/package';
 import { PACKAGES } from '@infrastructure/fixtures/fixture-booking-context';
@@ -92,6 +94,29 @@ export interface QuoteView {
   readonly deposit: string;
   readonly dueAtCheckoutMinor: number;
   readonly dueAtCheckout: string;
+  /**
+   * The resolved requirement source, at the top level as well as in the
+   * trace. It is the string the booking stores and the one support quotes
+   * back months later, so it should not need digging out of a nested object.
+   */
+  readonly requirementSource: string;
+
+  /**
+   * Can this booking be paid by link at all?
+   *
+   * False inside the last two hours before the start: §8.4.1's window is the
+   * shorter of six hours and start-minus-two, and inside that it has already
+   * closed. Confirm REFUSES the link rail there with a 422
+   * (confirm-booking.handler.ts:212), so a front end that offers the option
+   * anyway is offering a button that cannot work. Better it knows here, while
+   * it is still drawing the rail choices, than after the customer picks one.
+   */
+  readonly linkAvailable: boolean;
+  /** Why not, when it is not. Null when the link is available. */
+  readonly linkUnavailableReason: string | null;
+  /** When the link would close, if one were issued now. */
+  readonly linkExpiresAt: string | null;
+
   readonly requirement: {
     readonly kind: Shouted<RequirementKind>;
     readonly source: string;
@@ -154,6 +179,15 @@ export class GetQuoteHandler {
       branch: DEFAULT_BRANCH,
     });
 
+    // THE SAME linkWindow() confirm runs, against the same start, so the
+    // answer here and the 422 there cannot disagree. A quote is asked for
+    // before a slot is held, so this uses the start the caller is asking
+    // about rather than a reservation.
+    const window = linkWindow(
+      Date.now(),
+      branchInstant(q.tradingDay, q.startMin).getTime(),
+    );
+
     // THE SAME quote() the wizard and the till run. A second pipeline here
     // would be a second answer, and the one that disagrees with the register
     // is the one the customer is looking at.
@@ -197,6 +231,18 @@ export class GetQuoteHandler {
       deposit: Money.fils(q1.dueNowFils).toString(),
       dueAtCheckoutMinor: q1.dueAtCheckoutFils,
       dueAtCheckout: Money.fils(q1.dueAtCheckoutFils).toString(),
+      requirementSource: requirement.source,
+      linkAvailable: window.kind === 'open',
+      linkUnavailableReason:
+        window.kind === 'open'
+          ? null
+          : `The start is too close for a payment link: the window closed ` +
+            `${window.minutesPastCutoff} minutes ago. Take payment now instead.`,
+      linkExpiresAt:
+        window.kind === 'open'
+          ? new Date(window.expiresAtMs).toISOString()
+          : null,
+
       requirement: {
         kind: shout(requirement.kind),
         source: requirement.source,
