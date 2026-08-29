@@ -13,7 +13,6 @@ import {
   ArrayMinSize,
   ArrayNotEmpty,
   IsArray,
-  IsIn,
   IsInt,
   IsOptional,
   IsString,

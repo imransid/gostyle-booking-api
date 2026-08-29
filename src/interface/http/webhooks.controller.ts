@@ -16,7 +16,7 @@ import {
   ApiTags,
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
-import { IsIn, IsInt, IsString, Min } from 'class-validator';
+import { IsInt, IsString, Min } from 'class-validator';
 import { WireEnum } from './wire-enum.decorator';
 import {
   PaymentWebhookHandler,

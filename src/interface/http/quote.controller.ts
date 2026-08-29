@@ -10,7 +10,6 @@ import {
 import {
   ArrayNotEmpty,
   IsArray,
-  IsIn,
   IsInt,
   IsOptional,
   IsString,

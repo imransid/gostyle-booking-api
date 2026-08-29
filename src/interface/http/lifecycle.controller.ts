@@ -9,7 +9,6 @@ import {
 } from '@nestjs/swagger';
 import { unshout } from '@application/contract/wire';
 import {
-  IsIn,
   IsInt,
   IsObject,
   IsOptional,

@@ -10,7 +10,7 @@ import {
   ApiPropertyOptional,
   ApiTags,
 } from '@nestjs/swagger';
-import { IsIn, IsOptional, IsString, Matches } from 'class-validator';
+import { IsOptional, IsString, Matches } from 'class-validator';
 import { WireEnum } from './wire-enum.decorator';
 import { unshout } from '@application/contract/wire';
 import {

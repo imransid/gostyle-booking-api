@@ -71,6 +71,9 @@ describe('the request scope', () => {
         seen.push(ctx.current() ?? 'null');
       }),
       ctx.run('beta', async () => {
+        // Yields once, so beta genuinely interleaves with alpha's timer
+        // rather than running to completion before it starts.
+        await Promise.resolve();
         seen.push(ctx.current() ?? 'null');
       }),
     ]);

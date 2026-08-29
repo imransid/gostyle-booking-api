@@ -20,7 +20,6 @@ import {
 } from '@nestjs/swagger';
 import {
   IsArray,
-  IsIn,
   IsInt,
   IsOptional,
   IsString,

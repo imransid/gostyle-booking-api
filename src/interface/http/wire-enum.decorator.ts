@@ -1,4 +1,3 @@
-import { applyDecorators } from '@nestjs/common';
 import { Transform } from 'class-transformer';
 import { IsIn } from 'class-validator';
 
@@ -16,11 +15,21 @@ import { IsIn } from 'class-validator';
  * the published OpenAPI enum clean: the docs say DESK and ONLINE, because
  * that is what a caller should send and what they will always get back.
  */
-export function WireEnum<T extends string>(values: readonly T[]) {
-  return applyDecorators(
-    Transform(({ value }) =>
-      typeof value === 'string' ? value.toUpperCase() : value,
-    ),
-    IsIn(values),
+export function WireEnum<T extends string>(
+  values: readonly T[],
+): PropertyDecorator {
+  // Composed by hand rather than through applyDecorators, which is declared
+  // to return a broad decorator union that reads as `any` on a property and
+  // so cannot be returned without either an assertion or a disabled rule.
+  // Transform and IsIn are both plain PropertyDecorators, so calling them in
+  // order is the same thing, fully typed, and one dependency lighter.
+  const upperCase = Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.toUpperCase() : value,
   );
+  const oneOf = IsIn(values);
+
+  return (target, propertyKey) => {
+    upperCase(target, propertyKey);
+    oneOf(target, propertyKey);
+  };
 }
