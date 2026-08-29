@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { shout, type Shouted } from '@application/contract/wire';
 import {
   handleWebhook,
   type WebhookIntent,
@@ -16,7 +17,7 @@ export interface WebhookCommand {
 }
 
 export interface WebhookView {
-  readonly outcome: WebhookOutcome['kind'];
+  readonly outcome: Shouted<WebhookOutcome['kind']>;
   readonly bookingCode: string;
   readonly explanation: string;
   /** True when this was a retry of something already handled. */
@@ -53,7 +54,7 @@ export class PaymentWebhookHandler {
         `Webhook for unknown booking ${cmd.bookingCode}, acknowledged`,
       );
       return {
-        outcome: 'ignored',
+        outcome: shout('ignored' as const),
         bookingCode: cmd.bookingCode,
         explanation: 'No such booking. Recorded and acknowledged.',
         replayed: false,
@@ -64,7 +65,7 @@ export class PaymentWebhookHandler {
 
     if (decision.kind === 'already_processed') {
       return {
-        outcome: 'already_processed',
+        outcome: shout('already_processed' as const),
         bookingCode: cmd.bookingCode,
         explanation: 'This event was already handled. Nothing changed.',
         replayed: true,
@@ -114,7 +115,7 @@ export class PaymentWebhookHandler {
     );
 
     return {
-      outcome: decision.kind,
+      outcome: shout(decision.kind),
       bookingCode: cmd.bookingCode,
       explanation,
       replayed: false,

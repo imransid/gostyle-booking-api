@@ -20,6 +20,8 @@ import {
 } from '@domain/booking/recurrence';
 import {
   deriveSeriesHealth,
+  type SeriesHealth,
+  type RiskReason,
   type SeriesStatus,
 } from '@domain/booking/series-health';
 import {
@@ -164,8 +166,8 @@ export interface OccurrenceView {
 export interface SeriesPanelView {
   readonly seriesId: string;
   readonly status: Shouted<SeriesStatus>;
-  readonly health: string;
-  readonly healthReasons: readonly string[];
+  readonly health: Shouted<SeriesHealth>;
+  readonly healthReasons: readonly Shouted<RiskReason>[];
   readonly healthExplanation: string;
   readonly horizonEnd: string | null;
   readonly occurrences: readonly OccurrenceView[];
@@ -220,8 +222,8 @@ export class SeriesPanelHandler {
     return {
       seriesId,
       status: shout(series.status),
-      health: health.health,
-      healthReasons: health.reasons,
+      health: shout(health.health),
+      healthReasons: health.reasons.map(shout),
       healthExplanation: health.explanation,
       horizonEnd: null,
       occurrences: timeline.map((o) => ({
@@ -242,7 +244,7 @@ export class SeriesPanelHandler {
 
 export interface LifecycleResult {
   readonly seriesId: string;
-  readonly status: SeriesStatus;
+  readonly status: Shouted<SeriesStatus>;
   readonly cancelled: number;
   readonly needsExplicitConfirmation: readonly string[];
   readonly explanation: string;
@@ -274,7 +276,7 @@ export class SeriesLifecycleHandler {
 
     return {
       seriesId,
-      status: to,
+      status: shout(to),
       cancelled,
       needsExplicitConfirmation: plan.needsExplicitConfirmation,
       explanation: plan.explanation,
@@ -292,7 +294,7 @@ export class SeriesLifecycleHandler {
     await this.repo.setStatus(seriesId, 'active');
     return {
       seriesId,
-      status: 'active',
+      status: shout('active'),
       cancelled: 0,
       needsExplicitConfirmation: [],
       explanation:
@@ -313,7 +315,7 @@ export class SeriesLifecycleHandler {
     );
     return {
       seriesId,
-      status: 'active',
+      status: shout('active'),
       cancelled,
       needsExplicitConfirmation: [],
       explanation:

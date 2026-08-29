@@ -17,6 +17,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { IsIn, IsOptional, IsString, Matches } from 'class-validator';
+import { unshout } from '@application/contract/wire';
 import {
   RosterChangeHandler,
   type RosterChangeView,
@@ -31,6 +32,19 @@ import type { Actor } from '../../auth/actor';
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
+const ROSTER_CHANGE_KINDS = [
+  'shift_conflict',
+  'closure_sweep',
+  'chair_out_of_service',
+] as const;
+
+const RESOLUTIONS = [
+  'reassign',
+  'move',
+  'override',
+  'accept_cancellation',
+] as const;
+
 export class OpenRosterChangeDto {
   @ApiProperty()
   @IsString()
@@ -41,10 +55,10 @@ export class OpenRosterChangeDto {
   tradingDay!: string;
 
   @ApiProperty({
-    enum: ['shift_conflict', 'closure_sweep', 'chair_out_of_service'],
+    enum: ['SHIFT_CONFLICT', 'CLOSURE_SWEEP', 'CHAIR_OUT_OF_SERVICE'],
   })
-  @IsIn(['shift_conflict', 'closure_sweep', 'chair_out_of_service'])
-  kind!: RosterChangeKind;
+  @IsIn(['SHIFT_CONFLICT', 'CLOSURE_SWEEP', 'CHAIR_OUT_OF_SERVICE'])
+  kind!: Uppercase<RosterChangeKind>;
 
   @ApiPropertyOptional({
     example: 'maya',
@@ -71,12 +85,12 @@ export class ResolveItemDto {
   @ApiProperty({
     enum: ['reassign', 'move', 'override', 'accept_cancellation'],
     description:
-      'reassign and move are recorded as resolved; override is a manager ' +
-      'accepting the consequence; accept_cancellation applies the prepared ' +
+      'REASSIGN and MOVE are recorded as resolved; OVERRIDE is a manager ' +
+      'accepting the consequence; ACCEPT_CANCELLATION applies the prepared ' +
       'salon cancellation.',
   })
-  @IsIn(['reassign', 'move', 'override', 'accept_cancellation'])
-  resolution!: Resolution;
+  @IsIn(['REASSIGN', 'MOVE', 'OVERRIDE', 'ACCEPT_CANCELLATION'])
+  resolution!: Uppercase<Resolution>;
 }
 
 /**
@@ -108,7 +122,9 @@ export class RosterChangesController {
     return this.handler.open({
       branchId: dto.branchId,
       tradingDay: dto.tradingDay,
-      kind: dto.kind,
+      // Folded down at the edge. unshout() takes the allowed list, so an
+      // unknown word is caught here rather than at the INSERT.
+      kind: unshout(dto.kind, ROSTER_CHANGE_KINDS)!,
       staffId: dto.staffId ?? null,
       resourceType: dto.resourceType ?? null,
       reason: dto.reason,
@@ -139,10 +155,15 @@ export class RosterChangesController {
     @Body() dto: ResolveItemDto,
     @CurrentActor() actor: Actor,
   ): Promise<WireGate> {
-    return this.handler.resolve(id, itemId, dto.resolution, {
-      kind: actor.kind,
-      id: actor.id,
-    });
+    return this.handler.resolve(
+      id,
+      itemId,
+      unshout(dto.resolution, RESOLUTIONS)!,
+      {
+        kind: actor.kind,
+        id: actor.id,
+      },
+    );
   }
 
   @Post(':id/commit')

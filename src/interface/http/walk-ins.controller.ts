@@ -85,7 +85,7 @@ export class SeatWalkInDto {
  * The walk-in queue.
  *
  * Seating returns a HOLD, not a booking. The desk confirms it through the
- * ordinary POST /bookings, because a walk-in confirmed on its own path is a
+ * ordinary POST /v1/bookings, because a walk-in confirmed on its own path is a
  * walk-in whose deposit rules and audit trail drift from everybody else's.
  */
 @ApiTags('walk-ins')
@@ -132,7 +132,7 @@ export class WalkInsController {
     summary: 'Seat a walk-in',
     description:
       'Places an ordinary hold on the chosen start. Confirm it through ' +
-      'POST /bookings exactly as any other booking.',
+      'POST /v1/bookings exactly as any other booking.',
   })
   @ApiOkResponse({ description: 'The hold to confirm.' })
   @ApiNotFoundResponse()

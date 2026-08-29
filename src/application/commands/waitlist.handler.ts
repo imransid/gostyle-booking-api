@@ -33,7 +33,7 @@ export interface JoinView {
 }
 
 export interface AcceptView {
-  /** The client confirms this hold through POST /bookings, as normal. */
+  /** The client confirms this hold through POST /v1/bookings, as normal. */
   readonly holdId: string;
   readonly start: string;
   readonly end: string;
@@ -69,7 +69,7 @@ export class WaitlistHandler {
    * Take the offered slot.
    *
    * THIS DOES NOT CREATE A BOOKING. It places an ordinary hold and hands the
-   * id back, and the client confirms through POST /bookings exactly as it
+   * id back, and the client confirms through POST /v1/bookings exactly as it
    * would for any other booking.
    *
    * That is the point. Accepting "converts through the normal confirm path,
@@ -103,7 +103,7 @@ export class WaitlistHandler {
       start: hold.start,
       end: hold.end,
       expiresInSeconds: hold.expiresInSeconds,
-      note: 'Confirm this hold through POST /bookings. The requirement is resolved fresh, so a deposit may be due.',
+      note: 'Confirm this hold through POST /v1/bookings. The requirement is resolved fresh, so a deposit may be due.',
     };
   }
 

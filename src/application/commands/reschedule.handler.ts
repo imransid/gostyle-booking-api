@@ -32,7 +32,7 @@ export interface RescheduleView {
   readonly lateMove: boolean;
   /** Carried, or forfeited. */
   readonly deposit: string;
-  readonly depositOutcome: 'carried' | 'forfeited';
+  readonly depositOutcome: 'CARRIED' | 'FORFEITED';
   /** Set when the serial-rescheduler rule bites. */
   readonly nowRequires?: string;
   /** The sentence the desk reads to the customer. */
@@ -90,7 +90,7 @@ export class RescheduleHandler {
       deposit: Money.fils(
         carried ? o.money.amountFils : o.money.forfeitedFils,
       ).toString(),
-      depositOutcome: carried ? 'carried' : 'forfeited',
+      depositOutcome: carried ? 'CARRIED' : 'FORFEITED',
       ...(o.acquiresDepositFils !== null
         ? { nowRequires: Money.fils(o.acquiresDepositFils).toString() }
         : {}),

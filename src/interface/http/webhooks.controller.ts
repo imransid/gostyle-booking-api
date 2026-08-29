@@ -25,8 +25,16 @@ import {
   PAYMENT_GATEWAY,
   type PaymentGateway,
 } from '@application/ports/payment-gateway.port';
+import { unshout } from '@application/contract/wire';
 import { Public } from '../../auth/public.decorator';
 import type { IntentKind } from '@domain/booking/payment-webhook';
+
+const INTENT_KINDS = [
+  'captured',
+  'capture_failed',
+  'refunded',
+  'refund_failed',
+] as const;
 
 export class PaymentWebhookDto {
   @ApiProperty({ example: 'sim_9f2c...' })
@@ -38,15 +46,15 @@ export class PaymentWebhookDto {
   bookingCode!: string;
 
   @ApiProperty({
-    enum: ['captured', 'capture_failed', 'refunded', 'refund_failed'],
+    enum: ['CAPTURED', 'CAPTURE_FAILED', 'REFUNDED', 'REFUND_FAILED'],
   })
-  @IsIn(['captured', 'capture_failed', 'refunded', 'refund_failed'])
-  kind!: IntentKind;
+  @IsIn(['CAPTURED', 'CAPTURE_FAILED', 'REFUNDED', 'REFUND_FAILED'])
+  kind!: Uppercase<IntentKind>;
 
   @ApiProperty({ example: 24000 })
   @IsInt()
   @Min(0)
-  amountFils!: number;
+  amountMinor!: number;
 
   @ApiProperty({ example: 'card' })
   @IsString()
@@ -111,8 +119,8 @@ export class WebhooksController {
     return this.handler.execute({
       intent: {
         intentId: dto.intentId,
-        kind: dto.kind,
-        amountFils: dto.amountFils,
+        kind: unshout(dto.kind, INTENT_KINDS)!,
+        amountFils: dto.amountMinor,
         rail: dto.rail,
       },
       bookingCode: dto.bookingCode,

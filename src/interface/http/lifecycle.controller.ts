@@ -7,6 +7,7 @@ import {
   ApiPropertyOptional,
   ApiTags,
 } from '@nestjs/swagger';
+import { unshout } from '@application/contract/wire';
 import {
   IsIn,
   IsInt,
@@ -29,6 +30,9 @@ import {
 } from '@application/commands/reschedule.handler';
 import { ApiGoneResponse, ApiProperty } from '@nestjs/swagger';
 
+/** The domain words the shouted request enum folds back down to. */
+const CANCEL_INITIATORS = ['customer', 'salon'] as const;
+
 export class LifecycleDto {
   @ApiPropertyOptional({
     example: 'customer called to cancel',
@@ -40,14 +44,14 @@ export class LifecycleDto {
   reason?: string;
 
   @ApiPropertyOptional({
-    enum: ['customer', 'salon'],
-    default: 'customer',
+    enum: ['CUSTOMER', 'SALON'],
+    default: 'CUSTOMER',
     description:
       'A salon-initiated cancel refunds in full, whatever the timing.',
   })
   @IsOptional()
-  @IsIn(['customer', 'salon'])
-  initiatedBy?: CancelInitiator;
+  @IsIn(['CUSTOMER', 'SALON'])
+  initiatedBy?: Uppercase<CancelInitiator>;
 
   @ApiPropertyOptional({
     description: 'VIP standing reservation. The no-show fee is waived by rule.',
@@ -285,7 +289,7 @@ export class LifecycleController {
       actorId: actor.id,
       ...(dto.reason !== undefined ? { reason: dto.reason } : {}),
       ...(dto.initiatedBy !== undefined
-        ? { initiatedBy: dto.initiatedBy }
+        ? { initiatedBy: unshout(dto.initiatedBy, CANCEL_INITIATORS)! }
         : {}),
       ...(dto.vipStandingReservation !== undefined
         ? { vipStandingReservation: dto.vipStandingReservation }

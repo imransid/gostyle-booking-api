@@ -50,14 +50,23 @@ import type {
   Weekday,
 } from '@domain/booking/recurrence';
 
+import { unshout } from '@application/contract/wire';
+
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** The domain words the shouted request enum folds back down to. */
+const AUTO_CONFIRM_RULES = [
+  'auto_confirm_on_schedule',
+  'ask_each_time',
+  'vip_standing',
+] as const;
 
 export class PatternDto {
   @ApiProperty({
     enum: ['weekly', 'every_n_weeks', 'monthly_on_date', 'custom'],
   })
-  @IsIn(['weekly', 'every_n_weeks', 'monthly_on_date', 'custom'])
-  kind!: 'weekly' | 'every_n_weeks' | 'monthly_on_date' | 'custom';
+  @IsIn(['WEEKLY', 'EVERY_N_WEEKS', 'MONTHLY_ON_DATE', 'CUSTOM'])
+  kind!: 'WEEKLY' | 'EVERY_N_WEEKS' | 'MONTHLY_ON_DATE' | 'CUSTOM';
 
   @ApiPropertyOptional({
     example: [2, 4],
@@ -93,8 +102,8 @@ export class PatternDto {
 
 export class EndDto {
   @ApiProperty({ enum: ['never', 'on_date', 'after_count'] })
-  @IsIn(['never', 'on_date', 'after_count'])
-  kind!: 'never' | 'on_date' | 'after_count';
+  @IsIn(['NEVER', 'ON_DATE', 'AFTER_COUNT'])
+  kind!: 'NEVER' | 'ON_DATE' | 'AFTER_COUNT';
 
   @ApiPropertyOptional({ example: '2027-03-01' })
   @IsOptional()
@@ -152,9 +161,9 @@ export class CreateSeriesDto {
   @ApiProperty({
     enum: ['auto_confirm_on_schedule', 'ask_each_time', 'vip_standing'],
   })
-  @IsIn(['auto_confirm_on_schedule', 'ask_each_time', 'vip_standing'])
+  @IsIn(['AUTO_CONFIRM_ON_SCHEDULE', 'ASK_EACH_TIME', 'VIP_STANDING'])
   autoConfirmRule!:
-    'auto_confirm_on_schedule' | 'ask_each_time' | 'vip_standing';
+    'AUTO_CONFIRM_ON_SCHEDULE' | 'ASK_EACH_TIME' | 'VIP_STANDING';
 
   @ApiProperty({ example: 'blow-dry' })
   @IsString()
@@ -215,7 +224,7 @@ export class SeriesController {
       startMin: dto.startMin,
       pattern: toPattern(dto.pattern),
       end: toEnd(dto.end),
-      autoConfirmRule: dto.autoConfirmRule,
+      autoConfirmRule: unshout(dto.autoConfirmRule, AUTO_CONFIRM_RULES)!,
       serviceId: dto.serviceId,
       preferredStaffId: dto.preferredStaffId ?? null,
       course:
@@ -339,24 +348,24 @@ export class SeriesController {
 
 function toPattern(dto: PatternDto): Pattern {
   switch (dto.kind) {
-    case 'weekly':
+    case 'WEEKLY':
       return { kind: 'weekly', weekdays: (dto.weekdays ?? []) as Weekday[] };
-    case 'every_n_weeks':
+    case 'EVERY_N_WEEKS':
       return { kind: 'every_n_weeks', weeks: dto.weeks ?? 1 };
-    case 'monthly_on_date':
+    case 'MONTHLY_ON_DATE':
       return { kind: 'monthly_on_date', dayOfMonth: dto.dayOfMonth ?? 1 };
-    case 'custom':
+    case 'CUSTOM':
       return { kind: 'custom', dates: dto.dates ?? [] };
   }
 }
 
 function toEnd(dto: EndDto): EndCondition {
   switch (dto.kind) {
-    case 'never':
+    case 'NEVER':
       return { kind: 'never' };
-    case 'on_date':
+    case 'ON_DATE':
       return { kind: 'on_date', date: dto.date ?? '' };
-    case 'after_count':
+    case 'AFTER_COUNT':
       return { kind: 'after_count', count: dto.count ?? 1 };
   }
 }

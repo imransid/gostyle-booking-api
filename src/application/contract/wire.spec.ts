@@ -20,6 +20,7 @@ import {
   WIRE_GROUP_MODES,
   WIRE_ARRANGEMENTS,
   MINOR_UNITS_PER_MAJOR,
+  toWireNearestOption,
 } from './wire';
 
 /**
@@ -130,5 +131,28 @@ describe('money on the wire', () => {
     // argument for renaming the field rather than mapping it: a minor unit
     // IS a fil, so priceMinor and price_fils are always the same number.
     expect(MINOR_UNITS_PER_MAJOR).toBe(100);
+  });
+});
+
+describe('walk-in nearest options', () => {
+  it('shouts the discriminant and leaves the payload alone', () => {
+    const wire = toWireNearestOption({
+      kind: 'next_gap' as const,
+      staffId: 'maya',
+      staffName: 'Maya E.',
+      startMin: 980,
+      label: 'Next gap 16:20',
+    });
+    expect(wire.kind).toBe('NEXT_GAP');
+    expect(wire.staffId).toBe('maya');
+    expect(wire.startMin).toBe(980);
+    expect(wire.label).toBe('Next gap 16:20');
+  });
+
+  it('covers every discriminant the domain can produce', () => {
+    const kinds = (['now', 'from', 'next_gap'] as const).map(
+      (k) => toWireNearestOption({ kind: k }).kind,
+    );
+    expect(kinds).toEqual(['NOW', 'FROM', 'NEXT_GAP']);
   });
 });

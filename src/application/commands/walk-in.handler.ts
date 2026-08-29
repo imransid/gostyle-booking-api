@@ -16,6 +16,7 @@ import {
   type QueueRow,
   type WalkInCandidate,
 } from '@domain/booking/walk-in';
+import { toWireNearestOption } from '@application/contract/wire';
 import { resolveSelection } from '@domain/booking/package';
 import { PACKAGES } from '@infrastructure/fixtures/fixture-booking-context';
 import { priceOf } from './confirm-booking.handler';
@@ -48,7 +49,9 @@ export interface WalkInQueueView {
     readonly label: string;
     readonly serviceIds: readonly string[];
     readonly waitingMin: number;
-    readonly options: readonly NearestOption[];
+    readonly options: readonly ReturnType<
+      typeof toWireNearestOption<NearestOption>
+    >[];
     readonly explanation: string;
   }[];
 }
@@ -189,7 +192,7 @@ export class WalkInHandler {
         label: r.walkIn.label,
         serviceIds: r.walkIn.serviceIds,
         waitingMin: r.waitingMin,
-        options: r.options,
+        options: r.options.map(toWireNearestOption),
         explanation: r.explanation,
       })),
     };

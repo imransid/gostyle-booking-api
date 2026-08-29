@@ -115,7 +115,7 @@ export class WaitlistController {
     summary: 'Take the offered slot',
     description:
       'Places an ordinary hold and returns its id. Confirm it through ' +
-      'POST /bookings as normal: the requirement is resolved FRESH, so an ' +
+      'POST /v1/bookings as normal: the requirement is resolved FRESH, so an ' +
       'acceptance that triggers a deposit lands as PendingPayment with the ' +
       'link, not as a free confirmation.',
   })

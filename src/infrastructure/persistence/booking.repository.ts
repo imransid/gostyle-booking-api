@@ -266,7 +266,7 @@ export class BookingRepository {
           await tx.idempotencyKey.create({
             data: {
               key: input.idempotencyKey,
-              operation: 'POST /bookings',
+              operation: 'POST /v1/bookings',
               requestHash: input.requestHash,
               responseStatus: 201,
               responseBody: input.responseView ?? { ...result },

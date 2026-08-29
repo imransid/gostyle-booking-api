@@ -1,4 +1,11 @@
-import { toWireGate, type WireGate } from '@application/contract/wire';
+import {
+  shout,
+  toWireGate,
+  type Shouted,
+  type WireGate,
+} from '@application/contract/wire';
+import type { ItemState } from '@domain/booking/roster-change';
+import type { DisruptionRung } from '@domain/availability/disruption-ladder';
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import {
   BOOKING_CONTEXT,
@@ -47,13 +54,57 @@ export interface OpenRosterChangeCommand {
   readonly actorId: string | null;
 }
 
+export interface WireProposal {
+  readonly refundMinor: number;
+  readonly goodwillMinor: number;
+  readonly waitlistWindow?: unknown;
+  readonly explanation?: string;
+}
+
+export interface RosterChangeDetailView {
+  readonly changeId: string;
+  readonly branchId: string;
+  readonly tradingDay: string;
+  readonly kind: Shouted<RosterChangeKind>;
+  readonly staffId: string | null;
+  readonly resourceType: string | null;
+  readonly reason: string;
+  readonly committedAt: string | null;
+  readonly gate: WireGate;
+  readonly items: readonly {
+    readonly id: string;
+    readonly bookingCode: string;
+    readonly state: Shouted<ItemState>;
+    readonly rung: Shouted<DisruptionRung> | null;
+    readonly proposal: WireProposal | null;
+  }[];
+}
+
+/**
+ * The stored proposal, renamed for the wire.
+ *
+ * It is JSONB, so nothing type-checks it on the way out — which is exactly
+ * why it kept its refundFils/goodwillFils keys while every sibling field on
+ * the POST response had already become *Minor.
+ */
+function toWireProposal(raw: unknown): WireProposal | null {
+  if (raw === null || typeof raw !== 'object') return null;
+  const p = raw as Record<string, unknown>;
+  const { refundFils, goodwillFils, ...rest } = p;
+  return {
+    ...rest,
+    refundMinor: typeof refundFils === 'number' ? refundFils : 0,
+    goodwillMinor: typeof goodwillFils === 'number' ? goodwillFils : 0,
+  };
+}
+
 export interface RosterChangeView {
   readonly changeId: string;
   readonly gate: WireGate;
   readonly affected: number;
   readonly autoRepaired: readonly {
     readonly code: string;
-    readonly rung: string;
+    readonly rung: Shouted<DisruptionRung>;
     readonly explanation: string;
   }[];
   readonly needsDecision: readonly {
@@ -95,7 +146,7 @@ export class RosterChangeHandler {
 
     const autoRepaired: {
       code: string;
-      rung: string;
+      rung: Shouted<DisruptionRung>;
       explanation: string;
     }[] = [];
     const needsDecision: {
@@ -110,7 +161,7 @@ export class RosterChangeHandler {
       if (outcome.kind === 'repaired') {
         autoRepaired.push({
           code: booking.code,
-          rung: outcome.rung,
+          rung: shout(outcome.rung),
           explanation: outcome.explanation,
         });
       } else {
@@ -322,14 +373,33 @@ export class RosterChangeHandler {
     return Math.max(0, resource.units - resource.outOfService);
   }
 
-  async view(changeId: string): Promise<{
-    change: NonNullable<Awaited<ReturnType<RosterChangeRepository['detail']>>>;
-    gate: WireGate;
-  }> {
+  async view(changeId: string): Promise<RosterChangeDetailView> {
     const change = await this.repo.detail(changeId);
     if (change === null) throw new NotFoundException('No such roster change');
     const gate = gateFor(await this.repo.worklist(changeId));
-    return { change, gate: toWireGate(gate) };
+
+    // The repository row is the DIARY'S vocabulary, not the front end's.
+    // Returning it whole is how change.kind, item.state, item.rung and the
+    // proposal's *Fils keys all reached the wire untranslated.
+    return {
+      changeId: change.id,
+      branchId: change.branchId,
+      tradingDay: change.tradingDay,
+      kind: shout(change.kind),
+      staffId: change.staffId,
+      resourceType: change.resourceType,
+      reason: change.reason,
+      committedAt:
+        change.committedAt === null ? null : change.committedAt.toISOString(),
+      gate: toWireGate(gate),
+      items: change.items.map((i) => ({
+        id: i.id,
+        bookingCode: i.bookingCode,
+        state: shout(i.state),
+        rung: i.rung === null ? null : shout(i.rung as DisruptionRung),
+        proposal: toWireProposal(i.proposal),
+      })),
+    };
   }
 
   async resolve(

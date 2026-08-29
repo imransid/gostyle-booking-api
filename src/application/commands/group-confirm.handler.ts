@@ -58,7 +58,7 @@ export class GroupConfirmHandler {
     if (group === null) throw new NotFoundException('No such group');
     if (group.status !== 'draft') {
       throw new ConflictException(
-        `This group is already ${group.status}. Nothing was changed.`,
+        `This group is already ${shout(group.status)}. Nothing was changed.`,
       );
     }
 

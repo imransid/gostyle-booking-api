@@ -194,3 +194,22 @@ export function toWireGate(gate: {
 }): WireGate {
   return { ...gate, status: shout(gate.status) };
 }
+
+// ------------------------------------------------------------ walk-in options
+
+/**
+ * The walk-in queue's "nearest options", shouted.
+ *
+ * The domain discriminates on `kind: 'now' | 'from' | 'next_gap'` — three
+ * lowercase words the front end would otherwise have to match on. Only the
+ * discriminant moves; the payload is the same object, so this is a rename at
+ * the edge exactly like the statuses above.
+ */
+export type WireNearestOptionKind = 'NOW' | 'FROM' | 'NEXT_GAP';
+
+export function toWireNearestOption<
+  T extends { readonly kind: 'now' | 'from' | 'next_gap' },
+>(option: T): Omit<T, 'kind'> & { readonly kind: WireNearestOptionKind } {
+  const { kind, ...rest } = option;
+  return { ...rest, kind: shout(kind) };
+}

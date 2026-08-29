@@ -20,6 +20,7 @@ import {
   Matches,
   Min,
 } from 'class-validator';
+import { unshout } from '@application/contract/wire';
 import {
   ConfirmBookingHandler,
   type BookingView,
@@ -28,8 +29,11 @@ import type { PaymentRail } from '@infrastructure/persistence/booking.repository
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
 
+/** The domain rails the shouted request enum folds back down to. */
+const PAYMENT_RAILS = ['wallet', 'card', 'apple_pay', 'cash', 'link'] as const;
+
 export class ConfirmBookingDto {
-  @ApiProperty({ example: 'the id returned by POST /holds' })
+  @ApiProperty({ example: 'the id returned by POST /v1/holds' })
   @IsUUID()
   holdId!: string;
 
@@ -70,13 +74,13 @@ export class ConfirmBookingDto {
   amountMinor?: number;
 
   @ApiPropertyOptional({
-    enum: ['wallet', 'card', 'apple_pay', 'cash', 'link'],
+    enum: ['WALLET', 'CARD', 'APPLE_PAY', 'CASH', 'LINK'],
     description:
-      'A link captures nothing yet, so the booking sits at pending_payment.',
+      'A link captures nothing yet, so the booking sits at PENDING_PAYMENT.',
   })
   @IsOptional()
-  @IsIn(['wallet', 'card', 'apple_pay', 'cash', 'link'])
-  rail?: PaymentRail;
+  @IsIn(['WALLET', 'CARD', 'APPLE_PAY', 'CASH', 'LINK'])
+  rail?: Uppercase<PaymentRail>;
 
   @ApiPropertyOptional({ example: 'pi_abc123' })
   @IsOptional()
@@ -128,7 +132,7 @@ export class BookingsController {
         ? {
             payment: {
               amountFils: dto.amountMinor,
-              rail: dto.rail,
+              rail: unshout(dto.rail, PAYMENT_RAILS)!,
               ...(dto.gatewayRef !== undefined
                 ? { gatewayRef: dto.gatewayRef }
                 : {}),

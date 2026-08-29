@@ -21,6 +21,7 @@ import {
   requirementFor,
   DEFAULT_BRANCH,
   type Requirement,
+  type RequirementKind,
 } from '@domain/booking/customer';
 import { quote } from '@domain/booking/quote';
 import {
@@ -377,13 +378,13 @@ function hashRequest(cmd: ConfirmBookingCommand): string {
 
 /** The full trace, for the 402 body and for support months later. */
 function describeFully(r: Requirement): {
-  kind: string;
+  kind: Shouted<RequirementKind>;
   source: string;
   clampNote?: string;
   trace: readonly { rung: string; evaluation: string; fired: boolean }[];
 } {
   return {
-    kind: r.kind,
+    kind: shout(r.kind),
     source: r.source,
     ...(r.clampNote !== undefined ? { clampNote: r.clampNote } : {}),
     trace: r.trace,
