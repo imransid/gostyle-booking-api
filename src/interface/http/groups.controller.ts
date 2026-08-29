@@ -83,6 +83,34 @@ export class GroupHoldDto {
   @IsString()
   branchId!: string;
 
+  @ApiPropertyOptional({
+    example: 15,
+    default: 0,
+    description:
+      'How many minutes apart the party may FINISH and still count as ' +
+      'finishing together. Zero, the default, means exactly together. Slack ' +
+      'buys feasibility: a lane allowed to end early can start early, which ' +
+      'may be the only place its professional is free. Nothing ever runs ' +
+      'past the anchor, so nobody waits longer. Ignored for TOGETHER.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  finishWindowMin?: number;
+
+  @ApiPropertyOptional({
+    example: 45,
+    description:
+      'The widest gap allowed between the first and last arrival. Finishing ' +
+      'together staggers arrivals by the difference between the longest and ' +
+      'shortest service; this caps it. Omitted means the whole trading day, ' +
+      'which is no practical cap.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  maxStaggerMin?: number;
+
   @ApiProperty({ example: '2027-08-09' })
   @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'day must be YYYY-MM-DD' })
   day!: string;
@@ -174,6 +202,12 @@ export class GroupsController {
       tradingDay: dto.day,
       targetMin: dto.targetMin,
       mode: modeFromWire(dto.mode),
+      ...(dto.finishWindowMin !== undefined
+        ? { finishWindowMin: dto.finishWindowMin }
+        : {}),
+      ...(dto.maxStaggerMin !== undefined
+        ? { maxStaggerMin: dto.maxStaggerMin }
+        : {}),
       arrangement: arrangementFromWire(dto.arrangement),
       participants: dto.participants.map((p) => ({
         label: p.label,

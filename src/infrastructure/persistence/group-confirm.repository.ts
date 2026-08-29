@@ -152,6 +152,20 @@ export class GroupConfirmRepository {
           ? 'arrive_together'
           : 'finish_together',
         ctx,
+        // THE HELD LANES ARE THE SPECIFICATION. A party held with a finish
+        // window has staggered finishes on purpose; re-planning it against an
+        // exact finish would refuse a party that is sitting in the diary,
+        // perfectly seated. So the slack is read back off what was held
+        // rather than stored on the group: this asks "is the shape we hold
+        // still feasible?", which is the question confirm actually has.
+        (() => {
+          const starts = held.map((h) => h.start_minute);
+          const ends = held.map((h) => h.start_minute + h.duration_min);
+          return {
+            finishWindowMin: Math.max(...ends) - Math.min(...ends),
+            maxStaggerMin: Math.max(...starts) - Math.min(...starts),
+          };
+        })(),
       );
 
       if (replan.kind === 'infeasible') {

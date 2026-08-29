@@ -7,6 +7,8 @@
  * answer for the other three.
  */
 
+import { SLOT_MIN } from './grid';
+
 export type GroupMode = 'arrive_together' | 'finish_together';
 
 export interface PartyParticipant {
@@ -44,6 +46,53 @@ export interface PartyContext {
   }[];
 }
 
+/**
+ * How much slack the party is allowed.
+ *
+ * Both default to today's behaviour, so a caller that says nothing gets
+ * exactly the plan it got before these existed.
+ */
+export interface PartyOptions {
+  /**
+   * How many minutes apart the party may FINISH and still count as finishing
+   * together. Zero means exactly together, which is what the planner did
+   * before this option existed.
+   *
+   * Only meaningful for finish_together. In arrive_together everyone starts
+   * on the anchor, so their finishes are spread by their own durations and a
+   * finish window would describe nothing.
+   *
+   * The slack buys FEASIBILITY: a lane allowed to end ten minutes early can
+   * start ten minutes early, which may be the only place its colourist is
+   * free. Nobody waits longer for it -- the party still leaves by the anchor.
+   */
+  readonly finishWindowMin?: number;
+
+  /**
+   * The largest allowed spread between the earliest and the latest lane
+   * START.
+   *
+   * This is the rule that stops "finishing together" from meaning "the first
+   * person arrives at ten and the last at one". A party of a fringe trim and
+   * a balayage finishing together are staggered by 130 minutes whatever the
+   * planner does; a branch that considers that not-a-group-outing sets a cap
+   * and gets a clear refusal instead of a plan nobody wanted.
+   */
+  readonly maxStaggerMin?: number;
+}
+
+/** Exactly together, as the planner has always done it. */
+export const DEFAULT_FINISH_WINDOW_MIN = 0;
+
+/**
+ * The whole trading day: 1320 - 600. In other words, no practical cap.
+ *
+ * A real number rather than Infinity, because it is a duration in the same
+ * units as everything else here and it prints in an explanation. The point of
+ * the default is that no party that planned yesterday fails today.
+ */
+export const DEFAULT_MAX_STAGGER_MIN = 720;
+
 export interface Lane {
   readonly participantId: string;
   readonly staffId: string;
@@ -75,6 +124,7 @@ export function planParty(
   startMin: number,
   mode: GroupMode,
   ctx: PartyContext,
+  options: PartyOptions = {},
 ): PartyPlan {
   if (participants.length < 2) {
     return {
@@ -101,16 +151,48 @@ export function planParty(
   const startFor = (p: PartyParticipant): number =>
     mode === 'arrive_together' ? startMin : finishAt - p.durationMin;
 
+  const finishWindow = Math.max(
+    0,
+    options.finishWindowMin ?? DEFAULT_FINISH_WINDOW_MIN,
+  );
+  const maxStagger = Math.max(
+    0,
+    options.maxStaggerMin ?? DEFAULT_MAX_STAGGER_MIN,
+  );
+
+  /**
+   * The starts this participant may take, earliest last.
+   *
+   * A finish window lets a lane end up to that many minutes BEFORE the
+   * anchor, never after: the anchor is when the party leaves, and a lane
+   * allowed to run past it would make the others wait. Offset 0 is tried
+   * first so a party that fits exactly together still finishes exactly
+   * together.
+   */
+  const startsFor = (p: PartyParticipant): number[] => {
+    if (mode === 'arrive_together' || finishWindow === 0) return [startFor(p)];
+    const out: number[] = [];
+    for (let d = 0; d <= finishWindow; d += SLOT_MIN) out.push(startFor(p) - d);
+    return out;
+  };
+
   // 1. Each participant's eligible pool, minus anyone at their daily cap.
+  //    Free at ANY of the allowed starts, not just the anchor one: excluding
+  //    a colourist here because she is busy at the exact finish would throw
+  //    away the very slack the window was added to buy. The specific start is
+  //    re-checked inside the search.
   const pools = new Map<string, string[]>();
   for (const p of participants) {
+    const starts = startsFor(p);
     const pool = ctx.professionals
       .filter((s) => !s.atCap)
       .filter((s) => p.skills.every((skill) => s.skills.includes(skill)))
       .filter((s) =>
         p.preferredStaffId === null ? true : s.id === p.preferredStaffId,
       )
-      .filter((s) => isFree(s.busy, startFor(p), startFor(p) + p.durationMin))
+      .filter((s) =>
+        starts.some((from) => isFree(s.busy, from, from + p.durationMin)),
+      )
       .map((s) => s.id);
 
     if (pool.length === 0) {
@@ -138,6 +220,31 @@ export function planParty(
     };
   }
 
+  // THE STAGGER CAP, ARITHMETICALLY. Finishing together spreads the starts by
+  // exactly the difference between the longest and shortest service, and the
+  // finish window is the only thing that can close that gap -- a short lane
+  // allowed to end early starts earlier too. When even the full window cannot
+  // get under the cap, no assignment of professionals or chairs will, so say
+  // that in one sentence instead of exhausting the search and blaming chairs.
+  if (mode === 'finish_together') {
+    const durations = participants.map((p) => p.durationMin);
+    const spread = Math.max(...durations) - Math.min(...durations);
+    const best = Math.max(0, spread - finishWindow);
+    if (best > maxStagger) {
+      return {
+        kind: 'infeasible',
+        reason:
+          `Finishing together staggers this party's arrivals by ${best} ` +
+          `minutes, more than the ${maxStagger} allowed: the longest service ` +
+          `runs ${spread} minutes longer than the shortest.`,
+        remedy:
+          finishWindow === 0
+            ? 'Allow the party to finish a few minutes apart, switch to arriving together, or even up the services.'
+            : 'Widen the finish window, raise the stagger cap, switch to arriving together, or even up the services.',
+      };
+    }
+  }
+
   // 2. SCARCITY ORDER. Smallest pool first; ties break toward the longest
   //    service, because a long service is the harder thing to place.
   const ordered = [...participants].sort(
@@ -156,27 +263,42 @@ export function planParty(
   const place = (i: number): boolean => {
     if (i === ordered.length) return true;
     const p = ordered[i]!;
-    const from = startFor(p);
-    const to = from + p.durationMin;
+    const busyOf = new Map(ctx.professionals.map((s) => [s.id, s.busy]));
 
-    for (const staffId of pools.get(p.id)!) {
-      if (taken.has(staffId)) continue;
+    // Starts first, professionals inside: offset 0 is the exact finish, and
+    // trying it for every professional before giving any of them a slack
+    // start keeps the tightest party the planner can find.
+    for (const from of startsFor(p)) {
+      const to = from + p.durationMin;
 
-      const lane: Lane = {
-        participantId: p.id,
-        staffId,
-        startMin: from,
-        endMin: to,
-        resourceType: p.resourceType,
-      };
+      // THE STAGGER CAP, checked as we go rather than at the end. A branch
+      // that has already spread the party too wide cannot be rescued by the
+      // participants after it, so there is no point walking them.
+      const starts = [...lanes.map((l) => l.startMin), from];
+      if (Math.max(...starts) - Math.min(...starts) > maxStagger) continue;
 
-      if (!chairsFit([...lanes, lane], ctx)) continue;
+      for (const staffId of pools.get(p.id)!) {
+        if (taken.has(staffId)) continue;
+        // Re-checked for THIS start: the pool only promised free at one of
+        // the allowed starts, not at this one.
+        if (!isFree(busyOf.get(staffId) ?? [], from, to)) continue;
 
-      taken.add(staffId);
-      lanes.push(lane);
-      if (place(i + 1)) return true;
-      lanes.pop();
-      taken.delete(staffId);
+        const lane: Lane = {
+          participantId: p.id,
+          staffId,
+          startMin: from,
+          endMin: to,
+          resourceType: p.resourceType,
+        };
+
+        if (!chairsFit([...lanes, lane], ctx)) continue;
+
+        taken.add(staffId);
+        lanes.push(lane);
+        if (place(i + 1)) return true;
+        lanes.pop();
+        taken.delete(staffId);
+      }
     }
     return false;
   };

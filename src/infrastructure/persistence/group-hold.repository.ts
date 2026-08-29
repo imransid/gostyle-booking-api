@@ -6,6 +6,7 @@ import {
   planParty,
   type GroupMode,
   type PartyContext,
+  type PartyOptions,
   type PartyParticipant,
   type PartyPlan,
 } from '@domain/availability/party';
@@ -25,6 +26,8 @@ export interface GroupHoldInput {
     readonly guestName: string | null;
   }[];
   readonly ttlMs: number;
+  /** How much slack the party is allowed. Omitted means the planner's own. */
+  readonly options?: PartyOptions;
   /**
    * The roster and chair registry, resolved by the CALLER.
    *
@@ -119,6 +122,7 @@ export class GroupHoldRepository {
           input.targetMin,
           input.mode,
           ctx,
+          input.options ?? {},
         );
 
         if (plan.kind === 'infeasible') {

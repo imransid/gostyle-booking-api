@@ -25,6 +25,13 @@ export interface GroupHoldCommand {
   readonly mode: GroupMode;
   readonly arrangement:
     'organiser_pays_all' | 'split_equally' | 'each_pays_own';
+  /**
+   * How many minutes apart the party may finish. Zero, the default, means
+   * exactly together.
+   */
+  readonly finishWindowMin?: number;
+  /** The widest gap allowed between the first and last arrival. */
+  readonly maxStaggerMin?: number;
   readonly participants: readonly {
     readonly label: string;
     readonly serviceIds: readonly string[];
@@ -124,6 +131,14 @@ export class GroupHoldHandler {
       arrangement: cmd.arrangement,
       participants: specs,
       ttlMs: HOLD_TTL_MS,
+      options: {
+        ...(cmd.finishWindowMin !== undefined
+          ? { finishWindowMin: cmd.finishWindowMin }
+          : {}),
+        ...(cmd.maxStaggerMin !== undefined
+          ? { maxStaggerMin: cmd.maxStaggerMin }
+          : {}),
+      },
       roster: {
         professionals: day.professionals.map((p) => ({
           id: p.id,

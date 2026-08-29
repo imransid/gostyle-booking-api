@@ -444,3 +444,144 @@ describe('invariants', () => {
     }
   });
 });
+
+describe('the finish window', () => {
+  const long = guest('long', { durationMin: 120 });
+  const short = guest('short', { durationMin: 60 });
+
+  it('defaults to exactly together, as it always did', () => {
+    const plan = planParty([long, short], 600, 'finish_together', ctx());
+    if (plan.kind !== 'planned') throw new Error(plan.reason);
+    const ends = plan.lanes.map((l) => l.endMin);
+    expect(new Set(ends).size).toBe(1);
+  });
+
+  it('never lets a lane run PAST the anchor finish', () => {
+    // The anchor is when the party leaves. Slack buys an early finish, never
+    // a late one, or the others would be waiting on it.
+    const anchor = 600 + 120;
+    const plan = planParty([long, short], 600, 'finish_together', ctx(), {
+      finishWindowMin: 30,
+    });
+    if (plan.kind !== 'planned') throw new Error(plan.reason);
+    for (const l of plan.lanes) expect(l.endMin).toBeLessThanOrEqual(anchor);
+  });
+
+  it('keeps the party exactly together when it can, even with slack allowed', () => {
+    const plan = planParty([long, short], 600, 'finish_together', ctx(), {
+      finishWindowMin: 30,
+    });
+    if (plan.kind !== 'planned') throw new Error(plan.reason);
+    expect(new Set(plan.lanes.map((l) => l.endMin)).size).toBe(1);
+  });
+
+  it('SEATS A PARTY THE EXACT FINISH CANNOT: the slack is what buys it', () => {
+    // Two colourists. Anya is busy from 700, which straddles the anchor
+    // finish of 720, so at the exact finish she can take neither lane and the
+    // party is one professional short. Thirty minutes of slack lets a lane
+    // end at 690 and clear her.
+    const world = ctx({
+      professionals: [
+        pro('maya', ['color']),
+        pro('anya', ['color'], { busy: [{ fromMin: 700, toMin: 760 }] }),
+      ],
+      resourceCounts: { color: 2 },
+    });
+    const a = guest('a', {
+      skills: ['color'],
+      durationMin: 120,
+      resourceType: 'color',
+    });
+    const b = guest('b', {
+      skills: ['color'],
+      durationMin: 60,
+      resourceType: 'color',
+    });
+
+    const exact = planParty([a, b], 600, 'finish_together', world);
+    expect(exact.kind).toBe('infeasible');
+
+    const slack = planParty([a, b], 600, 'finish_together', world, {
+      finishWindowMin: 30,
+    });
+    expect(slack.kind).toBe('planned');
+  });
+
+  it('is meaningless for arriving together, and changes nothing there', () => {
+    const withWindow = planParty([long, short], 600, 'arrive_together', ctx(), {
+      finishWindowMin: 45,
+    });
+    const without = planParty([long, short], 600, 'arrive_together', ctx());
+    expect(withWindow).toEqual(without);
+  });
+});
+
+describe('the stagger cap', () => {
+  const long = guest('long', { durationMin: 150 });
+  const short = guest('short', { durationMin: 20 });
+
+  it('defaults to the whole trading day, so nothing that planned before fails', () => {
+    const plan = planParty([long, short], 600, 'finish_together', ctx());
+    expect(plan.kind).toBe('planned');
+  });
+
+  it('refuses a party whose arrivals spread wider than the cap', () => {
+    const plan = planParty([long, short], 600, 'finish_together', ctx(), {
+      maxStaggerMin: 60,
+    });
+    expect(plan.kind).toBe('infeasible');
+    if (plan.kind !== 'infeasible') return;
+    // 150 - 20 = 130 minutes apart, against a cap of 60.
+    expect(plan.reason).toMatch(/130 minutes/);
+    expect(plan.reason).toMatch(/60 allowed/);
+  });
+
+  it('blames the stagger, not the chairs', () => {
+    // The failure mode this replaces: exhausting the search and reporting a
+    // shortage of chairs for a party that could never have been seated.
+    const plan = planParty([long, short], 600, 'finish_together', ctx(), {
+      maxStaggerMin: 60,
+    });
+    if (plan.kind !== 'infeasible') throw new Error('expected a refusal');
+    expect(plan.reason).not.toMatch(/chair|station/i);
+  });
+
+  it('counts the finish window against the stagger, because slack closes it', () => {
+    // 130 apart, 90 of slack, so 40 of stagger is achievable.
+    const tight = planParty([long, short], 600, 'finish_together', ctx(), {
+      maxStaggerMin: 40,
+      finishWindowMin: 90,
+    });
+    expect(tight.kind).toBe('planned');
+
+    const tighter = planParty([long, short], 600, 'finish_together', ctx(), {
+      maxStaggerMin: 39,
+      finishWindowMin: 90,
+    });
+    expect(tighter.kind).toBe('infeasible');
+  });
+
+  it('holds the plan it returns to the cap it was given', () => {
+    const plan = planParty([long, short], 600, 'finish_together', ctx(), {
+      maxStaggerMin: 130,
+    });
+    if (plan.kind !== 'planned') throw new Error(plan.reason);
+    const starts = plan.lanes.map((l) => l.startMin);
+    expect(Math.max(...starts) - Math.min(...starts)).toBeLessThanOrEqual(130);
+  });
+
+  it('never bites on arriving together, where everyone starts on the anchor', () => {
+    const plan = planParty([long, short], 600, 'arrive_together', ctx(), {
+      maxStaggerMin: 0,
+    });
+    expect(plan.kind).toBe('planned');
+  });
+
+  it('says what to do about it', () => {
+    const plan = planParty([long, short], 600, 'finish_together', ctx(), {
+      maxStaggerMin: 60,
+    });
+    if (plan.kind !== 'infeasible') throw new Error('expected a refusal');
+    expect(plan.remedy).toMatch(/finish a few minutes apart|arriving together/);
+  });
+});
