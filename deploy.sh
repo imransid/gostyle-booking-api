@@ -7,7 +7,8 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 docker build --platform linux/amd64 -t ghcr.io/imransid/gostyle-booking-api:$SHA .
 docker push ghcr.io/imransid/gostyle-booking-api:$SHA
-docker manifest inspect ghcr.io/imransid/gostyle-booking-api:$SHA > /dev/null
+docker rmi ghcr.io/imransid/gostyle-booking-api:$SHA > /dev/null 2>&1 || true
+docker pull ghcr.io/imransid/gostyle-booking-api:$SHA > /dev/null
 echo ""
 echo "VERIFIED ON GHCR: $SHA"
 echo "On the server, run:"
