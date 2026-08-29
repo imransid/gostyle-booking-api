@@ -6,6 +6,12 @@ import {
 } from '@application/queries/get-availability.handler';
 import { BOOKING_CONTEXT } from '@application/ports/booking-context.port';
 import { HealthController } from '@interface/http/health.controller';
+import { SettingsController } from '@interface/http/settings.controller';
+import { GetSettingsHandler } from '@application/queries/get-settings.handler';
+import { EligibleStaffController } from '@interface/http/eligible-staff.controller';
+import { GetEligibleStaffHandler } from '@application/queries/get-eligible-staff.handler';
+import { GetBookingHandler } from '@application/queries/get-booking.handler';
+import { PaymentLinkHandler } from '@application/commands/payment-link.handler';
 
 import { HoldsController } from '@interface/http/holds.controller';
 import { PlaceHoldHandler } from '@application/commands/place-hold.handler';
@@ -41,6 +47,8 @@ import { WalkInHandler } from '@application/commands/walk-in.handler';
 
 @Module({
   controllers: [
+    SettingsController,
+    EligibleStaffController,
     WalkInsController,
     CompactionController,
     RosterChangesController,
@@ -55,6 +63,10 @@ import { WalkInHandler } from '@application/commands/walk-in.handler';
     LifecycleController,
   ],
   providers: [
+    GetSettingsHandler,
+    GetEligibleStaffHandler,
+    GetBookingHandler,
+    PaymentLinkHandler,
     WalkInHandler,
     CompactionHandler,
     RosterChangeHandler,

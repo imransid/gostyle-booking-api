@@ -1,9 +1,19 @@
-import { Body, Controller, Headers, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Headers,
+  Param,
+  ParseUUIDPipe,
+  Post,
+} from '@nestjs/common';
 import {
   ApiConflictResponse,
   ApiCreatedResponse,
   ApiGoneResponse,
   ApiHeader,
+  ApiNotFoundResponse,
+  ApiOkResponse,
   ApiOperation,
   ApiProperty,
   ApiPropertyOptional,
@@ -21,6 +31,14 @@ import {
   Min,
 } from 'class-validator';
 import { unshout } from '@application/contract/wire';
+import {
+  GetBookingHandler,
+  type BookingDetailView,
+} from '@application/queries/get-booking.handler';
+import {
+  PaymentLinkHandler,
+  type PaymentLinkView,
+} from '@application/commands/payment-link.handler';
 import {
   ConfirmBookingHandler,
   type BookingView,
@@ -96,7 +114,47 @@ export class ConfirmBookingDto {
 @ApiTags('bookings')
 @Controller('bookings')
 export class BookingsController {
-  constructor(private readonly handler: ConfirmBookingHandler) {}
+  constructor(
+    private readonly handler: ConfirmBookingHandler,
+    private readonly detail: GetBookingHandler,
+    private readonly links: PaymentLinkHandler,
+  ) {}
+
+  @Get(':id')
+  @ApiOperation({
+    summary: 'One booking, with its items, its ledger and its history',
+    description:
+      'The whole drawer in one round trip. Money is in minor units and every ' +
+      'status is shouted, like everywhere else.',
+  })
+  @ApiOkResponse({ description: 'The booking.' })
+  @ApiNotFoundResponse({ description: 'No such booking.' })
+  get(
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<BookingDetailView> {
+    return this.detail.execute(id);
+  }
+
+  @Post(':id/payment-link')
+  @ApiOperation({
+    summary: 'Send the customer a payment link',
+    description:
+      'Moves the booking to PENDING_PAYMENT and opens the window: the ' +
+      'shorter of six hours and the time until two hours before the start. ' +
+      'Refused when the start is already inside that cutoff, because a link ' +
+      'that expired before it was sent holds the slot and pays for nothing.',
+  })
+  @ApiOkResponse({ description: 'The link window.' })
+  @ApiNotFoundResponse({ description: 'No such booking.' })
+  @ApiConflictResponse({
+    description: 'Not a live booking, or the start is too close.',
+  })
+  paymentLink(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentActor() actor: Actor,
+  ): Promise<PaymentLinkView> {
+    return this.links.execute(id, { kind: actor.kind, id: actor.id });
+  }
 
   @Post()
   @ApiOperation({

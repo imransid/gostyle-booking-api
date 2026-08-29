@@ -313,6 +313,25 @@ export class BookingRepository {
     if (row === null || row.responseBody === null) return null;
     return row.responseBody as unknown as ConfirmedBooking;
   }
+
+  /**
+   * One booking, with everything the drawer renders.
+   *
+   * Reads only, and returns the row as Prisma shapes it. Translating into the
+   * front end's vocabulary happens in the handler, because that is where
+   * every other view is translated and a second translation site is how the
+   * two drift (CLAUDE.md 4).
+   */
+  async detail(bookingId: string) {
+    return this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      include: {
+        items: { orderBy: { position: 'asc' } },
+        ledger: { orderBy: { createdAt: 'asc' } },
+        statusHistory: { orderBy: { createdAt: 'asc' } },
+      },
+    });
+  }
 }
 
 /**

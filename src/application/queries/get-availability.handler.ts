@@ -109,7 +109,7 @@ function branchNow(timeZone: string): { day: string; minuteOfDay: number } {
   };
 }
 
-function describeRefusal(reason: {
+export function describeRefusal(reason: {
   kind: string;
   skills?: readonly string[];
   cap?: number;
