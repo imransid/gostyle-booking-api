@@ -344,7 +344,7 @@ export class SeriesController {
   }
 }
 
-function toPattern(dto: PatternDto): Pattern {
+export function toPattern(dto: PatternDto): Pattern {
   switch (dto.kind) {
     case 'WEEKLY':
       return { kind: 'weekly', weekdays: (dto.weekdays ?? []) as Weekday[] };
@@ -357,7 +357,7 @@ function toPattern(dto: PatternDto): Pattern {
   }
 }
 
-function toEnd(dto: EndDto): EndCondition {
+export function toEnd(dto: EndDto): EndCondition {
   switch (dto.kind) {
     case 'NEVER':
       return { kind: 'never' };

@@ -7,6 +7,12 @@ import {
 import { BOOKING_CONTEXT } from '@application/ports/booking-context.port';
 import { HealthController } from '@interface/http/health.controller';
 import { SettingsController } from '@interface/http/settings.controller';
+import { QuoteController } from '@interface/http/quote.controller';
+import { GetQuoteHandler } from '@application/queries/get-quote.handler';
+import { GroupAvailabilityController } from '@interface/http/group-availability.controller';
+import { GroupAvailabilityHandler } from '@application/queries/group-availability.handler';
+import { BookingSeriesController } from '@interface/http/booking-series.controller';
+import { SeriesPreviewHandler } from '@application/queries/series-preview.handler';
 import { GetSettingsHandler } from '@application/queries/get-settings.handler';
 import { EligibleStaffController } from '@interface/http/eligible-staff.controller';
 import { GetEligibleStaffHandler } from '@application/queries/get-eligible-staff.handler';
@@ -47,8 +53,14 @@ import { WalkInHandler } from '@application/commands/walk-in.handler';
 
 @Module({
   controllers: [
+    // The /v1/bookings literals come first: BookingsController carries
+    // @Get(':id'), which swallows every literal at that depth. Asserted by
+    // route-order.spec.ts, not left to memory.
     SettingsController,
     EligibleStaffController,
+    QuoteController,
+    GroupAvailabilityController,
+    BookingSeriesController,
     WalkInsController,
     CompactionController,
     RosterChangesController,
@@ -64,6 +76,9 @@ import { WalkInHandler } from '@application/commands/walk-in.handler';
   ],
   providers: [
     GetSettingsHandler,
+    GetQuoteHandler,
+    GroupAvailabilityHandler,
+    SeriesPreviewHandler,
     GetEligibleStaffHandler,
     GetBookingHandler,
     PaymentLinkHandler,

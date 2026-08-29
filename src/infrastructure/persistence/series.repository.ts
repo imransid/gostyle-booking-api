@@ -65,6 +65,8 @@ export interface SeriesRow {
   readonly courseTotalNetFils: number | null;
   readonly courseVisits: number | null;
   readonly courseDrawn: number;
+  /** How far the calendar is real. Null before the first materialisation. */
+  readonly materialisedThrough: string | null;
 }
 
 export interface PlannedRow {
@@ -252,6 +254,10 @@ export class SeriesRepository {
       courseTotalNetFils: s.courseTotalNetFils,
       courseVisits: s.courseVisits,
       courseDrawn: s.courseDrawn,
+      materialisedThrough:
+        s.materialisedThrough === null
+          ? null
+          : s.materialisedThrough.toISOString().slice(0, 10),
     };
   }
 

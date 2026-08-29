@@ -151,36 +151,50 @@ export class MaterialiseSeriesHandler {
     };
   }
 
-  private async seat(
+  /**
+   * THE READ HALF of seating an occurrence: what could take it, and where.
+   *
+   * Shared with the preview endpoint, which needs exactly this and must not
+   * write. Two copies of "which starts are open for a series occurrence"
+   * would drift, and the drift would show up as a preview promising a date
+   * the nightly materialiser then refuses -- the one thing a preview exists
+   * to prevent.
+   */
+  async candidatesFor(
     series: NonNullable<Awaited<ReturnType<SeriesRepository['load']>>>,
-    occ: {
-      id: string;
-      index: number;
-      plannedDay: string;
-      plannedStartMin: number;
-    },
+    occ: { plannedDay: string; plannedStartMin: number },
     today: string,
   ): Promise<
-    'materialised' | 'repaired' | 'needs_attention' | 'deferred' | 'raced'
+    | { kind: 'no_service' }
+    | { kind: 'closed'; reason: string }
+    | {
+        kind: 'ok';
+        service: {
+          id: string;
+          name: string;
+          resourceType: string;
+          skill: string;
+          depositPercent?: number | null;
+          depositFixedFils?: number | null;
+        };
+        result: {
+          durationMin: number;
+          claims: { preMin: number; postMin: number };
+        };
+        candidates: readonly RepairCandidate[];
+      }
   > {
-    const daysAhead = daysBetween(today, occ.plannedDay);
-    if (daysAhead > BOOKING_HORIZON_DAYS) return 'deferred';
-
     const services = await this.context.loadServices(series.branchId, [
       series.serviceId,
     ]);
     const service = services[0];
-    if (service === undefined) {
-      await this.repo.markNeedsAttention(occ.id, []);
-      return 'needs_attention';
-    }
+    if (service === undefined) return { kind: 'no_service' };
 
     const day = await this.context.loadDay(series.branchId, occ.plannedDay);
     if (day.closureReason !== undefined) {
       // A closed day has no alternatives to offer, and saying so is more
       // use to the desk than an empty list that looks like a search failure.
-      await this.repo.markNeedsAttention(occ.id, []);
-      return 'needs_attention';
+      return { kind: 'closed', reason: day.closureReason };
     }
 
     const result = feasibleSet({
@@ -207,6 +221,31 @@ export class MaterialiseSeriesHandler {
         candidates.push({ startMin, staffId, durationMin: result.durationMin });
       }
     }
+
+    return { kind: 'ok', service, result, candidates };
+  }
+
+  private async seat(
+    series: NonNullable<Awaited<ReturnType<SeriesRepository['load']>>>,
+    occ: {
+      id: string;
+      index: number;
+      plannedDay: string;
+      plannedStartMin: number;
+    },
+    today: string,
+  ): Promise<
+    'materialised' | 'repaired' | 'needs_attention' | 'deferred' | 'raced'
+  > {
+    const daysAhead = daysBetween(today, occ.plannedDay);
+    if (daysAhead > BOOKING_HORIZON_DAYS) return 'deferred';
+
+    const read = await this.candidatesFor(series, occ, today);
+    if (read.kind === 'no_service' || read.kind === 'closed') {
+      await this.repo.markNeedsAttention(occ.id, []);
+      return 'needs_attention';
+    }
+    const { service, result, candidates } = read;
 
     // A LOST RACE MUST CONVERGE.
     //

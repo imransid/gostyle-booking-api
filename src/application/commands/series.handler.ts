@@ -225,7 +225,11 @@ export class SeriesPanelHandler {
       health: shout(health.health),
       healthReasons: health.reasons.map(shout),
       healthExplanation: health.explanation,
-      horizonEnd: null,
+      // §15.2.1: "Every series panel shows the horizon line so the desk
+      // knows exactly how far the calendar is real." It was hardcoded null,
+      // so the panel showed no line at all — and the row has held the answer
+      // since the series was created.
+      horizonEnd: series.materialisedThrough,
       occurrences: timeline.map((o) => ({
         id: o.id,
         index: o.index,

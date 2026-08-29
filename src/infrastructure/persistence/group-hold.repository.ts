@@ -236,6 +236,46 @@ export class GroupHoldRepository {
     }
   }
 
+  /**
+   * Plan a party and write nothing.
+   *
+   * Runs THE SAME contextFor() and THE SAME planParty() as place(), because
+   * an availability answer that disagrees with what a hold would actually do
+   * is worse than no answer: the desk quotes a time the engine then refuses.
+   *
+   * No advisory lock and no reservations. It reads inside a transaction only
+   * so the two queries see one snapshot -- a plan built from a roster read
+   * before a booking and chairs read after it describes a diary that never
+   * existed. Nothing here holds anything, so the answer is advisory the
+   * moment it is returned, exactly like every other availability answer
+   * (§12.1 "seeing is not owning").
+   */
+  async planOnly(input: {
+    readonly branchId: string;
+    readonly tradingDay: string;
+    readonly targetMin: number;
+    readonly mode: GroupMode;
+    readonly participants: readonly {
+      readonly participant: PartyParticipant;
+    }[];
+    readonly roster: GroupHoldInput['roster'];
+    readonly options?: PartyOptions;
+  }): Promise<PartyPlan> {
+    const day = new Date(`${input.tradingDay}T00:00:00Z`);
+    const branch = toUuid(input.branchId);
+
+    return this.prisma.$transaction(async (tx) => {
+      const ctx = await this.contextFor(tx, branch, day, input.roster);
+      return planParty(
+        input.participants.map((p) => p.participant),
+        input.targetMin,
+        input.mode,
+        ctx,
+        input.options ?? {},
+      );
+    });
+  }
+
   /** The day as the planner needs it: who is free, and which chairs are taken. */
   private async contextFor(
     tx: Parameters<Parameters<PrismaService['$transaction']>[0]>[0],

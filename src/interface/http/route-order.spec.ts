@@ -32,9 +32,23 @@ interface Route {
   readonly line: number;
 }
 
+/**
+ * Blank out comments, keeping the line count.
+ *
+ * Without this the scanner reads decorators and class names out of prose:
+ * the doc comment on SettingsController mentions @Get(':id') to explain why
+ * the ordering matters, and the comment above the controllers array explains
+ * the same rule. Both were duly parsed as routes on the first run.
+ */
+function stripComments(src: string): string {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
+    .replace(/\/\/[^\n]*/g, (m) => ' '.repeat(m.length));
+}
+
 /** The order Nest registers them in: the module's `controllers` array. */
 function registrationOrder(): string[] {
-  const src = readFileSync(MODULE, 'utf8');
+  const src = stripComments(readFileSync(MODULE, 'utf8'));
   const block = /controllers:\s*\[([^\]]*)\]/.exec(src);
   if (block === null) throw new Error('no controllers array in the module');
   return block[1]!
@@ -51,20 +65,6 @@ function fileFor(className: string): string | null {
     if (new RegExp(`export class ${className}\\b`).test(src)) return f;
   }
   return null;
-}
-
-/**
- * Blank out comments, keeping the line count.
- *
- * Without this the scanner reads decorators out of prose: the doc comment on
- * SettingsController mentions @Get(':id') to explain why the ordering
- * matters, and the first run of this spec duly reported that comment as a
- * route shadowing the endpoint it was describing.
- */
-function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
-    .replace(/\/\/[^\n]*/g, (m) => ' '.repeat(m.length));
 }
 
 function routesOf(file: string, className: string): Route[] {
