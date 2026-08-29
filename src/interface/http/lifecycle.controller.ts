@@ -17,6 +17,7 @@ import {
   IsUUID,
   Min,
 } from 'class-validator';
+import { WireEnum } from './wire-enum.decorator';
 import {
   LifecycleHandler,
   type LifecycleView,
@@ -50,7 +51,7 @@ export class LifecycleDto {
       'A salon-initiated cancel refunds in full, whatever the timing.',
   })
   @IsOptional()
-  @IsIn(['CUSTOMER', 'SALON'])
+  @WireEnum(['CUSTOMER', 'SALON'])
   initiatedBy?: Uppercase<CancelInitiator>;
 
   @ApiPropertyOptional({

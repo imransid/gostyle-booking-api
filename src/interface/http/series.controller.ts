@@ -29,6 +29,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { WireEnum } from './wire-enum.decorator';
 import { Type } from 'class-transformer';
 import {
   CreateSeriesHandler,
@@ -65,7 +66,7 @@ export class PatternDto {
   @ApiProperty({
     enum: ['weekly', 'every_n_weeks', 'monthly_on_date', 'custom'],
   })
-  @IsIn(['WEEKLY', 'EVERY_N_WEEKS', 'MONTHLY_ON_DATE', 'CUSTOM'])
+  @WireEnum(['WEEKLY', 'EVERY_N_WEEKS', 'MONTHLY_ON_DATE', 'CUSTOM'])
   kind!: 'WEEKLY' | 'EVERY_N_WEEKS' | 'MONTHLY_ON_DATE' | 'CUSTOM';
 
   @ApiPropertyOptional({
@@ -102,7 +103,7 @@ export class PatternDto {
 
 export class EndDto {
   @ApiProperty({ enum: ['never', 'on_date', 'after_count'] })
-  @IsIn(['NEVER', 'ON_DATE', 'AFTER_COUNT'])
+  @WireEnum(['NEVER', 'ON_DATE', 'AFTER_COUNT'])
   kind!: 'NEVER' | 'ON_DATE' | 'AFTER_COUNT';
 
   @ApiPropertyOptional({ example: '2027-03-01' })
@@ -161,7 +162,7 @@ export class CreateSeriesDto {
   @ApiProperty({
     enum: ['auto_confirm_on_schedule', 'ask_each_time', 'vip_standing'],
   })
-  @IsIn(['AUTO_CONFIRM_ON_SCHEDULE', 'ASK_EACH_TIME', 'VIP_STANDING'])
+  @WireEnum(['AUTO_CONFIRM_ON_SCHEDULE', 'ASK_EACH_TIME', 'VIP_STANDING'])
   autoConfirmRule!:
     'AUTO_CONFIRM_ON_SCHEDULE' | 'ASK_EACH_TIME' | 'VIP_STANDING';
 

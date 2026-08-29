@@ -23,6 +23,7 @@ import {
   Matches,
   Min,
 } from 'class-validator';
+import { WireEnum } from './wire-enum.decorator';
 import { unshout } from '@application/contract/wire';
 import {
   GetBookingHandler,
@@ -90,7 +91,7 @@ export class ConfirmBookingDto {
       'A link captures nothing yet, so the booking sits at PENDING_PAYMENT.',
   })
   @IsOptional()
-  @IsIn(['WALLET', 'CARD', 'APPLE_PAY', 'CASH', 'LINK'])
+  @WireEnum(['WALLET', 'CARD', 'APPLE_PAY', 'CASH', 'LINK'])
   rail?: Uppercase<PaymentRail>;
 
   @ApiPropertyOptional({ example: 'pi_abc123' })

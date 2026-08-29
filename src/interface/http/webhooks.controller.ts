@@ -17,6 +17,7 @@ import {
   ApiUnauthorizedResponse,
 } from '@nestjs/swagger';
 import { IsIn, IsInt, IsString, Min } from 'class-validator';
+import { WireEnum } from './wire-enum.decorator';
 import {
   PaymentWebhookHandler,
   type WebhookView,
@@ -48,7 +49,7 @@ export class PaymentWebhookDto {
   @ApiProperty({
     enum: ['CAPTURED', 'CAPTURE_FAILED', 'REFUNDED', 'REFUND_FAILED'],
   })
-  @IsIn(['CAPTURED', 'CAPTURE_FAILED', 'REFUNDED', 'REFUND_FAILED'])
+  @WireEnum(['CAPTURED', 'CAPTURE_FAILED', 'REFUNDED', 'REFUND_FAILED'])
   kind!: Uppercase<IntentKind>;
 
   @ApiProperty({ example: 24000 })

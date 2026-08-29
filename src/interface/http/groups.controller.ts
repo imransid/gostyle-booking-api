@@ -22,6 +22,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { WireEnum } from './wire-enum.decorator';
 import { Type } from 'class-transformer';
 import {
   GroupHoldHandler,
@@ -132,7 +133,7 @@ export class GroupHoldDto {
       'TOGETHER seats everyone at targetMin. FINISH staggers the starts ' +
       'backwards so the party leaves as one.',
   })
-  @IsIn(WIRE_GROUP_MODES)
+  @WireEnum(WIRE_GROUP_MODES)
   mode!: WireGroupMode;
 
   @ApiProperty({
@@ -141,7 +142,7 @@ export class GroupHoldDto {
       'ORGANIZER charges the whole party to whoever booked it. SPLIT divides ' +
       'it evenly, remainder first. OWN charges each participant their own.',
   })
-  @IsIn(WIRE_ARRANGEMENTS)
+  @WireEnum(WIRE_ARRANGEMENTS)
   arrangement!: WireArrangement;
 
   @ApiProperty({ type: [ParticipantDto], minItems: 2, maxItems: 8 })

@@ -18,6 +18,7 @@ import {
   Max,
   Min,
 } from 'class-validator';
+import { WireEnum } from './wire-enum.decorator';
 import {
   GetQuoteHandler,
   type QuoteView,
@@ -56,7 +57,7 @@ export class QuoteDto {
 
   @ApiPropertyOptional({ enum: ['DESK', 'ONLINE'], default: 'DESK' })
   @IsOptional()
-  @IsIn(['DESK', 'ONLINE'])
+  @WireEnum(['DESK', 'ONLINE'])
   channel: 'DESK' | 'ONLINE' = 'DESK';
 
   @ApiPropertyOptional({

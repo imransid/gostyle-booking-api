@@ -22,6 +22,7 @@ import {
   Min,
   ValidateNested,
 } from 'class-validator';
+import { WireEnum } from './wire-enum.decorator';
 import {
   GroupAvailabilityHandler,
   type GroupAvailabilityView,
@@ -69,7 +70,7 @@ export class GroupAvailabilityDto {
   targetMin!: number;
 
   @ApiProperty({ enum: WIRE_GROUP_MODES })
-  @IsIn(WIRE_GROUP_MODES)
+  @WireEnum(WIRE_GROUP_MODES)
   mode!: WireGroupMode;
 
   @ApiPropertyOptional({ example: 15, default: 0 })

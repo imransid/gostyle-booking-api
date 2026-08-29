@@ -61,9 +61,10 @@ describe('request DTO vocabulary', () => {
     it(`${file}: request enums are SCREAMING_SNAKE`, () => {
       const src = stripComments(readFileSync(join(HTTP, file), 'utf8'));
       const bad: string[] = [];
-      // @IsIn([...]) is the request side. Anything lowercase in one is a
-      // domain word that never got shouted.
-      for (const m of src.matchAll(/@IsIn\(\s*\[([^\]]*)\]/g)) {
+      // Both request-side validators. @WireEnum is @IsIn plus case
+      // tolerance, so it hides from a regex that only knows the latter --
+      // which it did the moment the shouted enums were converted to it.
+      for (const m of src.matchAll(/@(?:IsIn|WireEnum)\(\s*\[([^\]]*)\]/g)) {
         const values = m[1]!
           .split(',')
           .map((v) => v.trim().replace(/^'|'$/g, ''))
@@ -97,7 +98,8 @@ describe('the pre-contract debt', () => {
     const drifted = [...PRE_CONTRACT].filter((f) => {
       const src = stripComments(readFileSync(join(HTTP, f), 'utf8'));
       return (
-        /^\s*services[!?]?\s*:/m.test(src) || /@IsIn\(\s*\[\s*'[a-z]/.test(src)
+        /^\s*services[!?]?\s*:/m.test(src) ||
+        /@(?:IsIn|WireEnum)\(\s*\[\s*'[a-z]/.test(src)
       );
     });
     expect(drifted.sort()).toEqual([...PRE_CONTRACT].sort());

@@ -11,6 +11,7 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { IsIn, IsOptional, IsString, Matches } from 'class-validator';
+import { WireEnum } from './wire-enum.decorator';
 import { unshout } from '@application/contract/wire';
 import {
   RosterChangeHandler,
@@ -51,7 +52,7 @@ export class OpenRosterChangeDto {
   @ApiProperty({
     enum: ['SHIFT_CONFLICT', 'CLOSURE_SWEEP', 'CHAIR_OUT_OF_SERVICE'],
   })
-  @IsIn(['SHIFT_CONFLICT', 'CLOSURE_SWEEP', 'CHAIR_OUT_OF_SERVICE'])
+  @WireEnum(['SHIFT_CONFLICT', 'CLOSURE_SWEEP', 'CHAIR_OUT_OF_SERVICE'])
   kind!: Uppercase<RosterChangeKind>;
 
   @ApiPropertyOptional({
@@ -83,7 +84,7 @@ export class ResolveItemDto {
       'accepting the consequence; ACCEPT_CANCELLATION applies the prepared ' +
       'salon cancellation.',
   })
-  @IsIn(['REASSIGN', 'MOVE', 'OVERRIDE', 'ACCEPT_CANCELLATION'])
+  @WireEnum(['REASSIGN', 'MOVE', 'OVERRIDE', 'ACCEPT_CANCELLATION'])
   resolution!: Uppercase<Resolution>;
 }
 
