@@ -14,6 +14,8 @@ interface MovingBooking {
   start_at: Date;
   trading_day: Date;
   duration_min: number;
+  branch_id: string;
+  start_minute: number;
   price_fils: number;
   move_count: number;
   captured_fils: bigint | null;
@@ -149,7 +151,12 @@ export class RescheduleRepository {
 
         const items = await tx.bookingItem.findMany({
           where: { bookingId: booking.id },
-          select: { id: true, staffId: true, resourceType: true },
+          select: {
+            id: true,
+            staffId: true,
+            serviceId: true,
+            resourceType: true,
+          },
           orderBy: { position: 'asc' },
         });
         const first = items[0];
@@ -263,6 +270,18 @@ export class RescheduleRepository {
               toStartAt: newStart.toISOString(),
               reason: input.reason,
               releasedCapacity: true,
+              // WHAT WAS FREED, not where the booking went. Both listeners
+              // match on these six and drop the event silently without them,
+              // so for as long as they were missing a shift woke nobody --
+              // the waitlist was never offered a slot a reschedule vacated,
+              // and no test could see it because dropping is what the
+              // listener is supposed to do with an event it cannot match.
+              branchId: booking.branch_id,
+              serviceId: first.serviceId,
+              tradingDay: input.tradingDay,
+              startMin: booking.start_minute,
+              durationMin: booking.duration_min,
+              staffId: first.staffId,
             },
           },
         });
@@ -292,6 +311,7 @@ export class RescheduleRepository {
       const locked = await tx.$queryRaw<MovingBooking[]>`
         SELECT b.id, b.code, b.status::text AS status, b.start_at,
                b.trading_day, b.duration_min, b.price_fils, b.move_count,
+               b.branch_id, b.start_minute,
                (SELECT COALESCE(SUM(amount_fils), 0)
                   FROM deposit_ledger WHERE booking_id = b.id) AS captured_fils
           FROM booking b
@@ -332,7 +352,9 @@ export class RescheduleRepository {
 
       const items = await tx.bookingItem.findMany({
         where: { bookingId: booking.id },
-        select: { id: true },
+        // staffId and serviceId are read BEFORE step 6 overwrites the staff,
+        // because the slot that just came free belongs to the old one.
+        select: { id: true, staffId: true, serviceId: true },
         orderBy: { position: 'asc' },
       });
       const itemIds = items.map((i) => i.id);
@@ -486,6 +508,14 @@ export class RescheduleRepository {
             code: booking.code,
             fromStartAt: booking.start_at.toISOString(),
             toStartAt: newStart.toISOString(),
+            // See the shift path: the old slot's identity, or the comment
+            // above this block about waking the waitlist is a lie.
+            branchId: booking.branch_id,
+            serviceId: firstItem.serviceId,
+            tradingDay: booking.trading_day.toISOString().slice(0, 10),
+            startMin: booking.start_minute,
+            durationMin: booking.duration_min,
+            staffId: firstItem.staffId,
             moveCount: outcome.newMoveCount,
             lateMove: outcome.lateMove,
             forfeitedFils:

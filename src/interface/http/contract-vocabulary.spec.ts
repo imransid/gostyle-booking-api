@@ -80,6 +80,87 @@ describe('request DTO vocabulary', () => {
   }
 });
 
+describe('request enums the decorators do not see', () => {
+  /**
+   * Two blind spots, both found by running the endpoints rather than by
+   * reading them.
+   *
+   * ONE: a request enum validated by hand. `edit-scope` compared its raw
+   * query string to the domain's own lowercase words with a `find` in the
+   * method body, so it rejected the SCREAMING_SNAKE the contract promises --
+   * and neither @IsIn nor @WireEnum appeared anywhere near it, so the checks
+   * above passed happily. Lowercase literal lists are still right; they are
+   * the domain's vocabulary. What must be true is that a request value
+   * reaches them through `unshout`, which folds the case and validates.
+   *
+   * TWO: Swagger documenting a different enum from the one the DTO accepts.
+   * @ApiProperty({ enum }) is what the front end generates its client from,
+   * so a lowercase list beside an uppercase @WireEnum publishes a contract
+   * the endpoint does not implement. Four properties had drifted this way.
+   */
+
+  const LOWER_LIST =
+    /\[\s*((?:'[a-z][a-z_]*'\s*,\s*)+'[a-z][a-z_]*'\s*,?)\s*\]/g;
+
+  for (const file of contractFiles) {
+    it(`${file}: lowercase enum lists are only ever unshouted`, () => {
+      const src = stripComments(readFileSync(join(HTTP, file), 'utf8'));
+      // Names proven to be case-folded: `unshout(value, THESE)`.
+      const folded = new Set(
+        [...src.matchAll(/unshout\(\s*[^,]+,\s*([A-Za-z_$][\w$]*)\s*\)/g)].map(
+          (m) => m[1]!,
+        ),
+      );
+      const bad: string[] = [];
+      for (const m of src.matchAll(LOWER_LIST)) {
+        const before = src.slice(0, m.index);
+        const line = before.split('\n').length;
+        // The declaration this list belongs to, if it has one.
+        const decl =
+          /(?:const|let)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]*)?=\s*$/.exec(
+            before.replace(/\s+$/, (w) => (w.includes('\n') ? ' ' : w)),
+          );
+        const name = decl?.[1];
+        const inSwagger = /enum:\s*$/.test(before.trimEnd().slice(-40) + '');
+        if (inSwagger) continue; // covered by the @ApiProperty check below
+        if (name !== undefined && folded.has(name)) continue;
+        if (/unshout\(\s*[^,]+,\s*$/.test(before.trimEnd())) continue;
+        bad.push(
+          `line ${line}: ${name ?? 'a literal list'} is lowercase and never ` +
+            'reaches unshout -- a shouted request value will not match it',
+        );
+      }
+      expect(bad).toEqual([]);
+    });
+
+    it(`${file}: Swagger documents the enum the DTO actually accepts`, () => {
+      const src = stripComments(readFileSync(join(HTTP, file), 'utf8'));
+      const bad: string[] = [];
+      // Each @ApiProperty*({... enum: [...] ...}) and the @WireEnum/@IsIn
+      // that follows it on the same property.
+      const re =
+        /enum:\s*\[([^\]]*)\][\s\S]{0,240}?@(?:WireEnum|IsIn)\(\s*\[([^\]]*)\]/g;
+      for (const m of src.matchAll(re)) {
+        const list = (raw: string) =>
+          raw
+            .split(',')
+            .map((v) => v.trim().replace(/^'|'$/g, ''))
+            .filter((v) => v.length > 0);
+        const doc = list(m[1]!);
+        const real = list(m[2]!);
+        if (doc.join('|') !== real.join('|')) {
+          const line = src.slice(0, m.index).split('\n').length;
+          bad.push(
+            `line ${line}: Swagger says [${doc.join(', ')}] but the ` +
+              `validator accepts [${real.join(', ')}]`,
+          );
+        }
+      }
+      expect(bad).toEqual([]);
+    });
+  }
+});
+
 describe('the pre-contract debt', () => {
   it('is exactly the three endpoints that shipped before the contract', () => {
     // If this fails because the set shrank, delete the name from PRE_CONTRACT

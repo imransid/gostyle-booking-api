@@ -78,7 +78,7 @@ export class OpenRosterChangeDto {
 
 export class ResolveItemDto {
   @ApiProperty({
-    enum: ['reassign', 'move', 'override', 'accept_cancellation'],
+    enum: ['REASSIGN', 'MOVE', 'OVERRIDE', 'ACCEPT_CANCELLATION'],
     description:
       'REASSIGN and MOVE are recorded as resolved; OVERRIDE is a manager ' +
       'accepting the consequence; ACCEPT_CANCELLATION applies the prepared ' +

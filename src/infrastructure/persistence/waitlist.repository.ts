@@ -31,10 +31,10 @@ interface OfferRow {
   customer_id: string;
   offered_booking_code: string;
   trading_day: Date;
-  start_minute: number;
-  duration_min: number;
   service_id: string;
-  staff_id: string;
+  offered_start_min: number;
+  offered_duration_min: number;
+  offered_staff_id: string;
 }
 
 interface LapsedRow {
@@ -42,15 +42,11 @@ interface LapsedRow {
   branch_id: string;
   offered_booking_code: string | null;
   customer_id: string;
-}
-
-interface SlotRow {
-  code: string;
-  trading_day: Date;
-  start_minute: number;
-  duration_min: number;
   service_id: string;
-  staff_id: string;
+  trading_day: Date;
+  offered_start_min: number | null;
+  offered_duration_min: number | null;
+  offered_staff_id: string | null;
 }
 
 export interface OfferResult {
@@ -154,6 +150,12 @@ export class WaitlistRepository {
           status: 'offered',
           offeredBookingCode: slot.bookingCode,
           offerExpiresAt: expiresAt,
+          // The slot AS IT WAS WHEN FREED. Reading it back off the booking
+          // row instead is what handed a rescheduled customer the slot that
+          // booking had moved INTO -- see the schema comment.
+          offeredStartMin: slot.startMin,
+          offeredDurationMin: slot.durationMin,
+          offeredStaffId: toUuid(slot.staffId),
         },
       });
 
@@ -276,17 +278,20 @@ export class WaitlistRepository {
     durationMin: number;
     staffId: string;
   } | null> {
+    // No join to the booking. Everything the offer promised is on the entry
+    // itself: the service and the day because matching required them to be
+    // the entry's own, and the start, duration and professional because they
+    // were written at the moment the offer was made. The booking code is
+    // only the label on the offer now, not the source of its contents.
     const rows = await this.prisma.$queryRaw<OfferRow[]>`
       SELECT w.branch_id, w.customer_id, w.offered_booking_code,
-             b.trading_day, b.start_minute, b.duration_min,
-             bi.service_id, bi.staff_id
+             w.service_id, w.trading_day,
+             w.offered_start_min, w.offered_duration_min, w.offered_staff_id
         FROM waitlist_entry w
-        JOIN booking b  ON b.code = w.offered_booking_code
-        JOIN booking_item bi ON bi.booking_id = b.id
        WHERE w.id = ${entryId}::uuid
          AND w.status = 'offered'
          AND w.offer_expires_at > now()
-       ORDER BY bi.position
+         AND w.offered_start_min IS NOT NULL
        LIMIT 1`;
 
     const r = rows[0];
@@ -298,9 +303,9 @@ export class WaitlistRepository {
       bookingCode: r.offered_booking_code,
       serviceId: r.service_id,
       tradingDay: r.trading_day.toISOString().slice(0, 10),
-      startMin: r.start_minute,
-      durationMin: r.duration_min,
-      staffId: this.staff.toSlug(r.staff_id),
+      startMin: r.offered_start_min,
+      durationMin: r.offered_duration_min,
+      staffId: this.staff.toSlug(r.offered_staff_id),
     };
   }
 
@@ -319,6 +324,9 @@ export class WaitlistRepository {
         status: 'accepted',
         offeredBookingCode: null,
         offerExpiresAt: null,
+        offeredStartMin: null,
+        offeredDurationMin: null,
+        offeredStaffId: null,
       },
     });
     return done.count > 0;
@@ -350,24 +358,43 @@ export class WaitlistRepository {
           LIMIT 100
           FOR UPDATE SKIP LOCKED
        )
-      RETURNING id, branch_id, offered_booking_code, customer_id`;
+      RETURNING id, branch_id, offered_booking_code, customer_id,
+                service_id, trading_day, offered_start_min,
+                offered_duration_min, offered_staff_id`;
 
     let passed = 0;
     for (const row of lapsed) {
-      if (row.offered_booking_code === null) continue;
-
-      // The slot has to be rebuilt from the booking, because the waitlist row
-      // only remembers which code it was offered. If the booking has since
-      // been rebooked by someone else there is nothing to pass down, which is
-      // the right answer rather than an error.
-      const slot = await this.slotForCode(row.offered_booking_code);
-      if (slot === null) {
+      // The row remembers the whole slot now, so a lapsed offer passes down
+      // exactly what was offered. It used to be rebuilt from the booking,
+      // which was correct only for as long as nothing could move that
+      // booking afterwards.
+      if (
+        row.offered_booking_code === null ||
+        row.offered_start_min === null ||
+        row.offered_duration_min === null ||
+        row.offered_staff_id === null
+      ) {
         await this.prisma.waitlistEntry.update({
           where: { id: row.id },
-          data: { offeredBookingCode: null, offerExpiresAt: null },
+          data: {
+            offeredBookingCode: null,
+            offerExpiresAt: null,
+            offeredStartMin: null,
+            offeredDurationMin: null,
+            offeredStaffId: null,
+          },
         });
         continue;
       }
+
+      const slot: FreedSlot = {
+        bookingCode: row.offered_booking_code,
+        serviceId: row.service_id,
+        tradingDay: row.trading_day.toISOString().slice(0, 10),
+        startMin: row.offered_start_min,
+        durationMin: row.offered_duration_min,
+        staffId: this.staff.toSlug(row.offered_staff_id),
+      };
 
       await this.passDown(row.id, row.branch_id, slot, nowMs);
       passed += 1;
@@ -377,30 +404,6 @@ export class WaitlistRepository {
       WaitlistRepository.log.log(`${passed} offer(s) lapsed and passed down`);
     }
     return passed;
-  }
-
-  /** Rebuild a freed slot from the booking that freed it. */
-  private async slotForCode(code: string): Promise<FreedSlot | null> {
-    const rows = await this.prisma.$queryRaw<SlotRow[]>`
-      SELECT b.code, b.trading_day, b.start_minute, b.duration_min,
-             bi.service_id, bi.staff_id
-        FROM booking b
-        JOIN booking_item bi ON bi.booking_id = b.id
-       WHERE b.code = ${code}
-       ORDER BY bi.position
-       LIMIT 1`;
-
-    const r = rows[0];
-    if (r === undefined) return null;
-
-    return {
-      bookingCode: r.code,
-      serviceId: r.service_id,
-      tradingDay: r.trading_day.toISOString().slice(0, 10),
-      startMin: r.start_minute,
-      durationMin: r.duration_min,
-      staffId: this.staff.toSlug(r.staff_id),
-    };
   }
 
   /**
@@ -446,6 +449,9 @@ export class WaitlistRepository {
         declinedCodes: { push: slot.bookingCode },
         offeredBookingCode: null,
         offerExpiresAt: null,
+        offeredStartMin: null,
+        offeredDurationMin: null,
+        offeredStaffId: null,
       },
     });
 

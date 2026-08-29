@@ -425,8 +425,19 @@ model WaitlistEntry {
   declinedCodes String[] @default([]) @map("declined_codes")
 
   /// The live offer, if any. Cleared when it is accepted, declined or lapses.
+  ///
+  /// THE SLOT IS STORED, NOT DERIVED. The code alone used to be enough: the
+  /// slot was read back off the booking row, which for a cancel or a no-show
+  /// still sits exactly where it was freed. A RESCHEDULE moves that row. The
+  /// offer then described the slot the booking had moved INTO -- occupied,
+  /// by that same booking -- and accept answered 409 every time. Keeping the
+  /// slot as it was at the moment it was offered is the only version that
+  /// survives the booking changing afterwards.
   offeredBookingCode String?   @map("offered_booking_code")
   offerExpiresAt     DateTime? @map("offer_expires_at") @db.Timestamptz(6)
+  offeredStartMin    Int?      @map("offered_start_min") @db.SmallInt
+  offeredDurationMin Int?      @map("offered_duration_min") @db.SmallInt
+  offeredStaffId     String?   @map("offered_staff_id") @db.Uuid
 
   joinedAt DateTime @default(now()) @map("joined_at") @db.Timestamptz(6)
 

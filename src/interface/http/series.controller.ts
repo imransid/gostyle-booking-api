@@ -50,7 +50,7 @@ import type {
   Weekday,
 } from '@domain/booking/recurrence';
 
-import { unshout } from '@application/contract/wire';
+import { shout, unshout } from '@application/contract/wire';
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -63,7 +63,7 @@ const AUTO_CONFIRM_RULES = [
 
 export class PatternDto {
   @ApiProperty({
-    enum: ['weekly', 'every_n_weeks', 'monthly_on_date', 'custom'],
+    enum: ['WEEKLY', 'EVERY_N_WEEKS', 'MONTHLY_ON_DATE', 'CUSTOM'],
   })
   @WireEnum(['WEEKLY', 'EVERY_N_WEEKS', 'MONTHLY_ON_DATE', 'CUSTOM'])
   kind!: 'WEEKLY' | 'EVERY_N_WEEKS' | 'MONTHLY_ON_DATE' | 'CUSTOM';
@@ -101,7 +101,7 @@ export class PatternDto {
 }
 
 export class EndDto {
-  @ApiProperty({ enum: ['never', 'on_date', 'after_count'] })
+  @ApiProperty({ enum: ['NEVER', 'ON_DATE', 'AFTER_COUNT'] })
   @WireEnum(['NEVER', 'ON_DATE', 'AFTER_COUNT'])
   kind!: 'NEVER' | 'ON_DATE' | 'AFTER_COUNT';
 
@@ -159,7 +159,7 @@ export class CreateSeriesDto {
   end!: EndDto;
 
   @ApiProperty({
-    enum: ['auto_confirm_on_schedule', 'ask_each_time', 'vip_standing'],
+    enum: ['AUTO_CONFIRM_ON_SCHEDULE', 'ASK_EACH_TIME', 'VIP_STANDING'],
   })
   @WireEnum(['AUTO_CONFIRM_ON_SCHEDULE', 'ASK_EACH_TIME', 'VIP_STANDING'])
   autoConfirmRule!:
@@ -329,15 +329,20 @@ export class SeriesController {
     ineligible: readonly string[];
     explanation: string;
   }> {
+    // Shouted on the wire like every other request enum, folded back to the
+    // domain's own spelling by the one function that does that. Hand-rolling
+    // the comparison here is what let this one stay lowercase after e856885
+    // shouted the rest -- the vocabulary guard only reads @IsIn/@WireEnum,
+    // and a `find` in a method body is invisible to it.
     const legal: EditScope[] = [
       'this_occurrence',
       'this_and_future',
       'entire_series',
     ];
-    const chosen = legal.find((s) => s === scope);
-    if (chosen === undefined) {
+    const chosen = unshout(scope, legal);
+    if (chosen === null) {
       throw new UnprocessableEntityException(
-        `scope must be one of: ${legal.join(', ')}`,
+        `scope must be one of: ${legal.map(shout).join(', ')}`,
       );
     }
     return this.lifecycle.previewEdit(id, occurrenceId, chosen);
