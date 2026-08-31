@@ -7,21 +7,6 @@ import {
 import { PrismaService } from '../persistence/prisma.service';
 import { toUuid } from '../persistence/hold.repository';
 
-/**
- * A freed slot reaches the walk-in queue and the waitlist TOGETHER.
- *
- * Walk-ins are the first consumer of any slot a no-show gives back, which is
- * why the no-show path offers the gap to both at once rather than waiting for
- * the waitlist to decline it. Somebody is standing in the salon; the person on
- * the waitlist is at home.
- *
- * THE TWO OFFERS ARE DIFFERENT SHAPES and that is deliberate. A waitlist
- * offer is a push with a TTL, because the customer is elsewhere and has to be
- * reached. The walk-in queue recomputes its options from live availability on
- * every read, so the gap is simply THERE the moment capacity comes back. What
- * this listener adds is the nudge: an event the desk screen can highlight, so
- * a gap does not sit unnoticed until somebody refreshes.
- */
 const FREES_A_SLOT = new Set([
   'booking.cancelled',
   'booking.no_show',

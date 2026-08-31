@@ -4,11 +4,6 @@ import { PrismaService } from '../persistence/prisma.service';
 import { LifecycleRepository } from '../persistence/lifecycle.repository';
 import { AUTO_NO_SHOW_MIN } from '@domain/booking/lifecycle';
 
-/**
- * A minute is fine here. The desk owns the decision until start plus thirty,
- * and being a few seconds late to a call the salon has already had half an
- * hour to make changes nothing.
- */
 export const NO_SHOW_SWEEP_MS = 60_000;
 
 /** Named: a heredoc eats a line ending in `<`. */
@@ -29,24 +24,6 @@ export class NoShowSweeper implements OnModuleInit {
     private readonly lifecycle: LifecycleRepository,
   ) {}
 
-  /**
-   * Mark bookings nobody turned up for.
-   *
-   * WITHOUT THIS A NO-SHOW IS PERMANENTLY LOST CAPACITY. The booking sits at
-   * confirmed forever, holding a professional and a chair, and the waitlist
-   * never hears about it because no event ever fires. The rule existed and
-   * the timer did not, which is worse than missing: the code implied it
-   * worked.
-   *
-   * The transition goes through the SAME path a receptionist uses, so the
-   * deposit is forfeited, the capacity is released, the history is written
-   * and the event is published exactly as it would be by hand. A separate
-   * "automatic no-show" path would be a second place for those rules to live.
-   *
-   * Between the end of grace and this moment the DESK owns the decision. The
-   * sweeper only acts once that window has closed and nobody has said
-   * anything.
-   */
   onModuleInit(): void {
     NoShowSweeper.log.log(
       `Auto no-show sweeper armed, every ${NO_SHOW_SWEEP_MS / 1000}s`,
@@ -59,16 +36,6 @@ export class NoShowSweeper implements OnModuleInit {
     this.running = true;
 
     try {
-      // Claimed one at a time by transition()'s own row lock, so two replicas
-      // racing the same booking means one wins and the other reads fresh
-      // state and finds it already marked.
-      // The cutoff is computed HERE and bound as a timestamp.
-      //
-      // Doing the arithmetic in SQL meant binding 30 as a parameter and then
-      // concatenating it into an interval, which is three type coercions deep
-      // and failed silently. A Date is one type the driver already knows, and
-      // it makes the sweep testable with an injected clock rather than only
-      // against the wall.
       const cutoff = new Date(Date.now() - AUTO_NO_SHOW_MIN * 60_000);
 
       const stale = await this.prisma.$queryRaw<StaleRow[]>`

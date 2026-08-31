@@ -6,19 +6,6 @@ import {
 } from '@application/ports/event-publisher.port';
 import { WaitlistRepository } from '../persistence/waitlist.repository';
 
-/**
- * Every path that frees a slot, without any of them knowing about the
- * waitlist.
- *
- * A cancel, a no-show, an expiry and a reschedule all already write an event
- * saying capacity came back. Listening to those, rather than calling the
- * waitlist from each one, means the next way of freeing a slot inherits the
- * behaviour for free instead of being one more place somebody has to
- * remember.
- *
- * This DECORATES the real publisher rather than replacing it. The waitlist
- * offer happens, then the event carries on to wherever it was going.
- */
 const FREES_A_SLOT = new Set([
   'booking.cancelled',
   'booking.no_show',

@@ -6,14 +6,6 @@ import {
 } from '@application/ports/event-publisher.port';
 import { WalkInRepository } from '../persistence/walk-in.repository';
 
-/**
- * A confirmed booking empties the queue entry it came from.
- *
- * Matched on the HOLD, so the ordinary confirm path never learns that
- * walk-ins exist. Seating produces a hold and confirming it is a separate
- * call; without this the person would sit in a chair and go on appearing in
- * the waiting room, and the desk would have to tell us twice.
- */
 @Injectable()
 export class WalkInSeatedListener implements EventPublisher {
   private static readonly log = new Logger(WalkInSeatedListener.name);
