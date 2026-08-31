@@ -10,7 +10,6 @@ import {
   type CustomerHistory,
   type RequirementInput,
   type Tier,
-  type BranchRules,
 } from './customer';
 import { Money } from '../shared/money';
 
@@ -249,11 +248,11 @@ describe('rung 4a: the first visit is 20%, any channel', () => {
 });
 
 describe('rung 4b: the peak window ESCALATES, it does not set an amount', () => {
-  const peak: BranchRules = { ...DEFAULT_BRANCH, peakEscalation: true };
+  // No `peak` fixture any more: escalation is not opt-in, so the default
+  // branch IS the peak branch and a start inside the window is enough.
 
   it('none becomes a 20% deposit', () => {
     const r = req({
-      branch: peak,
       startMin: 1080, // 18:00
       service: { name: 'Fringe trim', percent: null, fixedFils: null },
     });
@@ -263,7 +262,7 @@ describe('rung 4b: the peak window ESCALATES, it does not set an amount', () => 
   });
 
   it('a deposit becomes FULL payment', () => {
-    const r = req({ branch: peak, startMin: 1080 });
+    const r = req({ startMin: 1080 });
     expect(r.kind).toBe('full');
     expect(r.amountFils).toBe(COLOUR_480);
     expect(r.source).toContain('Peak window escalation');
@@ -273,7 +272,6 @@ describe('rung 4b: the peak window ESCALATES, it does not set an amount', () => 
 
   it('full stays full: there is no level above it', () => {
     const r = req({
-      branch: peak,
       startMin: 1080,
       service: { name: 'Keratin', percent: 100, fixedFils: null },
     });
@@ -281,33 +279,28 @@ describe('rung 4b: the peak window ESCALATES, it does not set an amount', () => 
   });
 
   it('the boundaries: 17:00 is in, 20:00 is out', () => {
-    expect(req({ branch: peak, startMin: 1020 }).kind).toBe('full'); // 17:00
-    expect(req({ branch: peak, startMin: 1199 }).kind).toBe('full'); // 19:59
-    expect(req({ branch: peak, startMin: 1200 }).kind).toBe('deposit'); // 20:00
+    expect(req({ startMin: 1020 }).kind).toBe('full'); // 17:00
+    expect(req({ startMin: 1199 }).kind).toBe('full'); // 19:59
+    expect(req({ startMin: 1200 }).kind).toBe('deposit'); // 20:00
   });
 
-  it('ON by default, so a branch opts OUT', () => {
-    // The default flipped when the product owner chose Table 8.1 over
-    // Appendix C. This is the assertion that says which one the code
-    // follows, so it is the one to change if that decision is revisited.
-    expect(req({ startMin: 1080 }).kind).toBe('full');
-    const row = req({ startMin: 1080 }).trace.find(
-      (t) => t.rung === '4b Peak window',
-    )!;
+  it('always on: there is no flag left to turn it off', () => {
+    // The `peakEscalation` boolean is deleted. A peak start escalates because
+    // it is a peak start, and the only way to change that is the branch
+    // config table that does not exist yet.
+    const r = req({ startMin: 1080 });
+    expect(r.kind).toBe('full');
+    const row = r.trace.find((t) => t.rung === '4b Peak window')!;
     expect(row.fired).toBe(true);
     expect(row.evaluation).toContain('escalated');
   });
 
-  it('a branch that opts out still reports the rung as disabled', () => {
-    // Keeps the off path covered now that it is no longer the default: the
-    // trace must still say 'disabled' rather than silently omitting 4b.
-    const off: BranchRules = { ...DEFAULT_BRANCH, peakEscalation: false };
-    expect(req({ branch: off, startMin: 1080 }).kind).toBe('deposit');
-    const row = req({ branch: off, startMin: 1080 }).trace.find(
+  it('off-peak still reports the rung, so the trace keeps seven rows', () => {
+    const row = req({ startMin: 660 }).trace.find(
       (t) => t.rung === '4b Peak window',
     )!;
     expect(row.fired).toBe(false);
-    expect(row.evaluation).toBe('disabled');
+    expect(row.evaluation).toBe('off-peak start');
   });
 });
 
@@ -533,14 +526,15 @@ describe('invariants that must hold whatever the rules become', () => {
       for (const service of services)
         for (const totalFils of totals)
           for (const isNewCustomer of [true, false])
-            for (const peakEscalation of [true, false]) {
+            // Was on/off escalation; the flag is gone, so the axis that
+            // still varies the outcome is peak (1080) against off-peak (660).
+            for (const startMin of [660, 1080]) {
               const out = req({
                 ...r,
                 service,
                 totalFils,
                 isNewCustomer,
-                branch: { ...DEFAULT_BRANCH, peakEscalation },
-                startMin: 1080,
+                startMin,
               });
               expect(out.amountFils).toBeGreaterThanOrEqual(0);
               expect(out.amountFils).toBeLessThanOrEqual(totalFils);
@@ -566,14 +560,12 @@ describe('invariants that must hold whatever the rules become', () => {
   });
 
   it('the peak window never lowers the requirement either', () => {
+    // Was on-vs-off; with the flag gone the comparison that still means
+    // something is inside-the-window against outside it.
     for (const service of services) {
-      const off = req({ service, startMin: 1080 }).amountFils;
-      const on = req({
-        service,
-        startMin: 1080,
-        branch: { ...DEFAULT_BRANCH, peakEscalation: true },
-      }).amountFils;
-      expect(on).toBeGreaterThanOrEqual(off);
+      const offPeak = req({ service, startMin: 660 }).amountFils;
+      const inPeak = req({ service, startMin: 1080 }).amountFils;
+      expect(inPeak).toBeGreaterThanOrEqual(offPeak);
     }
   });
 

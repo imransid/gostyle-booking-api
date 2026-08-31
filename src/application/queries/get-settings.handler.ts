@@ -175,7 +175,11 @@ export class GetSettingsHandler {
         peakEscalationPercent: PEAK_ESCALATION_PERCENT,
       },
       peakWindow: {
-        enabled: DEFAULT_BRANCH.peakEscalation,
+        // Kept, and kept true, rather than dropped. Rung 4b is no longer
+        // switchable -- the field is now a statement about the engine, not a
+        // setting -- but a client already branching on it would break if the
+        // key vanished, and `true` is the honest answer either way.
+        enabled: true,
         fromMin: DEFAULT_BRANCH.peakFromMin,
         toMin: DEFAULT_BRANCH.peakToMin,
       },

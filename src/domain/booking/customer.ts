@@ -144,9 +144,18 @@ export interface ServiceRequirement {
 export interface BranchRules {
   readonly onlineDefaultPercent: number | null;
   readonly defaultPercent: number | null;
+  /**
+   * The window itself is still a rule. Whether it FIRES is not.
+   *
+   * There was a `peakEscalation` boolean here. It is gone: Table 8.1 lists
+   * rung 4b as part of the ladder, not as something a deployment opts into,
+   * and a switch that only one hard-coded object could ever set was a
+   * per-branch rule wearing a global constant's clothes. When a branch
+   * genuinely needs it off, that is a branch configuration table and this
+   * interface grows a real per-branch value -- not a flag nobody can reach.
+   */
   readonly peakFromMin: number;
   readonly peakToMin: number;
-  readonly peakEscalation: boolean;
 }
 
 export const DEFAULT_BRANCH: BranchRules = {
@@ -154,26 +163,6 @@ export const DEFAULT_BRANCH: BranchRules = {
   defaultPercent: null,
   peakFromMin: 1020, // 17:00
   peakToMin: 1200, // 20:00
-  /**
-   * ON, and that is a deliberate departure from Appendix C.
-   *
-   * The booking-flow document disagrees with itself: Table 8.1 lists rung 4b
-   * as a live rung defaulting to 17:00-20:00, while Appendix C gives the
-   * launch default as "off". This was set false to follow Appendix C; it is
-   * now true to follow Table 8.1, on the product owner's instruction.
-   *
-   * WHAT IT COSTS. escalate() moves the outcome up one level, so between
-   * 17:00 and 20:00 a booking with no requirement acquires a 20% deposit and
-   * a booking with ANY deposit becomes payment in full on the pre-discount
-   * total. A Gold balayage at 18:00 goes from AED 360 to AED 720 up front.
-   * That is the busiest window of the day, so this is the single most
-   * revenue-visible constant in the file.
-   *
-   * There is no branch table and no env override, so this constant is the
-   * only lever: changing it needs a rebuild and a redeploy, and it applies
-   * to every branch at once.
-   */
-  peakEscalation: true,
 };
 
 export interface RequirementInput {
@@ -383,7 +372,7 @@ export function requirementFor(input: RequirementInput): Requirement {
     input.startMin >= input.branch.peakFromMin &&
     input.startMin < input.branch.peakToMin;
 
-  if (input.branch.peakEscalation && inPeak) {
+  if (inPeak) {
     const before = winner.kind;
     winner = escalate(winner, total, input.branch);
     trace.push({
@@ -394,7 +383,7 @@ export function requirementFor(input: RequirementInput): Requirement {
   } else {
     trace.push({
       rung: '4b Peak window',
-      evaluation: input.branch.peakEscalation ? 'off-peak start' : 'disabled',
+      evaluation: 'off-peak start',
       fired: false,
     });
   }
