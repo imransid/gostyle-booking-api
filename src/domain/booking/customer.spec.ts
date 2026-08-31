@@ -286,11 +286,27 @@ describe('rung 4b: the peak window ESCALATES, it does not set an amount', () => 
     expect(req({ branch: peak, startMin: 1200 }).kind).toBe('deposit'); // 20:00
   });
 
-  it('off by default, so a branch opts in', () => {
-    expect(req({ startMin: 1080 }).kind).toBe('deposit');
+  it('ON by default, so a branch opts OUT', () => {
+    // The default flipped when the product owner chose Table 8.1 over
+    // Appendix C. This is the assertion that says which one the code
+    // follows, so it is the one to change if that decision is revisited.
+    expect(req({ startMin: 1080 }).kind).toBe('full');
     const row = req({ startMin: 1080 }).trace.find(
       (t) => t.rung === '4b Peak window',
     )!;
+    expect(row.fired).toBe(true);
+    expect(row.evaluation).toContain('escalated');
+  });
+
+  it('a branch that opts out still reports the rung as disabled', () => {
+    // Keeps the off path covered now that it is no longer the default: the
+    // trace must still say 'disabled' rather than silently omitting 4b.
+    const off: BranchRules = { ...DEFAULT_BRANCH, peakEscalation: false };
+    expect(req({ branch: off, startMin: 1080 }).kind).toBe('deposit');
+    const row = req({ branch: off, startMin: 1080 }).trace.find(
+      (t) => t.rung === '4b Peak window',
+    )!;
+    expect(row.fired).toBe(false);
     expect(row.evaluation).toBe('disabled');
   });
 });

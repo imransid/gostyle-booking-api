@@ -154,7 +154,26 @@ export const DEFAULT_BRANCH: BranchRules = {
   defaultPercent: null,
   peakFromMin: 1020, // 17:00
   peakToMin: 1200, // 20:00
-  peakEscalation: false,
+  /**
+   * ON, and that is a deliberate departure from Appendix C.
+   *
+   * The booking-flow document disagrees with itself: Table 8.1 lists rung 4b
+   * as a live rung defaulting to 17:00-20:00, while Appendix C gives the
+   * launch default as "off". This was set false to follow Appendix C; it is
+   * now true to follow Table 8.1, on the product owner's instruction.
+   *
+   * WHAT IT COSTS. escalate() moves the outcome up one level, so between
+   * 17:00 and 20:00 a booking with no requirement acquires a 20% deposit and
+   * a booking with ANY deposit becomes payment in full on the pre-discount
+   * total. A Gold balayage at 18:00 goes from AED 360 to AED 720 up front.
+   * That is the busiest window of the day, so this is the single most
+   * revenue-visible constant in the file.
+   *
+   * There is no branch table and no env override, so this constant is the
+   * only lever: changing it needs a rebuild and a redeploy, and it applies
+   * to every branch at once.
+   */
+  peakEscalation: true,
 };
 
 export interface RequirementInput {
