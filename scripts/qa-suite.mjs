@@ -675,20 +675,47 @@ async function races() {
   });
 }
 
-/** A confirmed party. Returns groupId + the confirm response's bookings. */
+/**
+ * A confirmed party. Returns groupId + the confirm response's bookings.
+ *
+ * EVERY LANE NEEDS ITS OWN PROFESSIONAL, so the party can only be as large
+ * as the eligible pool. An earlier version gave participant 1 a gel-manicure
+ * at a hard-coded 11:00 and the planner refused the whole party, correctly:
+ * only Lina does nails and her first nail slot is 12:05. The refusal was
+ * right and the test was wrong. So: all-hair services, which four of the six
+ * professionals can take, and a target read off real availability rather
+ * than guessed.
+ *
+ * Prices matter too. MON-5 needs a total that does not divide evenly, and
+ * every fixture price is a multiple of 1000 -- so a remainder is only
+ * reachable on a 3-way split whose net total in thousands is not a multiple
+ * of 3. 16000 + 16000 + 14000 = 46000 is.
+ */
+const GROUP_SERVICES = ['haircut-finish', 'haircut-finish', 'blow-dry',
+  'fringe-trim', 'haircut-finish', 'blow-dry', 'fringe-trim', 'haircut-finish'];
+
 async function groupOf(n, opts = {}) {
-  const svc = ['gel-manicure', 'fringe-trim', 'blow-dry', 'brow-lamination',
-    'haircut-finish', 'luxury-facial', 'hot-stone', 'mani-pedi'];
   const participants = Array.from({ length: n }, (_, i) => ({
     label: `QA${i + 1}`,
-    serviceIds: [svc[i % svc.length]],
+    serviceIds: [GROUP_SERVICES[i]],
     guestName: `QA Guest ${i + 1}`,
   }));
+
+  // A start where at least n professionals can take the longest lane. Below
+  // that the planner cannot give every participant their own, and the 409 it
+  // returns is correct rather than interesting.
+  const a = await availability(DAY, ['haircut-finish']);
+  if (a.status !== 200) blocked(`availability ${a.status}: ${messageOf(a)}`);
+  const wide = (a.json.offers ?? []).find((o) => (o.staff ?? []).length >= n);
+  if (!wide) {
+    const best = Math.max(0, ...(a.json.offers ?? []).map((o) => (o.staff ?? []).length));
+    blocked(`no start on ${DAY} has ${n} free professionals at once (best is ${best})`);
+  }
 
   const held = await call('POST', '/v1/groups/holds', {
     branchId: 'marina-walk',
     day: DAY,
-    targetMin: 660,
+    targetMin: wide.startMin,
     mode: 'TOGETHER',
     arrangement: opts.arrangement ?? 'SPLIT',
     participants,
@@ -874,7 +901,9 @@ async function refusals() {
   });
 
   await testCase('REF-8b', 'Payment-link route refuses inside 2 hours', async () => {
-    const b = await nearBooking(90, { amountMinor: 1000 });
+    // Anywhere inside two hours closes the window; the exact offset is
+    // irrelevant, so search the whole range for one that is free and fits.
+    const b = await nearBooking(20, 115, { amountMinor: 1000 });
     const r = await call('POST', `/v1/bookings/${b.booking.bookingId}/payment-link`);
     const msg = expectRefusal(r, [409, 422], ['too close', 'window shut', 'link']);
     return `${r.status}: "${msg}"`;
@@ -913,44 +942,60 @@ const DURATION = { 'fringe-trim': 20, 'hair-wash': 15, 'gel-manicure': 60 };
  * that lets the timer cases put a booking where a timer will find it, so the
  * eligible staff are read with ?now=0 and the hold is placed directly.
  */
-async function clockBooking(offsetMin, opts = {}) {
+async function clockBooking(loMin, hiMin, opts = {}) {
   const service = opts.service ?? 'fringe-trim';
-  const { day, startMin } = branchClock(offsetMin);
+  const nowMin = branchClock(0).startMin;
+  const tried = [];
 
-  if (startMin < 600) blocked(`that instant is ${startMin}, before the salon opens (600)`);
-  if (startMin + DURATION[service] > 1320) {
-    blocked(
-      `a ${DURATION[service]}-minute ${service} starting at ${startMin} would run past close (1320). ` +
-        `Branch-local now is ${branchClock(0).startMin}; this case needs the run to start earlier in the day.`,
-    );
+  // Walk the whole range, latest first. Two different things can rule an
+  // offset out -- it runs past close, or the diary is full at that minute --
+  // and neither is worth failing the case over while another offset in the
+  // range would serve. Giving up on the first candidate was a test bug that
+  // reported two correct refusals as blockers.
+  for (let off = hiMin; off >= loMin; off -= 5) {
+    const { day, startMin } = branchClock(off);
+    if (startMin < 600 || startMin + DURATION[service] > 1320) continue;
+
+    const a = await availability(day, [service], `&from=${startMin}&to=${Math.min(1320, startMin + 5)}&now=0`);
+    if (a.status !== 200) blocked(`availability ${a.status}: ${messageOf(a)}`);
+    const offer = (a.json.offers ?? []).find((o) => o.startMin === startMin);
+    if (!offer) { tried.push(`${startMin}:nobody-free`); continue; }
+
+    for (const staff of offer.staff ?? []) {
+      const h = await call('POST', '/v1/holds', {
+        day, services: [service], startMin, staffId: staff.id, channel: 'desk',
+      });
+      if (h.status !== 201) continue;
+      trackHold(h.json.holdId);
+      const c = await call('POST', '/v1/bookings', {
+        holdId: h.json.holdId, day, services: [service], channel: 'desk',
+        ...(opts.amountMinor !== undefined
+          ? { amountMinor: opts.amountMinor, rail: 'CARD' }
+          : {}),
+      });
+      if (c.status !== 201) blocked(`confirm ${c.status}: ${messageOf(c)}`);
+      trackBooking(c.json.bookingId);
+      return { booking: c.json, day, startMin, offsetMin: off };
+    }
+    tried.push(`${startMin}:all-refused`);
   }
 
-  const a = await availability(day, [service], `&from=${startMin}&to=${Math.min(1320, startMin + 5)}&now=0`);
-  if (a.status !== 200) blocked(`availability ${a.status}: ${messageOf(a)}`);
-  const offer = (a.json.offers ?? []).find((o) => o.startMin === startMin);
-  if (!offer) blocked(`nobody is free at ${startMin} on ${day} even with the lead mask lifted`);
-
-  for (const staff of offer.staff ?? []) {
-    const h = await call('POST', '/v1/holds', {
-      day, services: [service], startMin, staffId: staff.id, channel: 'desk',
-    });
-    if (h.status !== 201) continue;
-    trackHold(h.json.holdId);
-    const c = await call('POST', '/v1/bookings', {
-      holdId: h.json.holdId, day, services: [service], channel: 'desk',
-      ...(opts.amountMinor !== undefined
-        ? { amountMinor: opts.amountMinor, rail: 'CARD' }
-        : {}),
-    });
-    if (c.status !== 201) blocked(`confirm ${c.status}: ${messageOf(c)}`);
-    trackBooking(c.json.bookingId);
-    return { booking: c.json, day, startMin };
-  }
-  blocked(`every professional free at ${startMin} refused the hold`);
+  // Nothing in the range worked. Say which constraint bit, and when a run
+  // would have to start for this case to be forceable at all.
+  const latestNow = 1320 - DURATION[service] - loMin;
+  const clock = (m) => `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`;
+  blocked(
+    tried.length === 0
+      ? `no start between +${loMin} and +${hiMin} minutes fits before the 22:00 close. ` +
+          `Branch-local now is ${clock(nowMin)}; this case needs the run to start before ${clock(latestNow)}.`
+      : `every start between +${loMin} and +${hiMin} minutes was unavailable ` +
+          `(${tried.join(', ')}). The diary is full at that hour.`,
+  );
 }
 
-const nearBooking = (min, opts) => clockBooking(min, opts);
-const pastBooking = (min, opts) => clockBooking(-min, opts);
+const nearBooking = (lo, hi, opts) => clockBooking(lo, hi, opts);
+const pastBooking = (min, opts) => clockBooking(-min, -min, opts);
+
 
 // ========================================================== 3. MONEY
 
@@ -1031,9 +1076,21 @@ async function money() {
     const g = await groupOf(3, { arrangement: 'SPLIT' });
     const shares = g.bookings.map((b) => AED(b.share));
     const sum = shares.reduce((a, b) => a + b, 0);
-
     const detail = shares.map((s, i) => `${g.bookings[i].label}=${s}`).join(' ');
+
     expect(shares.every((s) => Number.isInteger(s)), `a share is not whole fils: ${detail}`);
+
+    // NOTHING LOST is the real assertion: the parts must sum back to the
+    // whole. The party is three hair services whose net is 46000; whether
+    // the split runs on the net or the VAT-inclusive figure is the server's
+    // business, so accept either total and refuse anything else.
+    const net = 16000 + 16000 + 14000;
+    const withVat = net + Math.round((net * 5) / 100);
+    expect(
+      sum === net || sum === withVat,
+      `shares sum to ${sum}, which is neither the net ${net} nor the VAT-inclusive ` +
+        `${withVat} -- fils were created or destroyed in the split: ${detail}`,
+    );
 
     const spread = Math.max(...shares) - Math.min(...shares);
     expect(spread <= 1, `shares differ by ${spread} fils, more than a rounding remainder: ${detail}`);
@@ -1044,8 +1101,9 @@ async function money() {
         `the extra fil went to ${g.bookings[shares.indexOf(Math.max(...shares))].label}, ` +
           `not the earliest share (${g.bookings[0].label}): ${detail}`,
       );
+      return `${detail}, sum ${sum} = the whole, extra fil on the earliest share`;
     }
-    return `${shares.length} shares ${detail}, sum ${sum} fils, spread ${spread}`;
+    return `${detail}, sum ${sum} = the whole; ${sum} divides evenly by 3 so no remainder arose`;
   });
 
   await testCase('MON-6', 'The ledger sums to zero after settlement', async () => {
@@ -1166,7 +1224,10 @@ async function timers() {
   await testCase('TIM-2', 'A payment link expires and the booking follows', async () => {
     // linkWindow = min(now+6h, start-2h). A start ~2h10m out gives a window
     // of about ten minutes, which the 60s link sweeper will close.
-    const b = await nearBooking(130, { amountMinor: 1000 });
+    // The window is start - 2h - now, so the offset must clear 120 to leave
+    // a window at all, and stay small so the wait is bearable. 123-135 gives
+    // three to fifteen minutes.
+    const b = await nearBooking(123, 140, { amountMinor: 1000 });
     const link = await call('POST', `/v1/bookings/${b.booking.bookingId}/payment-link`);
     if (link.status !== 201) blocked(`payment-link ${link.status}: ${messageOf(link)}`);
     const secs = link.json.expiresInSeconds;
