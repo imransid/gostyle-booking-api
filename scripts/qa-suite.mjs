@@ -1184,6 +1184,87 @@ async function money() {
     );
     return `${r.json.refund} waived of ${captured} fils`;
   });
+
+  // ---- rung 4b, the peak window (doc §8.1) --------------------------------
+  //
+  // A LADDER, NOT A MULTIPLIER. 4b sets no amount of its own: it takes
+  // whatever the other rungs produced and moves it up one level, so none
+  // becomes a 20% deposit and ANY deposit becomes full prepayment on the
+  // pre-discount total. The 20% rung is therefore only reachable for a
+  // customer where NOTHING else fired -- a HIGH-risk customer never sees it,
+  // because rung 2 already forced 30% and 4b escalates that straight to full.
+  // That is the case most likely to be mis-specified, so it is asserted here
+  // rather than assumed.
+
+  /** The requirement the server resolves, without writing anything. */
+  async function requirementAt(customerId, serviceIds, startMin) {
+    const r = await call('POST', '/v1/bookings/quote', {
+      day: DAY, serviceIds, customerId, channel: 'DESK', startMin });
+    if (r.status !== 201) blocked(`quote ${r.status}: ${messageOf(r)}`);
+    const rung = (r.json.requirement.trace ?? []).find((t) => t.rung.startsWith('4b'));
+    return { kind: r.json.requirement.kind, minor: r.json.depositMinor,
+      source: r.json.requirementSource, subtotal: r.json.subtotalMinor, rung };
+  }
+
+  /** Refuse to grade 4b against a build that predates it. */
+  async function peakIsLive() {
+    const s = await call('GET', '/v1/bookings/settings');
+    if (s.json?.peakWindow?.enabled !== true) {
+      blocked(
+        `peakWindow.enabled is ${s.json?.peakWindow?.enabled} — the running build ` +
+          'predates the rung-4b change, so this is a deploy state, not a defect.',
+      );
+    }
+  }
+
+  await testCase('MON-10', 'Peak escalates a deposit to FULL prepayment', async () => {
+    await peakIsLive();
+    // 50% service rule at 18:00. The ladder takes deposit -> full, and full
+    // is the whole PRE-DISCOUNT service total.
+    const r = await requirementAt('omar', ['balayage'], 1080);
+    expect(r.kind === 'FULL', `${r.kind} ${r.minor}, expected FULL — source "${r.source}"`);
+    expect(r.minor === r.subtotal,
+      `full prepayment is ${r.minor} but the pre-discount subtotal is ${r.subtotal}`);
+    expect(r.rung?.fired === true, `rung 4b did not fire: ${JSON.stringify(r.rung)}`);
+    return `${r.minor} full of subtotal ${r.subtotal}; 4b "${r.rung.evaluation}"`;
+  });
+
+  await testCase('MON-11', 'A HIGH-risk customer at peak goes to FULL, not 20%', async () => {
+    await peakIsLive();
+    // The case worth pinning: no service rule at all, but rung 2 forces 30%,
+    // so 4b escalates that deposit to full rather than producing 20%.
+    const r = await requirementAt('omar', ['fringe-trim'], 1080);
+    expect(r.kind === 'FULL',
+      `${r.kind} ${r.minor}. A HIGH-risk customer has no 'none' to escalate — rung 2 ` +
+        `forced 30% first, so 4b must take deposit -> full. Source "${r.source}"`);
+    expect(r.minor === r.subtotal, `${r.minor} != subtotal ${r.subtotal}`);
+    return `${r.minor} full of ${r.subtotal}; 4b "${r.rung.evaluation}"`;
+  });
+
+  await testCase('MON-12', 'Peak turns NO requirement into a 20% deposit', async () => {
+    await peakIsLive();
+    // The none -> 20% rung, reachable only when nothing else fired.
+    const off = await requirementAt('dana', ['haircut-finish'], 660);
+    expect(off.kind === 'NONE', `off-peak is ${off.kind} ${off.minor}, expected NONE`);
+    const on = await requirementAt('dana', ['haircut-finish'], 1080);
+    expect(on.kind === 'DEPOSIT', `${on.kind} ${on.minor}, expected a DEPOSIT`);
+    const want = Math.round((on.subtotal * 20) / 100 / 100) * 100; // roundToDirhams
+    expect(on.minor === want, `${on.minor}, expected 20% of ${on.subtotal} rounded to dirhams = ${want}`);
+    expect(/Peak window/.test(on.source), `source does not name the peak rung: "${on.source}"`);
+    return `off-peak NONE -> peak ${on.minor} (20% of ${on.subtotal}), source "${on.source}"`;
+  });
+
+  await testCase('MON-13', 'The peak boundary: 17:00 is in, 20:00 is out', async () => {
+    await peakIsLive();
+    const at = async (m) => (await requirementAt('dana', ['haircut-finish'], m)).kind;
+    const [before, first, last, after] = await Promise.all(
+      [1015, 1020, 1195, 1200].map(at));
+    expect(before === 'NONE', `16:55 is ${before}, expected NONE (outside)`);
+    expect(first === 'DEPOSIT', `17:00 is ${first}, expected DEPOSIT (inside)`);
+    expect(last === 'DEPOSIT', `19:55 is ${last}, expected DEPOSIT (inside)`);
+    expect(after === 'NONE', `20:00 is ${after}, expected NONE — the window is half-open`);
+    return '16:55 out, 17:00 in, 19:55 in, 20:00 out';
+  });
 }
 
 /** confirmed -> checked_in -> in_service -> completed. */
