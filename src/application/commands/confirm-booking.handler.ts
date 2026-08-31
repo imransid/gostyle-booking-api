@@ -102,14 +102,31 @@ export class ConfirmBookingHandler {
   ) {}
 
   async execute(cmd: ConfirmBookingCommand): Promise<BookingView> {
+    // EVERY CONFIRM IS IDEMPOTENT, WITH OR WITHOUT A HEADER.
+    //
+    // A hold can produce exactly one booking: step 9 of the transaction
+    // deletes it, and the reservations it owned now belong to the booking.
+    // So the hold id IS the natural idempotency key, and deriving one when
+    // the caller sends no Idempotency-Key closes the double-confirm hole
+    // without making the header mandatory and breaking every existing
+    // client. A caller that does send a key keeps using theirs.
+    //
+    // Namespaced with a prefix so a derived key cannot collide with a
+    // caller-supplied one that happens to be a bare uuid.
+    const idempotencyKey = cmd.idempotencyKey ?? `hold:${cmd.holdId}`;
+
     // A retry is answered from what was stored, never re-derived. The first
     // confirm re-pointed the reservation to the booking and deleted the hold,
     // so every lookup below would fail on a replay and throw 410 instead of
     // returning the original booking.
-    if (cmd.idempotencyKey !== undefined) {
-      const replay = await this.replayFor(cmd.idempotencyKey);
-      if (replay !== null) return replay;
-    }
+    //
+    // Note this is now reached for an UNKEYED second confirm too, which is
+    // the point: it returns the first booking instead of 410. A hold that
+    // expired without ever being confirmed has no stored response, so it
+    // falls through and still ends at the 410 below -- the two cases stay
+    // distinguishable, which is what makes this safe.
+    const replay = await this.replayFor(idempotencyKey);
+    if (replay !== null) return replay;
 
     // A PACKAGE STOPS EXISTING HERE. It expands into the services the branch
     // already sells, and everything below this line sees a plain selection:
@@ -254,7 +271,7 @@ export class ConfirmBookingHandler {
               gatewayRef: cmd.payment.gatewayRef ?? null,
             },
       actorId: cmd.actorId ?? null,
-      idempotencyKey: cmd.idempotencyKey ?? null,
+      idempotencyKey,
       requestHash: hashRequest(cmd),
       linkExpiresAt,
     });
@@ -303,9 +320,9 @@ export class ConfirmBookingHandler {
     // Overwrite the stored body with the shape a client actually receives.
     // Cheap, outside the transaction, and it makes a retry byte-identical
     // to the original answer instead of a near-miss.
-    if (cmd.idempotencyKey !== undefined && outcome.kind === 'confirmed') {
+    if (outcome.kind === 'confirmed') {
       await this.prisma.idempotencyKey.update({
-        where: { key: cmd.idempotencyKey },
+        where: { key: idempotencyKey },
         data: {
           // Prisma's JSON input type wants mutable arrays, and the view's
           // quote lines are readonly. A structural copy satisfies it without
