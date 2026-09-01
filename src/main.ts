@@ -42,7 +42,27 @@ async function bootstrap(): Promise<void> {
     )
     .setVersion('0.1.0')
     .addTag('availability', 'Which start times the salon can actually deliver')
+    // DEFINES the scheme: this is what draws the Authorize button.
     .addBearerAuth()
+    /**
+     * APPLIES it to every operation. Without this line the button appears,
+     * accepts a token, stores it -- and attaches it to nothing, because
+     * Swagger UI only sends a credential to operations that declare they
+     * want one. Every lock icon stays open and every call comes back
+     * "Missing bearer token" while a copy of the same request through curl
+     * works, which is a maddening thing to debug.
+     *
+     * Global rather than @ApiBearerAuth() on seventeen controllers, because
+     * the guard is global too: BookingAuthGuard is the APP_GUARD and is
+     * closed by default. A new controller is protected the moment it is
+     * written, so it should be documented as protected the moment it is
+     * written. Per-controller decorators would let the two drift apart, and
+     * the drift is invisible until someone opens /docs.
+     *
+     * @Public() carries the matching opt-out, so the two stay in step from
+     * one decorator. swagger-security.spec.ts asserts they never diverge.
+     */
+    .addSecurityRequirements('bearer')
     .build();
 
   const document = SwaggerModule.createDocument(app, config);

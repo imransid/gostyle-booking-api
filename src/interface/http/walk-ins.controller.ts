@@ -24,6 +24,7 @@ import {
   type WalkInQueueView,
 } from '@application/commands/walk-in.handler';
 import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
+import { DeskOnly } from '../../auth/desk-only.decorator';
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -80,9 +81,23 @@ export class SeatWalkInDto {
  * Seating returns a HOLD, not a booking. The desk confirms it through the
  * ordinary POST /v1/bookings, because a walk-in confirmed on its own path is a
  * walk-in whose deposit rules and audit trail drift from everybody else's.
+ *
+ * @DeskOnly, AND THE WHOLE CONTROLLER, not just the join.
+ *
+ * A walk-in is somebody standing in front of the desk being written down by
+ * whoever is behind it. There is no remote walk-in: a customer who wants a
+ * slot from their phone wants POST /v1/holds, which exists, prices properly
+ * and holds a real slot. Letting them queue instead would put a name in the
+ * waiting room that nobody can call.
+ *
+ * The other three are refused for a blunter reason. The queue lists everyone
+ * waiting BY NAME, seating puts a stranger in a chair, and leaving removes
+ * one -- all of them by id, none of them the caller's own. Those were 200 to
+ * any customer token before this decorator.
  */
 @ApiTags('walk-ins')
 @Controller('walk-ins')
+@DeskOnly()
 export class WalkInsController {
   constructor(private readonly handler: WalkInHandler) {}
 
