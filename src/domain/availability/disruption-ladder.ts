@@ -41,6 +41,25 @@ export const DISRUPTION_SHIFT_STEPS_MIN: readonly number[] = [15, 30, 45];
  * given and does not say how much, so this is a placeholder in one place
  * rather than a number scattered through the code, and it needs a decision
  * from the business before it goes anywhere near a real customer.
+ *
+ * THE SHAPE IS SETTLED, THE RATE IS NOT. Three calls have been made so the
+ * outstanding decision is only ever about the number:
+ *
+ *   A PERCENTAGE, AND ONLY A PERCENTAGE. No flat-amount sibling until
+ *   something actually asks for one. A GOODWILL_FLAT_FILS that nothing reads
+ *   is dead code that outlives everyone who remembers why it was added.
+ *
+ *   HARD-CODED, NOT AN ENVIRONMENT VARIABLE. There is no branch
+ *   configuration table, so an env var here would be a global switch
+ *   impersonating a per-branch rule. That is precisely what the peak-window
+ *   flag turned out to be, and why it was deleted rather than promoted. When
+ *   goodwill genuinely varies by branch, it varies in the branch table.
+ *
+ *   APPLIED AUTOMATICALLY, and the ledger reason should say the rate is
+ *   provisional. NOT DONE YET, deliberately: postGoodwill() writes the
+ *   goodwill row with no `reason` at all, so there is currently nowhere for
+ *   that caveat to land. Whoever sets the real rate should add the reason in
+ *   the same change, and drop the word "provisional" from it at that point.
  */
 export const GOODWILL_PERCENT = 10;
 
