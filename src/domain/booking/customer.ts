@@ -398,7 +398,25 @@ export function requirementFor(input: RequirementInput): Requirement {
   return {
     kind: kindOf(amount, total),
     amountFils: amount.fils,
-    source: winner.source,
+    /**
+     * THE CLAMP GOES IN THE SOURCE, not only in clampNote.
+     *
+     * §8.2: "When a clamp bites, the wizard says so explicitly". It was said
+     * in clampNote alone, and clampNote is a separate optional field that
+     * every consumer has to remember to render. The source does not have
+     * that problem: it is one string, it is stored on the booking as
+     * requirement_source, it is copied onto the ledger row as the reason,
+     * and it is what support reads back months later when someone asks why
+     * they were charged this.
+     *
+     * The case that made it matter: a peak escalation to full payment on a
+     * AED 720 balayage resolves to AED 500, and the source said "full
+     * payment" with nothing to explain the missing AED 220.
+     *
+     * clampNote stays. It is the structured form, and a client that wants to
+     * badge the clamp separately should not have to parse a sentence.
+     */
+    source: note === null ? winner.source : `${winner.source}, ${note}`,
     trace,
     ...(note !== null ? { clampNote: note } : {}),
   };

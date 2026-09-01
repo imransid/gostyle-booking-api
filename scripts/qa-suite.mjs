@@ -1231,29 +1231,25 @@ async function money() {
     return `${r.minor} full of subtotal ${r.subtotal}; 4b "${r.rung.evaluation}"`;
   });
 
-  await testCase('MON-10b', 'Above the ceiling, "full payment" is not full', async () => {
+  await testCase('MON-10b', 'Above the ceiling, full payment is capped AND says so', async () => {
     await peakIsLive();
-    // THE INTERACTION NOBODY ORDERED. clamp() runs after escalate(), and
-    // DEPOSIT_CEILING is AED 500, so a balayage (AED 720) escalated to full
-    // comes back as a AED 500 DEPOSIT whose source still reads "full
-    // payment". §8.2 step 1 says full payment IS the whole service total, and
-    // the constant is a DEPOSIT ceiling -- so this is at best ambiguous.
-    // Asserted loosely on purpose: what must hold is that a capped amount
-    // SAYS it was capped, whichever way the ambiguity is later resolved.
+    // SETTLED BY THE DOC, not ambiguous. §8.2 lists clamping as step 3, after
+    // full payment at step 1, and states one rule with no exception: raised
+    // to the AED 10 floor, capped at the AED 500 ceiling. So a balayage
+    // (AED 720) escalated to full comes back as AED 500, and because it no
+    // longer meets the total it is a DEPOSIT with the balance due at the
+    // register. What §8.2 also requires is that the clamp be said explicitly.
     const r = await requirementAt('omar', ['balayage'], 1080);
     expect(r.rung?.fired === true, `rung 4b did not fire: ${JSON.stringify(r.rung)}`);
-    if (r.minor === r.subtotal) {
-      return `full ${r.minor} = subtotal, so the ceiling no longer caps a full payment`;
-    }
-    expect(/full payment/i.test(r.source),
-      `escalated to something other than full: "${r.source}"`);
-    expect(
-      typeof r.clampNote === 'string' && r.clampNote.length > 0,
-      `${r.minor} of a ${r.subtotal} basket, source says "${r.source}", and NO clampNote ` +
-        'explains the gap. §8.2 requires the clamp to be stated explicitly.',
-    );
-    return `${r.minor} of ${r.subtotal}, kind ${r.kind}, source "${r.source}", ` +
-      `clampNote "${r.clampNote}"`;
+    expect(r.minor === 50000,
+      `${r.minor} on a ${r.subtotal} basket; the AED 500 ceiling should cap it at 50000`);
+    expect(r.kind === 'DEPOSIT',
+      `${r.kind}: a capped amount no longer meets the total, so it is a deposit`);
+    expect(/capped at the branch ceiling/.test(r.source),
+      `the source does not say the clamp bit: "${r.source}"`);
+    expect(r.clampNote === 'capped at the branch ceiling',
+      `clampNote is ${JSON.stringify(r.clampNote)}`);
+    return `${r.minor} of ${r.subtotal}, ${r.kind}, source "${r.source}"`;
   });
 
   await testCase('MON-11', 'A HIGH-risk customer at peak goes to FULL, not 20%', async () => {

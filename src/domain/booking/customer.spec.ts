@@ -388,16 +388,21 @@ describe('the amount', () => {
     });
     expect(r.amountFils).toBe(DEPOSIT_FLOOR.fils);
     expect(r.clampNote).toBe('raised to the branch floor');
+    // §8.2 wants it said explicitly, and the source is the string that gets
+    // stored and quoted back. clampNote alone is a field consumers forget.
+    expect(r.source).toContain('raised to the branch floor');
   });
 
   it('capped at the branch ceiling, and the wizard is told', () => {
     const r = req({ totalFils: 500000 });
     expect(r.amountFils).toBe(DEPOSIT_CEILING.fils);
     expect(r.clampNote).toBe('capped at the branch ceiling');
+    expect(r.source).toContain('capped at the branch ceiling');
   });
 
-  it('no note when no clamp bit', () => {
+  it('no note when no clamp bit, and the source stays clean', () => {
     expect(req().clampNote).toBeUndefined();
+    expect(req().source).toBe('Service rule 50% (Hair color and style)');
   });
 
   it('THE CEILING APPLIES TO FULL PAYMENT TOO', () => {
@@ -411,6 +416,9 @@ describe('the amount', () => {
     });
     expect(r.amountFils).toBe(DEPOSIT_CEILING.fils);
     expect(r.clampNote).toBe('capped at the branch ceiling');
+    // The case this was written for: a source reading "full payment" on an
+    // amount that is not the full price has to explain itself.
+    expect(r.source).toContain('capped at the branch ceiling');
   });
 
   it('a full requirement capped at the ceiling stops being full', () => {
