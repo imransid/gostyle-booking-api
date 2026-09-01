@@ -13,6 +13,7 @@ import {
 } from '@application/commands/compaction.handler';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
+import { DeskOnly } from '../../auth/desk-only.decorator';
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -42,9 +43,14 @@ export class ApplyCompactionDto {
  * separate act, taken after the customer has agreed on WhatsApp. Anything
  * that both planned and applied in one call would make a consent move
  * without the consent.
+ *
+ * @DeskOnly because both endpoints act on the SALON's diary, not on one
+ * caller's booking: the plan reads the whole day, and applying it moves
+ * other customers' appointments. A customer token reached both before this.
  */
 @ApiTags('compaction')
 @Controller('compaction')
+@DeskOnly()
 export class CompactionController {
   constructor(private readonly handler: CompactionHandler) {}
 
