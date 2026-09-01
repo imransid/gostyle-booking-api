@@ -1203,7 +1203,8 @@ async function money() {
     if (r.status !== 201) blocked(`quote ${r.status}: ${messageOf(r)}`);
     const rung = (r.json.requirement.trace ?? []).find((t) => t.rung.startsWith('4b'));
     return { kind: r.json.requirement.kind, minor: r.json.depositMinor,
-      source: r.json.requirementSource, subtotal: r.json.subtotalMinor, rung };
+      source: r.json.requirementSource, subtotal: r.json.subtotalMinor,
+      clampNote: r.json.requirement.clampNote, rung };
   }
 
   /** Refuse to grade 4b against a build that predates it. */
@@ -1219,14 +1220,40 @@ async function money() {
 
   await testCase('MON-10', 'Peak escalates a deposit to FULL prepayment', async () => {
     await peakIsLive();
-    // 50% service rule at 18:00. The ladder takes deposit -> full, and full
-    // is the whole PRE-DISCOUNT service total.
-    const r = await requirementAt('omar', ['balayage'], 1080);
+    // A 50% service rule at 18:00 escalates deposit -> full. Deliberately a
+    // service UNDER the AED 500 ceiling, so 'full' can actually mean the
+    // whole total; MON-10b covers what happens above it.
+    const r = await requirementAt('omar', ['gel-manicure'], 1080); // AED 180
     expect(r.kind === 'FULL', `${r.kind} ${r.minor}, expected FULL — source "${r.source}"`);
     expect(r.minor === r.subtotal,
       `full prepayment is ${r.minor} but the pre-discount subtotal is ${r.subtotal}`);
     expect(r.rung?.fired === true, `rung 4b did not fire: ${JSON.stringify(r.rung)}`);
     return `${r.minor} full of subtotal ${r.subtotal}; 4b "${r.rung.evaluation}"`;
+  });
+
+  await testCase('MON-10b', 'Above the ceiling, "full payment" is not full', async () => {
+    await peakIsLive();
+    // THE INTERACTION NOBODY ORDERED. clamp() runs after escalate(), and
+    // DEPOSIT_CEILING is AED 500, so a balayage (AED 720) escalated to full
+    // comes back as a AED 500 DEPOSIT whose source still reads "full
+    // payment". §8.2 step 1 says full payment IS the whole service total, and
+    // the constant is a DEPOSIT ceiling -- so this is at best ambiguous.
+    // Asserted loosely on purpose: what must hold is that a capped amount
+    // SAYS it was capped, whichever way the ambiguity is later resolved.
+    const r = await requirementAt('omar', ['balayage'], 1080);
+    expect(r.rung?.fired === true, `rung 4b did not fire: ${JSON.stringify(r.rung)}`);
+    if (r.minor === r.subtotal) {
+      return `full ${r.minor} = subtotal, so the ceiling no longer caps a full payment`;
+    }
+    expect(/full payment/i.test(r.source),
+      `escalated to something other than full: "${r.source}"`);
+    expect(
+      typeof r.clampNote === 'string' && r.clampNote.length > 0,
+      `${r.minor} of a ${r.subtotal} basket, source says "${r.source}", and NO clampNote ` +
+        'explains the gap. §8.2 requires the clamp to be stated explicitly.',
+    );
+    return `${r.minor} of ${r.subtotal}, kind ${r.kind}, source "${r.source}", ` +
+      `clampNote "${r.clampNote}"`;
   });
 
   await testCase('MON-11', 'A HIGH-risk customer at peak goes to FULL, not 20%', async () => {
