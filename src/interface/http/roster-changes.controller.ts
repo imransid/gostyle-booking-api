@@ -24,6 +24,7 @@ import type {
 import type { WireGate } from '@application/contract/wire';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
+import { DeskOnly } from '../../auth/desk-only.decorator';
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -95,9 +96,15 @@ export class ResolveItemDto {
  * we scan what it disturbs and repair what the ladder can, and it asks this
  * endpoint before committing. The gate is a trigger in the database, so a
  * caller that ignores the answer is refused anyway.
+ *
+ * @DeskOnly. This is back-office machinery: opening a change cancels and
+ * moves other people's bookings down the ladder, and commit releases the
+ * roster edit. The database trigger guards the ORDER of those steps, not who
+ * may take them -- a customer token committed a roster change before this.
  */
 @ApiTags('roster-changes')
 @Controller('roster-changes')
+@DeskOnly()
 export class RosterChangesController {
   constructor(private readonly handler: RosterChangeHandler) {}
 
