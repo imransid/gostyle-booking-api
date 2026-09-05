@@ -4,8 +4,7 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
 
 import { AuthService } from './auth.service';
 import { TokenVerifier } from './token-verifier.service';
-
-export const CONSUMER_AUTH = 'CONSUMER_AUTH';
+import { CONSUMER_AUTH, consumerGrpcAddress } from './auth.constants';
 
 @Module({
   imports: [
@@ -16,7 +15,7 @@ export const CONSUMER_AUTH = 'CONSUMER_AUTH';
         options: {
           package: 'gostyle.auth.v1',
           protoPath: join(process.cwd(), 'proto/auth.proto'),
-          url: process.env.CONSUMER_GRPC_ADDR ?? 'localhost:50051',
+          url: consumerGrpcAddress(),
           loader: {
             defaults: true,
           },

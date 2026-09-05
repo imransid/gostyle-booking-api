@@ -78,6 +78,22 @@ export class WalkInHandler {
   async join(
     cmd: JoinWalkInCommand,
   ): Promise<{ id: string; position: number; serviceIds: readonly string[] }> {
+    // EXACTLY ONE IDENTITY, checked here rather than by the CHECK.
+    //
+    // walk_in_is_customer_or_guest (num_nonnulls = 1) is the backstop, not
+    // the first line of defence. Reaching it turns a caller mistake into
+    // `500 Internal server error` with the reason only in the log -- which
+    // is how this endpoint failed for every customer token, since a customer
+    // client sends neither field and had no way to send one.
+    const named = [cmd.customerId, cmd.guestName].filter((v) => v !== null);
+    if (named.length !== 1) {
+      throw new UnprocessableEntityException(
+        named.length === 0
+          ? 'Say who is waiting: a customerId for a registered customer, or a guestName.'
+          : 'Send customerId or guestName, not both: two identities for one person at the desk.',
+      );
+    }
+
     // Packages expand HERE, once, so the queue stores what will actually be
     // performed and every later quote sees plain services.
     const selection = resolveSelection(cmd.serviceIds, PACKAGES, priceOf);

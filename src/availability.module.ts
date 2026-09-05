@@ -50,8 +50,12 @@ import { CompactionController } from '@interface/http/compaction.controller';
 import { CompactionHandler } from '@application/commands/compaction.handler';
 import { WalkInsController } from '@interface/http/walk-ins.controller';
 import { WalkInHandler } from '@application/commands/walk-in.handler';
+import { AuthModule } from './auth/auth.module';
 
 @Module({
+  // For the health endpoint's customer auth rail. AuthModule exports the
+  // service; nothing here verifies a token -- the guard is global.
+  imports: [AuthModule],
   controllers: [
     // The /v1/bookings literals come first: BookingsController carries
     // @Get(':id'), which swallows every literal at that depth. Asserted by

@@ -1,4 +1,7 @@
 import { Money } from '../shared/money';
+// ANY_STAFF lives in desk-authority.ts so the endpoint guard and this table
+// cannot disagree about who counts as the salon.
+import { ANY_STAFF } from './desk-authority';
 
 /**
  * A booking is a thing that moves through states, and only some moves are legal.
@@ -89,7 +92,6 @@ export interface Transition {
   readonly allowedActors: readonly ActorKind[];
 }
 
-const ANY_STAFF: readonly ActorKind[] = ['staff', 'manager'];
 const SYSTEM: readonly ActorKind[] = ['system'];
 
 /**

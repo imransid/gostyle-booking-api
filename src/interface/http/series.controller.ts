@@ -339,7 +339,12 @@ export class SeriesController {
       'this_and_future',
       'entire_series',
     ];
-    const chosen = unshout(scope, legal);
+    // `scope` is a raw @Query, so the ValidationPipe never sees it and an
+    // omitted one arrives as undefined. unshout() then called .toLowerCase()
+    // on it and the caller got `500 Internal server error` for the ordinary
+    // mistake of leaving a parameter off -- the answer they needed is the
+    // 422 three lines below, which already lists the legal values.
+    const chosen = typeof scope === 'string' ? unshout(scope, legal) : null;
     if (chosen === null) {
       throw new UnprocessableEntityException(
         `scope must be one of: ${legal.map(shout).join(', ')}`,
