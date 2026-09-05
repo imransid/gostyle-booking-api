@@ -1,7 +1,17 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import * as jwt from 'jsonwebtoken';
-import { AuthService } from './auth.service';
+import { AuthService, type Identity } from './auth.service';
 import { Actor, rolesToKind } from './actor';
+import { consumerGrpcAddress } from './auth.constants';
+import {
+  describeConsumerAuthFailure,
+  isConsumerAuthUnreachable,
+} from './consumer-auth-failure';
 
 /** Claims a staff token carries. Issued by gostyle-api (NestJS). */
 interface StaffClaims {
@@ -107,9 +117,37 @@ export class TokenVerifier {
    * The consumer API returns `verified` (phone confirmed), which is not in
    * the token and can change after it was issued. That is a real reason to
    * make a network call, unlike the staff case.
+   *
+   * Which means this path can fail in a way the staff path cannot: the
+   * dependency can be DOWN. That is not the caller's fault and not a bug
+   * here, so it must not read as either. Every customer token returned 500
+   * while the consumer API refused connections -- a response that says "this
+   * service is broken" about a service that was fine, and sends whoever is
+   * on call to read this code instead of the network.
    */
   private async verifyCustomer(token: string): Promise<Actor> {
-    const identity = await this.consumerAuth.verifyToken(token);
+    let identity: Identity | null;
+    try {
+      identity = await this.consumerAuth.verifyToken(token);
+    } catch (e) {
+      // Only the codes that mean the answer never arrived. A 503 over a real
+      // bug -- a proto skew, a malformed request -- is the same lie pointing
+      // the other way, and tells the operator to wait for a recovery that is
+      // not coming. Those rethrow, keep their stack and stay a 500.
+      if (!isConsumerAuthUnreachable(e)) throw e;
+
+      // ERROR on the FIRST failure, with the address, because the whole point
+      // of the 503 is that someone can find the box. The status code says
+      // "a dependency"; this line says which one and where.
+      TokenVerifier.log.error(
+        `Consumer API unreachable at ${consumerGrpcAddress()} -- ` +
+          `${describeConsumerAuthFailure(e)}`,
+      );
+      throw new ServiceUnavailableException(
+        'Customer authentication is unavailable',
+      );
+    }
+
     if (identity === null) {
       throw new UnauthorizedException('Invalid token');
     }

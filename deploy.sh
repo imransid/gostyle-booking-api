@@ -7,8 +7,9 @@ if [ -n "$(git status --porcelain)" ]; then
 fi
 docker build --platform linux/amd64 -t ghcr.io/imransid/gostyle-booking-api:$SHA .
 docker push ghcr.io/imransid/gostyle-booking-api:$SHA
-docker rmi ghcr.io/imransid/gostyle-booking-api:$SHA > /dev/null 2>&1 || true
-docker pull ghcr.io/imransid/gostyle-booking-api:$SHA > /dev/null
+DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' ghcr.io/imransid/gostyle-booking-api:$SHA 2>/dev/null | cut -d@ -f2)
+if [ -z "$DIGEST" ]; then echo "PUSH DID NOT PRODUCE A DIGEST"; exit 1; fi
+echo "digest $DIGEST"
 echo ""
 echo "VERIFIED ON GHCR: $SHA"
 echo "On the server, run:"
