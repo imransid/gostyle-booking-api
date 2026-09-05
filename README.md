@@ -235,6 +235,171 @@ the exception, and only because a party of three losing one is still
 
 ---
 
+## Scaffolding a feature
+
+A new feature touches four layers and eight files. By hand that is twenty
+minutes of boilerplate before you write a single business rule, and three of
+the steps fail **silently** if you forget them.
+
+`rafa` writes all eight, wires what is safe to wire, and prints the rest. It
+has no dependencies — `node:readline/promises` is built into Node since v17.
+
+```bash
+pnpm rafa                       # interactive — asks everything
+pnpm rafa customer-note         # name given, asks the rest
+pnpm rafa customer-note --yes   # all defaults, asks nothing
+pnpm rafa --help                # usage
+```
+
+Press <kbd>Enter</kbd> at any prompt to accept the value in brackets.
+
+### The prompts
+
+**Feature name — kebab-case, singular.** Lowercase words joined by hyphens,
+naming one record rather than many: `customer-note`, not `customerNote` or
+`customer-notes`. Singular because the rule you are about to write applies to
+one record — "may *this* note be edited". The HTTP path is asked separately and
+defaults to the plural, because a URL lists many. The convention is already
+visible in `src/domain/booking/`: `walk-in.ts`, `roster-change.ts`,
+`payment-link.ts`, `desk-authority.ts`.
+
+**Domain area — `booking` / `availability` / `shared`.** Which folder under
+`src/domain/`. Use `availability` only for rules about which slots the salon
+can deliver — capacity, masks, ranking, feasibility. Use `shared` only for
+something every area needs, which today is just `money.ts`.
+
+**Handler type — `command` / `query`.** `command` writes and lands in
+`application/commands/`; `query` only reads and lands in `application/queries/`.
+These are **folder names, not a framework**. `@nestjs/cqrs` is in `package.json`
+but nothing imports it — there is no `CqrsModule`, no `CommandBus`, no
+`@CommandHandler` anywhere in `src`. Handlers are plain `@Injectable()` classes
+injected straight into controller constructors, so a handler written with
+`@CommandHandler` and dispatched through a bus would never be discovered and
+would fail at injection.
+
+**HTTP base path.** Defaults to the plural, becoming `@Controller('...')` and
+the class name: `customer-note` → `customer-notes` → `CustomerNotesController`,
+matching the existing `WalkInsController`.
+
+**Access — `desk` / `public` / `any`.** `desk` applies `@DeskOnly()` (staff and
+managers; a customer token is refused with 403), `public` applies `@Public()`,
+and `any` adds nothing — any valid bearer token. The guard is global, so a route
+is closed by default and you only decorate to loosen or narrow it. Both
+decorators carry their Swagger half, so `/docs` never drifts from the guard.
+
+The last two prompts offer to print a Prisma model, and to auto-wire the handler
+and repository.
+
+### What it generates
+
+Eight files — four layers, and a spec beside every one.
+
+```
+src/domain/booking/customer-note.ts                        the rules
+src/domain/booking/customer-note.spec.ts                   12 tests
+src/application/commands/customer-note.handler.ts          the choreography
+src/application/commands/customer-note.handler.spec.ts     17 tests
+src/infrastructure/persistence/customer-note.repository.ts the storage
+src/infrastructure/persistence/customer-note.repository.spec.ts  10 tests
+src/interface/http/customer-notes.controller.ts            the door
+src/interface/http/customer-notes.controller.spec.ts       12 tests
+```
+
+This is **working CRUD, not stubs.** Create, list, find one, update and delete
+are all implemented, the two domain rules are real, and all 51 tests pass the
+moment they are written. Treat it as a working example to edit rather than a
+skeleton to fill in — rename `label`, `status` and `branchId` to whatever your
+feature actually needs.
+
+Every handler method is the same three beats:
+
+```
+fetch (infrastructure)  →  decide (domain)  →  act (infrastructure)
+```
+
+`update` shows it most clearly: load the row, ask the rule who may edit it, ask
+the rule whether the text is usable, then save. The rule never touches Postgres.
+Postgres never asks whether it was allowed.
+
+### What each spec is for
+
+Each layer's spec catches a different class of mistake, which is why there are
+four and not one. Test doubles are hand-written classes, not a mocking library —
+you can read exactly what they do, and they fail loudly when called wrongly.
+
+The **domain** spec tests the rules themselves: no mocks, no database, no Nest
+test module, no setup.
+
+The **handler** spec tests the choreography — that it asks the rule *before* it
+writes, stores what the rule approved rather than the raw input, and turns each
+kind of refusal into the right HTTP status. One assertion carries the whole
+layering: `it('stores the TRIMMED label, not the raw input')`.
+
+The **repository** spec tests the query shape — that every read and delete
+carries the tenant, that `findFirst` is used rather than `findUnique`, and
+`deleteMany` rather than `delete`. It loops over every recorded query to prove
+none was forgotten; forgetting once means reading or deleting another salon's
+data, and nothing else in the codebase would notice.
+
+The **controller** spec scans its own source, the technique
+`route-order.spec.ts` and `contract-vocabulary.spec.ts` already use. It fails
+the build if a DTO property carries only `@ApiProperty` and no class-validator
+decorator — the global pipe runs with `whitelist: true`, so such a field is
+stripped before the handler runs with no error raised anywhere — and if any
+identity field carries a fixture default, which silently books for the fixture
+user instead of returning a 400.
+
+### What it refuses to do
+
+Three deliberate omissions, each a place where an automated edit could be wrong
+in a way you would not notice.
+
+**It will not register the controller.** Position in the `controllers` array is
+load-bearing: a parameterised route swallows every literal registered after it,
+across controllers as well as by line within one file, which is why
+`GET /v1/bookings/settings` works only because `SettingsController` appears
+before `BookingsController`. A script cannot know whether your route belongs
+above `BookingsController`, and forgetting the array entirely is the quietest
+failure in the repo — every route 404s while `route-order.spec.ts` stays green,
+because it only asserts that every *registered* name has a file, never the
+reverse. So it prints the exact lines instead.
+
+**It will not edit `prisma/schema.prisma`.** It prints the model for you to
+paste. A generator that can rewrite your schema is a generator that can corrupt
+it.
+
+**It will not overwrite.** Any filename clash aborts the whole run with nothing
+written.
+
+### After generating
+
+```bash
+# 1. register the controller by hand — see the printed instructions
+
+# 2. paste the Prisma model, then
+npx prisma migrate dev --name customer_note
+
+# 3. run the tests that came with the code
+pnpm vitest run customer-note
+
+# 4. the full gates
+npx prisma generate && pnpm typecheck && pnpm lint && pnpm test:unit
+```
+
+Then read what was written **in request order** — the order a request actually
+travels: the controller, the handler, the domain rule, the repository.
+
+Until you have pasted the model and migrated, `pnpm typecheck` reports
+`Property '<model>' does not exist on type 'PrismaService'` for each repository
+method. That is step 2 outstanding, not a fault in the generated code.
+
+**Use `pnpm test:unit`, not `pnpm test`.** The specs are vitest, matching
+`vitest.config.mts`, which globs `src/**/*.spec.ts`. The jest config in
+`package.json` has no `moduleNameMapper`, so `@domain/*` and `@application/*`
+imports do not resolve under `pnpm test`. Only `test:unit` is gated by CI.
+
+---
+
 ## Testing
 
 ```bash
