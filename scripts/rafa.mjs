@@ -1605,7 +1605,4 @@ console.log(`  ${c.b(n++ + '.')} Run the tests — four specs came with the code
      src/application/${handlerDir}/${kebab}.handler.ts
      src/domain/${area}/${kebab}.ts
      src/infrastructure/persistence/${kebab}.repository.ts
-
-  ${c.dim('Note: these specs are vitest, matching vitest.config.mts. `pnpm test`')}
-  ${c.dim('runs jest, which has no alias mapping, so use pnpm test:unit.')}
 `);
