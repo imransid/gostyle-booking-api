@@ -23,5 +23,101 @@ services:
       interval: 5s
       retries: 10
 
+  # The API as the server runs it: built from the Dockerfile, not `nest start`.
+  #
+  # NOT `env_file: .env`. That file is written for the host process, where
+  # DATABASE_URL says localhost:5432 -- which inside a container is the
+  # container itself, so the API would boot and then fail every query against
+  # nothing. Container wiring is spelled out here instead, and the two cannot
+  # drift into each other.
+  api:
+    build: .
+    # Named so the migrate job below can run the SAME image rather than
+    # building a second, subtly different one.
+    image: gostyle-booking-api:local
+    # Opt-in, because `pnpm dev` shells out to a bare `docker compose up -d`
+    # for postgres and redis and then runs the API on the host. Without a
+    # profile that command would also build and start this container, and two
+    # servers would be reading the same database while only one of them had
+    # your edits in it.
+    #   docker compose --profile server up -d
+    profiles: ['server']
+    environment:
+      NODE_ENV: production
+      PORT: 3851
+      # postgres:5432 is the service name on the compose network -- the
+      # published 5433 is a host-side mapping and means nothing in here.
+      DATABASE_URL: postgresql://gostyle:gostyle@postgres:5432/gostyle_booking?schema=public
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      BRANCH_TIMEZONE: ${BRANCH_TIMEZONE:-Asia/Dubai}
+      DEFAULT_CURRENCY: ${DEFAULT_CURRENCY:-AED}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev-access-change-me}
+      # The consumer gRPC service is not part of this stack. Default it to the
+      # host so a copy running on the laptop is reachable; customer tokens 503
+      # while nothing answers, which is the documented behaviour.
+      CONSUMER_GRPC_ADDR: ${CONSUMER_GRPC_ADDR:-host.docker.internal:50051}
+      PLATFORM_GRPC_ADDR: ${PLATFORM_GRPC_ADDR:-platform-api:50052}
+      # No GRPC_PORT here. This service is a gRPC CLIENT, not a server: it
+      # DIALS platform-api for stylist data. Nothing in src/ reads GRPC_PORT
+      # and main.ts never calls connectMicroservice, so the variable only ever
+      # described a listener that does not exist.
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    ports:
+      - '3851:3851'
+      # No 50052 publish here either. It held the host port hostage: the
+      # gRPC SERVER is platform-api, and its own compose file publishes
+      # 50052 for grpcurl. Two projects cannot publish the same host port.
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    restart: unless-stopped
+    # Two networks: `default` keeps postgres and redis reachable, `gostyle-net`
+    # is the shared network platform-api lives on. `default:` must stay listed,
+    # because adding this block turns off Compose's automatic attachment.
+    networks:
+      default:
+      gostyle-net:
+        aliases:
+          - booking-api
+    # node:22-slim ships neither curl nor wget, so the probe is node itself.
+    # /health is excluded from the /v1 prefix, same path Swarm probes.
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3851/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # Migrations are a job, not a boot step -- same split as production, where a
+  # separate task runs this from the image that was just deployed. Under a
+  # profile so `docker compose up` can never quietly migrate a database.
+  #   docker compose run --rm migrate
+  migrate:
+    # Same build and same image tag as `api`, so this is not a second image and
+    # `docker compose run --rm migrate` works before `api` has ever been built.
+    build: .
+    image: gostyle-booking-api:local
+    profiles: ['migrate']
+    command: ['npx', 'prisma', 'migrate', 'deploy']
+    environment:
+      DATABASE_URL: postgresql://gostyle:gostyle@postgres:5432/gostyle_booking?schema=public
+    depends_on:
+      postgres: { condition: service_healthy }
+
 volumes:
   pgdata:
+
+networks:
+  default:
+  gostyle-net:
+    # Created by hand with `docker network create gostyle-net`.
+    # external means: do not create it, do not delete it on `compose down`.
+    external: true
