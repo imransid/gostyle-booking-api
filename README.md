@@ -393,10 +393,9 @@ Until you have pasted the model and migrated, `pnpm typecheck` reports
 `Property '<model>' does not exist on type 'PrismaService'` for each repository
 method. That is step 2 outstanding, not a fault in the generated code.
 
-**Use `pnpm test:unit`, not `pnpm test`.** The specs are vitest, matching
-`vitest.config.mts`, which globs `src/**/*.spec.ts`. The jest config in
-`package.json` has no `moduleNameMapper`, so `@domain/*` and `@application/*`
-imports do not resolve under `pnpm test`. Only `test:unit` is gated by CI.
+`pnpm test` and `pnpm test:unit` are the same command: vitest, matching
+`vitest.config.mts`, which globs `src/**/*.spec.ts`. There is no second runner.
+CI gates on `test:unit`.
 
 ---
 
