@@ -51,6 +51,7 @@ import { CompactionHandler } from '@application/commands/compaction.handler';
 import { WalkInsController } from '@interface/http/walk-ins.controller';
 import { WalkInHandler } from '@application/commands/walk-in.handler';
 import { AuthModule } from './auth/auth.module';
+import { StylistHandler } from '@application/queries/stylist.handler';
 
 @Module({
   // For the health endpoint's customer auth rail. AuthModule exports the
@@ -105,6 +106,7 @@ import { AuthModule } from './auth/auth.module';
     LifecycleHandler,
     PlaceHoldHandler,
     { provide: BOOKING_CONTEXT, useClass: DbBookingContext },
+    StylistHandler,
   ],
 })
 export class AvailabilityModule {}
