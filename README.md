@@ -39,6 +39,43 @@ frees port 3099 and then watches. If you already have the stack up,
 A `.env` is committed with working local defaults — the database URL, the
 branch timezone (`Asia/Dubai`), and `JWT_ACCESS_SECRET=dev-access-change-me`.
 
+### Running it the way the server does
+
+The quick start runs the API on your machine against containerised Postgres and
+Redis. To run the API itself as a container — the built image, `node dist/main.js`,
+no watcher:
+
+```bash
+docker compose run --rm migrate          # prisma migrate deploy, from the image
+docker compose --profile server up -d    # API on :3851, alongside pg and redis
+curl localhost:3851/health
+```
+
+Swagger is at `http://localhost:3851/docs`. Logs are `docker compose logs -f api`;
+`docker compose --profile server down` stops everything.
+
+It is behind a **profile** so that a bare `docker compose up -d` — which is what
+`pnpm dev` shells out to — still brings up only Postgres and Redis. Without that,
+every `pnpm dev` would also build and start a second API, and two servers would be
+sharing one database while only one of them had your edits in it. It is also why
+the container listens on **3851** and not 3099: both can run at once, and the port
+tells you which one answered.
+
+The container does **not** read `.env`. That file is written for a host process,
+where `DATABASE_URL` says `localhost:5432` — inside a container that is the
+container itself, so the API would boot cleanly and then fail every query against
+nothing. The container's wiring is spelled out in `docker-compose.yml`, pointing
+at the `postgres` and `redis` service names on the compose network.
+
+`migrate` is a separate job rather than a boot step, matching production (see
+[Deployment](#deployment)), and sits behind its own profile so that `up` can never
+quietly migrate a database. It runs the same image the API runs.
+
+`/health` reports `degraded` with `customerAuth: unreachable` unless a consumer
+gRPC service is answering. That is correct — it is not part of this stack. Point
+`CONSUMER_GRPC_ADDR` at one if you have it; the default reaches your host, not the
+container.
+
 ### Getting a token
 
 Every route needs a bearer token except `GET /health`,
