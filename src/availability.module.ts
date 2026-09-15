@@ -53,16 +53,36 @@ import { WalkInHandler } from '@application/commands/walk-in.handler';
 import { AuthModule } from './auth/auth.module';
 import { StylistHandler } from '@application/queries/stylist.handler';
 
+import { CqrsModule } from '@nestjs/cqrs';
+import { StaffGrpcModule } from './infrastructure/grpc/staff-grpc.module';
+import { StaffDirectoryController } from '@interface/http/staff-directory.controller';
+import { ListStylistsHandler } from '@application/queries/list-stylists.handler';
+
+import { ServicesGrpcModule } from './infrastructure/grpc/services-grpc.module';
+import { ServicesDirectoryController } from '@interface/http/services-directory.controller';
+import { ListServicesHandler } from '@application/queries/list-services.handler';
+
 @Module({
   // For the health endpoint's customer auth rail. AuthModule exports the
   // service; nothing here verifies a token -- the guard is global.
-  imports: [AuthModule],
+  //
+  // CqrsModule is what makes the QueryBus real. It provides the bus that
+  // StaffDirectoryController injects AND it runs the explorer that finds
+  // @QueryHandler(ListStylistsQuery) and binds it to the bus. Listing
+  // ListStylistsHandler in `providers` alone only constructs the class;
+  // without this import Nest cannot resolve QueryBus at boot, and even if it
+  // could, dispatching the query would answer "No handler found". This is
+  // the first bus in the service -- see the note in stylist.handler.ts,
+  // which was written back when there was none.
+  imports: [AuthModule, StaffGrpcModule, CqrsModule, ServicesGrpcModule],
   controllers: [
     // The /v1/bookings literals come first: BookingsController carries
     // @Get(':id'), which swallows every literal at that depth. Asserted by
     // route-order.spec.ts, not left to memory.
+    ServicesDirectoryController,
     SettingsController,
     EligibleStaffController,
+    StaffDirectoryController,
     QuoteController,
     GroupAvailabilityController,
     BookingSeriesController,
@@ -107,6 +127,8 @@ import { StylistHandler } from '@application/queries/stylist.handler';
     PlaceHoldHandler,
     { provide: BOOKING_CONTEXT, useClass: DbBookingContext },
     StylistHandler,
+    ListStylistsHandler,
+    ListServicesHandler,
   ],
 })
 export class AvailabilityModule {}
