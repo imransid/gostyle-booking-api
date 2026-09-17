@@ -43,6 +43,7 @@ export class ListServicesDto {
   tenantId!: string;
 
   @ApiProperty({ example: '22222222-2222-2222-2222-222222222222' })
+  @IsOptional()
   @IsString()
   branchId!: string;
 
