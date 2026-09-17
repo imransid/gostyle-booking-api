@@ -204,6 +204,21 @@ export const TRANSITIONS: readonly Transition[] = [
   },
 
   {
+    /**
+     * CHECK-IN UNDO. The desk checked in the wrong Amira.
+     *
+     * Salon only, and only for a short window (see UNDO_WINDOW_MIN) -- past
+     * that the chair has been given away and undoing is a lie about where
+     * the customer is. A reason is required because it releases a chair
+     * somebody else may already be walking towards.
+     */
+    from: 'checked_in',
+    to: 'confirmed',
+    trigger: 'check-in undone',
+    requiresReason: true,
+    allowedActors: ANY_STAFF,
+  },
+  {
     from: 'checked_in',
     to: 'in_service',
     trigger: 'start',
@@ -313,6 +328,53 @@ export const ARRIVAL_GRACE_MIN = 15;
 export const VIP_ARRIVAL_GRACE_MIN = 20;
 /** The desk owns the decision until this point, then the system acts. */
 export const AUTO_NO_SHOW_MIN = 30;
+
+/**
+ * How long a check-in may be undone.
+ *
+ * Five minutes is long enough for "that was the wrong Amira" and short
+ * enough that the chair has not been reassigned. Past it, the honest action
+ * is to cancel or to start the visit, not to pretend the arrival never
+ * happened.
+ */
+export const UNDO_WINDOW_MIN = 5;
+
+export type UndoVerdict =
+  | { readonly kind: 'allowed' }
+  | { readonly kind: 'too_late'; readonly minutesAgo: number };
+
+/** May this check-in still be undone? */
+export function canUndoCheckIn(input: {
+  readonly checkedInAtMs: number;
+  readonly nowMs: number;
+}): UndoVerdict {
+  const minutesAgo = Math.floor(
+    (input.nowMs - input.checkedInAtMs) / (60 * 1000),
+  );
+  return minutesAgo <= UNDO_WINDOW_MIN
+    ? { kind: 'allowed' }
+    : { kind: 'too_late', minutesAgo };
+}
+
+/**
+ * Triage a late arrival down to what still fits.
+ *
+ * NEVER BELOW THE MINIMUM. A ten-minute "haircut" is not a haircut; it is a
+ * disappointed customer and a stylist who looks careless. If the remaining
+ * time cannot carry a real visit the answer is rebook or no-show, and this
+ * returns null to say so rather than seating somebody for a service that
+ * cannot be delivered.
+ */
+export const MIN_SHORTENED_MIN = 15;
+
+export function shortenTo(input: {
+  readonly originalMin: number;
+  readonly requestedMin: number;
+}): number | null {
+  if (input.requestedMin >= input.originalMin) return null;
+  if (input.requestedMin < MIN_SHORTENED_MIN) return null;
+  return input.requestedMin;
+}
 
 export interface ArrivalWindow {
   readonly opensAtMin: number;

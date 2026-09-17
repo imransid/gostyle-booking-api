@@ -44,7 +44,22 @@ export const MIN_STRANDED_GAIN_MIN = 4;
  * salon, and it does not get to outrank either.
  */
 export type Ineligibility =
-  'not_confirmed' | 'group_lane' | 'series_occurrence';
+  | 'not_confirmed'
+  | 'group_lane'
+  | 'series_occurrence'
+  /**
+   * Already moved too often.
+   *
+   * A booking the salon has shuffled three times is one the customer has
+   * already rearranged their day around three times. Compaction is a
+   * convenience for the diary, and at some point the convenience stops
+   * outranking the person -- the same threshold the serial-reschedule rule
+   * uses, so the two cannot disagree about what "too often" means.
+   */
+  | 'moved_too_often';
+
+/** From this many prior moves, compaction leaves a booking alone. */
+export const MAX_PRIOR_MOVES = 3;
 
 export interface DiaryBooking {
   readonly bookingId: string;
@@ -54,6 +69,20 @@ export interface DiaryBooking {
   readonly endMin: number;
   /** Set when this booking may not be moved, and why. */
   readonly ineligible?: Ineligibility;
+  /** Moves already made. Absent counts as none. */
+  readonly moveCount?: number;
+}
+
+/**
+ * Why this booking may not move, or null.
+ *
+ * ONE PLACE, because the planner and the applier both have to agree and a
+ * second copy of the rule is how a move gets proposed and then refused.
+ */
+export function immovableReason(b: DiaryBooking): Ineligibility | null {
+  if (b.ineligible !== undefined) return b.ineligible;
+  if ((b.moveCount ?? 0) >= MAX_PRIOR_MOVES) return 'moved_too_often';
+  return null;
 }
 
 export interface Gap {
@@ -208,7 +237,7 @@ function bestMove(
       // NEVER MORE THAN ONE MOVE PER BOOKING. Two moves on one booking is
       // two conversations with the same customer about the same appointment.
       if (alreadyMoved.has(booking.bookingId)) continue;
-      if (booking.ineligible !== undefined) continue;
+      if (immovableReason(booking) !== null) continue;
 
       // Never further than the gap itself: past that it stops closing
       // anything and starts eating into the neighbour.

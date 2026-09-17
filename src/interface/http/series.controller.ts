@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   Param,
   Post,
   Query,
@@ -225,8 +226,12 @@ export class SeriesController {
     description:
       'The pattern produces no visits, or the tier cannot hold a standing reservation.',
   })
-  async createSeries(@Body() dto: CreateSeriesDto): Promise<SeriesView> {
+  async createSeries(
+    @Body() dto: CreateSeriesDto,
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+  ): Promise<SeriesView> {
     return this.create.execute({
+      ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
       branchId: dto.branchId,
       customerId: dto.customerId,
       anchorDay: dto.anchorDay,

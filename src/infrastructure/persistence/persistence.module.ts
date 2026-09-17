@@ -2,6 +2,10 @@ import { Global, Module } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
 import { TenantContext } from '../tenancy/tenant-context';
 import { BranchContext } from '../tenancy/branch-context';
+import { IdempotencyRepository } from './idempotency.repository';
+import { DeskExtrasRepository } from './desk-extras.repository';
+import { ConfirmAskSweeper } from '../scheduling/confirm-ask-sweeper.service';
+import { RiskFlagSweeper } from '../scheduling/risk-flag-sweeper.service';
 import { OutboxRelay } from '../messaging/outbox-relay.service';
 import { ReminderRepository } from './reminder.repository';
 import { RescheduleRepository } from './reschedule.repository';
@@ -45,6 +49,10 @@ import { StylistRepository } from './stylist.repository';
   providers: [
     TenantContext,
     BranchContext,
+    IdempotencyRepository,
+    DeskExtrasRepository,
+    ConfirmAskSweeper,
+    RiskFlagSweeper,
     WalkInRepository,
     CompactionRepository,
     RosterChangeRepository,
@@ -116,6 +124,10 @@ import { StylistRepository } from './stylist.repository';
   exports: [
     TenantContext,
     BranchContext,
+    IdempotencyRepository,
+    DeskExtrasRepository,
+    ConfirmAskSweeper,
+    RiskFlagSweeper,
     WalkInRepository,
     CompactionRepository,
     RosterChangeRepository,

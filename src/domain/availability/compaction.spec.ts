@@ -4,8 +4,10 @@ import {
   slivers,
   strandedMinutes,
   isSliver,
+  immovableReason,
   MAX_MOVES,
   MAX_MOVE_MIN,
+  MAX_PRIOR_MOVES,
   MIN_STRANDED_GAIN_MIN,
   type DiaryBooking,
 } from './compaction';
@@ -255,5 +257,58 @@ describe('a realistic afternoon', () => {
     expect(plan.explanation).toMatch(
       /consent move(s?) turns? 35 stranded minutes into 0/,
     );
+  });
+});
+
+describe('a booking already moved too often', () => {
+  /**
+   * Compaction is a convenience for the diary. A customer who has already
+   * rearranged their day three times has spent enough goodwill on it.
+   */
+  const day = (moveCount?: number): DiaryBooking[] => [
+    {
+      bookingId: 'a',
+      code: 'GS-1',
+      staffId: 'maya',
+      startMin: 600,
+      endMin: 660,
+    },
+    {
+      bookingId: 'b',
+      code: 'GS-2',
+      staffId: 'maya',
+      startMin: 675,
+      endMin: 735,
+      ...(moveCount === undefined ? {} : { moveCount }),
+    },
+  ];
+
+  it('is movable when it has not been moved much', () => {
+    expect(immovableReason(day(0)[1]!)).toBeNull();
+    expect(immovableReason(day(2)[1]!)).toBeNull();
+  });
+
+  it('is immovable at the threshold and beyond', () => {
+    expect(immovableReason(day(MAX_PRIOR_MOVES)[1]!)).toBe('moved_too_often');
+    expect(immovableReason(day(9)[1]!)).toBe('moved_too_often');
+  });
+
+  it('treats an absent moveCount as none', () => {
+    expect(immovableReason(day()[1]!)).toBeNull();
+  });
+
+  it('lets an explicit ineligibility win over the move count', () => {
+    // A group lane is a group lane whatever its history; the reported reason
+    // should be the one a human would give.
+    expect(immovableReason({ ...day(9)[1]!, ineligible: 'group_lane' })).toBe(
+      'group_lane',
+    );
+  });
+
+  it('keeps it out of the plan entirely', () => {
+    const before = planCompaction(day(0));
+    const after = planCompaction(day(MAX_PRIOR_MOVES));
+    expect(before.moves.length).toBeGreaterThan(0);
+    expect(after.moves.map((m) => m.bookingId)).not.toContain('b');
   });
 });

@@ -107,6 +107,11 @@ export class WaitlistHandler {
     };
   }
 
+  /** Leave the list. Idempotent; never a 404. */
+  async leave(entryId: string): Promise<{ left: boolean }> {
+    return this.repo.leave(entryId);
+  }
+
   async decline(entryId: string): Promise<{ message: string }> {
     const offer = await this.repo.liveOffer(entryId);
     if (offer === null) {

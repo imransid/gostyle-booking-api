@@ -1,4 +1,4 @@
-import { Body, Controller, Param, Post } from '@nestjs/common';
+import { Body, Controller, Delete, Param, Post } from '@nestjs/common';
 import {
   ApiConflictResponse,
   ApiCreatedResponse,
@@ -132,6 +132,19 @@ export class WaitlistController {
   @ApiNotFoundResponse({ description: 'The offer expired or was taken.' })
   accept(@Param('id') id: string): Promise<AcceptView> {
     return this.handler.accept(id);
+  }
+
+  @Delete(':id')
+  @ApiOperation({
+    summary: 'Leave the waitlist',
+    description:
+      'Idempotent: leaving twice, or leaving an entry that already lapsed, ' +
+      'answers 200 with left:false rather than 404. A desk that cannot tell ' +
+      'the two apart will retry, and a 404 makes that retry look like a bug.',
+  })
+  @ApiOkResponse({ description: 'Left, or was already gone.' })
+  leave(@Param('id') id: string): Promise<{ left: boolean }> {
+    return this.handler.leave(id);
   }
 
   @Post(':id/decline')

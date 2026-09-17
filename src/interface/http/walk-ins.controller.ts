@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { ResourceIdPipe } from './resource-id.pipe';
 import {
   ApiCreatedResponse,
@@ -158,6 +166,19 @@ export class WalkInsController {
     @Body() dto: SeatWalkInDto,
   ): Promise<unknown> {
     return this.handler.seat(id, dto.startMin, dto.staffId);
+  }
+
+  @Delete(':id')
+  @ApiOperation({
+    summary: 'Leave the queue',
+    description:
+      'The contract spells this DELETE; the POST below is the original and ' +
+      'stays for existing callers. Same handler, so they cannot diverge.',
+  })
+  async remove(
+    @Param('id', ResourceIdPipe) id: string,
+  ): Promise<{ left: boolean }> {
+    return this.handler.leave(id);
   }
 
   @Post(':id/leave')

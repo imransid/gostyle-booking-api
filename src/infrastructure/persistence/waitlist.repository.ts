@@ -464,4 +464,26 @@ export class WaitlistRepository {
     // The slot is free again. Whoever is next in the queue gets it.
     return this.offerFreedSlot(branchId, slot, nowMs);
   }
+
+  /**
+   * They gave up, or took a booking elsewhere.
+   *
+   * IDEMPOTENT, and never a 404. An entry that already left, already lapsed
+   * or never existed all answer `left: false` -- a desk that cannot tell a
+   * double-click from a real error will retry, and a 404 makes the retry
+   * look like a bug. The same reasoning as releasing a hold.
+   *
+   * An entry currently holding an OFFER is left alone by the offer sweeper
+   * afterwards: the status is what the sweeper filters on, so moving it to
+   * `left` takes it out of consideration without a second signal.
+   */
+  async leave(entryId: string): Promise<{ left: boolean }> {
+    const rows = await this.prisma.$queryRaw<{ id: string }[]>`
+      UPDATE waitlist_entry
+         SET status = 'left'
+       WHERE id = ${entryId}::uuid
+         AND status IN ('waiting', 'offered')
+      RETURNING id`;
+    return { left: rows.length > 0 };
+  }
 }
