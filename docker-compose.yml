@@ -53,6 +53,10 @@ services:
       BRANCH_TIMEZONE: ${BRANCH_TIMEZONE:-Asia/Dubai}
       DEFAULT_CURRENCY: ${DEFAULT_CURRENCY:-AED}
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev-access-change-me}
+      # Which browser origins may call this. Empty falls back to the
+      # localhost dev ports in src/cors.ts, so a front end served from
+      # anywhere else has to be named here.
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
       # The consumer gRPC service is not part of this stack. Default it to the
       # host so a copy running on the laptop is reachable; customer tokens 503
       # while nothing answers, which is the documented behaviour.
