@@ -5,7 +5,7 @@ import type {
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
 import { TenantContext } from '../tenancy/tenant-context';
-import { isExclusionViolation } from './pg-errors';
+import { isExclusionViolation, isUniqueViolationOn } from './pg-errors';
 import { toUuid } from './hold.repository';
 
 export type PaymentRail =
@@ -83,7 +83,14 @@ export type ConfirmOutcome =
   /** Money is never taken against a dead hold. */
   | { readonly kind: 'hold_expired' }
   /** Somebody else got the slot between the hold and the confirm. */
-  | { readonly kind: 'slot_taken' };
+  | { readonly kind: 'slot_taken' }
+  /**
+   * This gateway reference is already on the ledger, under a DIFFERENT
+   * request. Not a retry -- a retry carries the Idempotency-Key and is
+   * replayed above -- so the honest answer is a refusal, not a second
+   * booking against one payment.
+   */
+  | { readonly kind: 'payment_already_recorded' };
 
 @Injectable()
 export class BookingRepository {
@@ -290,6 +297,14 @@ export class BookingRepository {
     } catch (e) {
       if (e instanceof HoldExpiredError) return { kind: 'hold_expired' };
       if (isExclusionViolation(e)) return { kind: 'slot_taken' };
+
+      // BEFORE the idempotency branch below, which reads any P2002 as "the
+      // same key raced us". A reused gateway_ref is a different unique
+      // index entirely: findReplay() finds nothing for it, and the rethrow
+      // reached the desk as a 500 for what is an ordinary mistake.
+      if (isUniqueViolationOn(e, 'gateway_ref')) {
+        return { kind: 'payment_already_recorded' };
+      }
 
       // A concurrent request with the same key won the race. Both are the
       // same intent, so return what it produced rather than charging twice.

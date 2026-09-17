@@ -1,0 +1,34 @@
+syntax = "proto3";
+package gostyle.services.v1;
+
+service ServicesDirectory {
+  rpc ListServices (ListServicesRequest) returns (ListServicesResponse);
+}
+
+message ListServicesRequest {
+  string tenant_id = 1;
+  string branch_id = 2;
+  string category_id = 3;
+}
+
+message ListServicesResponse {
+  repeated Service services = 1;
+}
+
+message Service {
+  string service_id = 1;
+  string name = 2;
+  string description = 3;
+  int32 price_minor = 4;
+  string currency = 5;
+  int32 duration_minutes = 6;
+  string category_id = 7;
+  string category_name = 8;
+
+  // EMPTY MEANS UNKNOWN — DO NOT COERCE TO LEVEL 0.
+  string skill_id = 9;
+  string min_skill_level = 10;
+
+  repeated string photo_urls = 11;
+  repeated string included_steps = 12;
+}

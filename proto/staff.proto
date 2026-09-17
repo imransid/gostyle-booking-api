@@ -1,0 +1,42 @@
+syntax = "proto3";
+package gostyle.staff.v1;
+
+service StaffDirectory {
+  rpc ListStylists (ListStylistsRequest) returns (ListStylistsResponse);
+}
+
+message ListStylistsRequest {
+  string tenant_id = 1;
+  string branch_id = 2;
+}
+
+message ListStylistsResponse {
+  repeated Stylist stylists = 1;
+}
+
+message Stylist {
+  // Identity, real data today
+  string staff_profile_id = 1;
+  string user_id = 2;
+  string first_name = 3;
+  string last_name = 4;
+  string position = 5;
+  string branch_id = 6;
+  string employment_status = 7;
+
+  // Display fields for the customer app.
+  // EMPTY TODAY. Platform has no column for most of these yet, so they are
+  // in the contract now to avoid changing both sides again later.
+  //
+  // EMPTY IS NOT ZERO. The app must HIDE a field when it is empty, never
+  // print "0 stars" or "0 years", which would read as a bad stylist rather
+  // than as missing data.
+  string photo_url = 8;
+  int32 rating_bps = 9;        // 4.8 stars = 4800. 0 = unknown.
+  int32 review_count = 10;     // 0 = unknown
+  int32 years_experience = 11; // 0 = unknown
+  string offday = 12;          // "monday" | "" = unknown
+  string opening_time = 13;    // "10:00" | "" = unknown
+  string closing_time = 14;    // "21:00" | "" = unknown
+  string bio = 15;             // "" = unknown
+}

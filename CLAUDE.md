@@ -7,7 +7,7 @@ holds, confirmation, money, waitlist, groups.
 
 ```bash
 pnpm dev         # docker compose up + nest start --watch on :3099
-pnpm test:unit   # vitest, src/domain/**/*.spec.ts only
+pnpm test        # vitest, every src/**/*.spec.ts (test:unit is the same)
 pnpm typecheck   # tsc --noEmit
 pnpm lint
 ```

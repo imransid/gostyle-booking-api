@@ -287,6 +287,16 @@ export class ConfirmBookingHandler {
         'Someone took this while you were paying. Nothing was charged. Offers have refreshed.',
       );
     }
+    // Also nothing charged: the ledger refused a second entry for a payment
+    // it has already recorded. A retry of the SAME request never lands here
+    // -- it carries the Idempotency-Key and is replayed before the write.
+    if (outcome.kind === 'payment_already_recorded') {
+      throw new ConflictException(
+        'That payment reference is already recorded against a booking. Nothing was charged again. ' +
+          'Retry with the Idempotency-Key of the original request to get that booking back, or ' +
+          'confirm with the reference the gateway actually returned.',
+      );
+    }
 
     const b = outcome.booking;
 

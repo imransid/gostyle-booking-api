@@ -32,6 +32,7 @@ import { CompactionRepository } from './compaction.repository';
 import { WalkInRepository } from './walk-in.repository';
 import { WalkInGapListener } from '../messaging/walk-in-gap-listener';
 import { WalkInSeatedListener } from '../messaging/walk-in-seated-listener';
+import { StylistRepository } from './stylist.repository';
 
 /**
  * Global on purpose. One connection pool per process, shared by every module
@@ -108,6 +109,7 @@ import { WalkInSeatedListener } from '../messaging/walk-in-seated-listener';
     HoldSweeper,
     DbBookingContext,
     FixtureBookingContext,
+    StylistRepository,
   ],
   exports: [
     TenantContext,
@@ -136,6 +138,7 @@ import { WalkInSeatedListener } from '../messaging/walk-in-seated-listener';
     HoldSweeper,
     DbBookingContext,
     FixtureBookingContext,
+    StylistRepository,
   ],
 })
 export class PersistenceModule {}
