@@ -102,6 +102,29 @@ curl -H "Authorization: Bearer $TOK" localhost:3099/v1/bookings/settings
 
 Swagger UI is at `/docs`. Health, including outbox depth, is at `/health`.
 
+### Calling it from a front end
+
+A typed client for the whole single-booking flow lives in
+[`clients/`](./clients/README.md) — availability, quote, hold, confirm,
+lifecycle, with typed errors and the conventions that catch people out
+(fils, minutes from midnight, the two spellings of `channel`, idempotency).
+
+```bash
+BASE_URL=http://localhost:3099 TOKEN=<staff jwt> npx ts-node clients/example.ts
+```
+
+**A browser needs its origin allowed.** `CORS_ORIGINS` is a comma separated
+list; unset means the usual localhost dev ports only, so a deployed front end
+answers nothing until it is named:
+
+```bash
+CORS_ORIGINS=https://app.gostyle.ae,https://desk.gostyle.ae
+```
+
+It fails closed on purpose. See `src/cors.ts`, which also explains why
+`Idempotency-Key` has to be in the allowed headers — without it, confirm is
+the one call in the flow that dies in the browser before it is sent.
+
 ---
 
 ## Architecture
