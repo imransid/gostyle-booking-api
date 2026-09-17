@@ -1,6 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
 import { TenantContext } from '../tenancy/tenant-context';
+import { BranchContext } from '../tenancy/branch-context';
 import { OutboxRelay } from '../messaging/outbox-relay.service';
 import { ReminderRepository } from './reminder.repository';
 import { RescheduleRepository } from './reschedule.repository';
@@ -43,6 +44,7 @@ import { StylistRepository } from './stylist.repository';
 @Module({
   providers: [
     TenantContext,
+    BranchContext,
     WalkInRepository,
     CompactionRepository,
     RosterChangeRepository,
@@ -113,6 +115,7 @@ import { StylistRepository } from './stylist.repository';
   ],
   exports: [
     TenantContext,
+    BranchContext,
     WalkInRepository,
     CompactionRepository,
     RosterChangeRepository,

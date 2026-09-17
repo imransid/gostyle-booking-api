@@ -96,7 +96,16 @@ export class SeatWalkInDto {
  * any customer token before this decorator.
  */
 @ApiTags('walk-ins')
-@Controller('walk-ins')
+/**
+ * TWO PATHS, ONE CONTROLLER.
+ *
+ * The front-end contract mounts everything under /v1/bookings/*; this
+ * service mounted by aggregate. Nest takes an array of controller paths, so
+ * both spellings reach the SAME handlers -- no second controller, no
+ * forwarding, nothing to drift. The aggregate path stays because existing
+ * clients use it.
+ */
+@Controller(['walk-ins', 'bookings/walk-ins'])
 @DeskOnly()
 export class WalkInsController {
   constructor(private readonly handler: WalkInHandler) {}

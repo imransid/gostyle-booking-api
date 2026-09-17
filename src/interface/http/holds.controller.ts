@@ -79,7 +79,16 @@ export class PlaceHoldDto {
 }
 
 @ApiTags('holds')
-@Controller('holds')
+/**
+ * TWO PATHS, ONE CONTROLLER.
+ *
+ * The front-end contract mounts everything under /v1/bookings/*; this
+ * service mounted by aggregate. Nest takes an array of controller paths, so
+ * both spellings reach the SAME handlers -- no second controller, no
+ * forwarding, nothing to drift. The aggregate path stays because existing
+ * clients use it.
+ */
+@Controller(['holds', 'bookings/holds'])
 export class HoldsController {
   constructor(private readonly handler: PlaceHoldHandler) {}
 

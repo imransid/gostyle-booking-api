@@ -49,6 +49,27 @@ export type RescheduleResult =
       readonly outcome: RescheduleOutcome;
     };
 
+/**
+ * How long a capacity-moving transaction may hold its advisory lock.
+ *
+ * Prisma's default interactive-transaction timeout is 5 seconds, which is a
+ * number nobody here chose. A move does nine writes behind
+ * `pg_advisory_xact_lock`, and on a contended pool that ran 5,532 ms and was
+ * killed MID-TRANSACTION -- the booking had already been shifted and the
+ * status-history insert was refused, so the caller saw a 500 and the diary
+ * was the only record that anything happened.
+ *
+ * Postgres rolled the whole thing back, so nothing was corrupted. But a
+ * timeout that fires during normal work is a timeout set too low: it turns a
+ * slow move into a failed one. 15 seconds is far longer than the work takes
+ * and still short enough that a genuinely stuck lock surfaces quickly.
+ *
+ * maxWait is how long to queue for a CONNECTION before starting. The relay
+ * hit "Unable to start a transaction in the given time" on the same pool,
+ * which is the other half of the same symptom.
+ */
+export const MOVE_TX_OPTIONS = { timeout: 15_000, maxWait: 10_000 } as const;
+
 export interface ShiftInPlaceInput {
   readonly bookingId: string;
   readonly tradingDay: string;
@@ -296,7 +317,7 @@ export class RescheduleRepository {
           fromStartMin: booking.start_minute,
           toStartMin: input.toStartMin,
         };
-      });
+      }, MOVE_TX_OPTIONS);
     } catch (e) {
       if (isExclusionViolation(e)) return { kind: 'slot_taken' as const };
       throw e;
@@ -542,6 +563,6 @@ export class RescheduleRepository {
         toStartAt: newStart,
         outcome,
       };
-    });
+    }, MOVE_TX_OPTIONS);
   }
 }

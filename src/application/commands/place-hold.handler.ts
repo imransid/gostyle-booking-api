@@ -1,5 +1,4 @@
 import {
-  ConflictException,
   Inject,
   Injectable,
   NotFoundException,
@@ -17,11 +16,17 @@ import {
   ONLINE_CHANNEL,
   type Channel,
 } from '@domain/availability/feasible';
-import { bitAt } from '@domain/availability/mask';
+import { bitAt, type Mask } from '@domain/availability/mask';
+import { bookingError } from '@application/contract/errors';
+import { describeRefusal } from '@application/queries/get-availability.handler';
 import {
   toSlot,
+  toMin,
   formatMinute,
   DAILY_BOOKING_CAP,
+  SLOTS,
+  SLOT_MIN,
+  OFFER_SPACING_MIN,
 } from '@domain/availability/grid';
 import { effectiveUnits } from '@domain/availability/capacity';
 import {
@@ -105,8 +110,56 @@ export class PlaceHoldHandler {
 
     const slot = toSlot(cmd.startMin);
     if (!bitAt(result.union, slot)) {
-      throw new ConflictException(
+      /**
+       * WHY, NOT JUST NO.
+       *
+       * "12:30 is no longer available" is true and useless when the real
+       * answer is "Lina does not cut hair". The engine already knows: it
+       * dropped each ineligible professional with a reason, and the
+       * availability endpoint has been rendering those as `refusals` all
+       * along. A named professional who was excluded gets that reason and
+       * the code that goes with it, so the desk is told to pick someone
+       * else rather than to try another time.
+       */
+      const preferred = cmd.preferredStaffId;
+      const named =
+        preferred === null ? undefined : result.excluded.get(preferred);
+
+      if (named !== undefined && named.kind === 'missing_skills') {
+        throw bookingError(
+          'BOOKING_SKILL_MISSING',
+          `${nameOf(day, preferred ?? '')} ${describeRefusal(named)} ` +
+            `(${requiredOf(services)}).`,
+          {
+            staffId: preferred,
+            missingSkills: named.skills,
+            requires: requirements(services),
+            eligibleStaff: whoCouldTakeIt(result.excluded, day),
+          },
+        );
+      }
+
+      if (named !== undefined && named.kind === 'daily_cap') {
+        throw bookingError(
+          'BOOKING_STAFF_UNAVAILABLE',
+          `${nameOf(day, preferred ?? '')} ${describeRefusal(named)}.`,
+          {
+            staffId: preferred,
+            eligibleStaff: whoCouldTakeIt(result.excluded, day),
+          },
+        );
+      }
+
+      // THE REFRESHED OFFERS TRAVEL WITH THE REFUSAL. Without them the desk
+      // has to re-run the search by hand to find out what IS free, and the
+      // customer watches them do it.
+      throw bookingError(
+        preferred === null ? 'BOOKING_SLOT_TAKEN' : 'BOOKING_STAFF_UNAVAILABLE',
         `${formatMinute(cmd.startMin)} is no longer available. Offers have refreshed.`,
+        {
+          offers: freeStarts(result.union),
+          ...(preferred === null ? {} : { staffId: preferred }),
+        },
       );
     }
 
@@ -118,7 +171,11 @@ export class PlaceHoldHandler {
       (a, b) => loadOf(a) - loadOf(b) || (a < b ? -1 : 1),
     )[0];
     if (staffId === undefined) {
-      throw new ConflictException('Nobody is free for that start any more.');
+      throw bookingError(
+        'BOOKING_STAFF_UNAVAILABLE',
+        'Nobody is free for that start any more.',
+        { offers: freeStarts(result.union) },
+      );
     }
 
     // The digest of the world this decision was made against. Compared again
@@ -173,14 +230,23 @@ export class PlaceHoldHandler {
     // Both refusals are normal outcomes, not failures. 409 says "try again
     // with fresh information", which is exactly right.
     if (outcome.kind === 'staff_taken') {
-      throw new ConflictException(
+      throw bookingError(
+        'BOOKING_SLOT_TAKEN',
         'Someone took this while you were deciding. Nothing was charged. Offers have refreshed.',
+        { offers: freeStarts(result.union) },
       );
     }
     if (outcome.kind === 'no_chair') {
-      throw new ConflictException(
+      throw bookingError(
+        'BOOKING_CAPACITY_BLOCKED',
         `Every ${outcome.resourceType} station is taken at ${formatMinute(cmd.startMin)} ` +
           `(${outcome.inUse} of ${outcome.units} in use).`,
+        {
+          resourceType: outcome.resourceType,
+          inUse: outcome.inUse,
+          units: outcome.units,
+          offers: freeStarts(result.union),
+        },
       );
     }
 
@@ -209,4 +275,84 @@ export class PlaceHoldHandler {
   async release(holdId: string): Promise<{ released: boolean }> {
     return { released: await this.holds.release(holdId) };
   }
+}
+
+/**
+ * The starts that ARE free, from the union mask the refusal was computed
+ * against.
+ *
+ * Capped at three because that is what the desk can read out loud, and it is
+ * the same three-offer policy the availability endpoint already follows.
+ * Derived from the mask that has just been built rather than re-running the
+ * engine: the refusal and its alternatives then describe the same instant,
+ * which a second query could not promise.
+ */
+function freeStarts(union: Mask): { startMin: number; start: string }[] {
+  const out: { startMin: number; start: string }[] = [];
+  for (let i = 0; i < SLOTS && out.length < 3; i++) {
+    if (bitAt(union, i)) {
+      const startMin = toMin(i);
+      out.push({ startMin, start: formatMinute(startMin) });
+      i += OFFER_SPACING_MIN / SLOT_MIN - 1;
+    }
+  }
+  return out;
+}
+
+/** A professional's display name, for a refusal a human reads. */
+function nameOf(
+  day: { professionals: readonly { id: string; name: string }[] },
+  id: string,
+): string {
+  return day.professionals.find((p) => p.id === id)?.name ?? id;
+}
+
+/**
+ * Who WOULD have been eligible, had the desk not named someone.
+ *
+ * `result.pool` is the wrong answer here and was briefly the published one:
+ * naming a professional excludes every other with reason `not_preferred`, so
+ * the pool narrows to one and an empty pool reads as "nobody in this salon
+ * can do this". Those `not_preferred` exclusions are exactly the people who
+ * CAN, which is what the desk needs in order to drop the booking somewhere
+ * useful.
+ */
+function whoCouldTakeIt(
+  excluded: ReadonlyMap<string, { kind: string }>,
+  day: { professionals: readonly { id: string; name: string }[] },
+): { id: string; name: string }[] {
+  const out: { id: string; name: string }[] = [];
+  for (const [id, reason] of excluded) {
+    if (reason.kind === 'not_preferred') {
+      out.push({ id, name: nameOf(day, id) });
+    }
+  }
+  return out;
+}
+
+/** "hair at level 2", for a message a human reads out. */
+function requiredOf(
+  services: readonly { skill: string; requiredLevel: number }[],
+): string {
+  return [
+    ...new Set(services.map((s) => `${s.skill} at level ${s.requiredLevel}`)),
+  ].join(', ');
+}
+
+/**
+ * The same thing structured, because the LEVEL is what the prose was missing.
+ *
+ * "does not hold the required skills: hair" is misleading about a stylist who
+ * holds hair at level 1 for a service needing level 2 -- she holds the skill,
+ * just not deeply enough. The client should not have to parse a sentence to
+ * tell those apart.
+ */
+function requirements(
+  services: readonly { skill: string; requiredLevel: number }[],
+): { skill: string; level: number }[] {
+  const seen = new Map<string, number>();
+  for (const s of services) {
+    seen.set(s.skill, Math.max(seen.get(s.skill) ?? 0, s.requiredLevel));
+  }
+  return [...seen].map(([skill, level]) => ({ skill, level }));
 }

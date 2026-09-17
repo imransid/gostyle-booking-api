@@ -61,7 +61,22 @@ export function corsOptions(raw = process.env.CORS_ORIGINS): CorsConfig {
      * header only if you open the console. Confirm would be the one call in
      * the flow that mysteriously never happens.
      */
-    allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'Idempotency-Key',
+      /**
+       * X-Tenant-Id AND X-Branch-Id FOR THE SAME REASON AS Idempotency-Key.
+       *
+       * TenantMiddleware has read X-Tenant-Id since tenancy landed, and this
+       * list did not allow it -- so a browser could never send one. The
+       * preflight rejected it before the request left, every row a browser
+       * wrote was untenanted, and nothing anywhere said so. curl and Swagger
+       * were unaffected, which is why it survived.
+       */
+      'X-Tenant-Id',
+      'X-Branch-Id',
+    ],
 
     /** So a client can read its own rate-limit and correlation headers later. */
     exposedHeaders: ['Content-Length', 'ETag'],

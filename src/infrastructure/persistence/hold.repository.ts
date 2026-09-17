@@ -3,7 +3,7 @@ import { PrismaService } from './prisma.service';
 import { isExclusionViolation } from './pg-errors';
 
 /** Asia/Dubai is UTC+4 all year. A branch with DST would need a real tz lib. */
-const BRANCH_UTC_OFFSET_MIN = 240;
+export const BRANCH_UTC_OFFSET_MIN = 240;
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -44,6 +44,27 @@ export function branchInstant(tradingDay: string, minuteOfDay: number): Date {
   const [y, m, d] = tradingDay.split('-').map(Number);
   const midnightUtc = Date.UTC(y ?? 1970, (m ?? 1) - 1, d ?? 1);
   return new Date(midnightUtc + (minuteOfDay - BRANCH_UTC_OFFSET_MIN) * 60_000);
+}
+
+/**
+ * The branch's today, not the server's.
+ *
+ * EXPORTED FROM HERE, beside branchInstant, because they are the same fact
+ * read in two directions and a second copy of the offset is a second thing to
+ * change when a branch moves timezone (CLAUDE.md 4). A read model that
+ * computed its own "today" from the server clock put the whole diary on the
+ * wrong date for four hours every night.
+ */
+export function branchToday(nowMs = Date.now()): string {
+  return new Date(nowMs + BRANCH_UTC_OFFSET_MIN * 60_000)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/** Minutes past branch-local midnight, right now. */
+export function branchNowMinute(nowMs = Date.now()): number {
+  const shifted = new Date(nowMs + BRANCH_UTC_OFFSET_MIN * 60_000);
+  return shifted.getUTCHours() * 60 + shifted.getUTCMinutes();
 }
 
 export interface ResourceDemand {

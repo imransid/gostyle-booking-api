@@ -195,7 +195,16 @@ export class MaterialiseDto {
  * look when the answer is wrong.
  */
 @ApiTags('series')
-@Controller('series')
+/**
+ * TWO PATHS, ONE CONTROLLER.
+ *
+ * The front-end contract mounts everything under /v1/bookings/*; this
+ * service mounted by aggregate. Nest takes an array of controller paths, so
+ * both spellings reach the SAME handlers -- no second controller, no
+ * forwarding, nothing to drift. The aggregate path stays because existing
+ * clients use it.
+ */
+@Controller(['series', 'bookings/series-admin'])
 export class SeriesController {
   constructor(
     private readonly create: CreateSeriesHandler,

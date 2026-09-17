@@ -4,6 +4,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { corsOptions } from './cors';
+import { BookingExceptionFilter } from '@interface/http/booking-exception.filter';
 
 async function bootstrap(): Promise<void> {
   // rawBody keeps the exact bytes the client sent, alongside the parsed body.
@@ -39,6 +40,10 @@ async function bootstrap(): Promise<void> {
       forbidNonWhitelisted: true,
     }),
   );
+
+  // Every refusal leaves through here, so every refusal carries a machine
+  // readable `code`. Additive: statusCode, message and error are untouched.
+  app.useGlobalFilters(new BookingExceptionFilter());
 
   const config = new DocumentBuilder()
     .setTitle('Go Style Booking API')
