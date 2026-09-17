@@ -452,6 +452,83 @@ export class ReadModelRepository {
        ORDER BY rc.created_at DESC`;
   }
 
+  /**
+   * The open conflict on each of these bookings, if any.
+   *
+   * WHY THIS EXISTS. The upcoming list has a CONFLICTS chip and the worklist
+   * has a tile that routes to it -- and every row it landed on carried
+   * `conflict: null`, because nothing ever populated the field. The desk was
+   * sent to a filtered list with no cause shown and no repair offered, which
+   * is worse than not having the chip.
+   *
+   * The `proposal` on a rung-4 item carries what the ladder prepared, so a
+   * row can say not only what broke but what the salon is offering to do
+   * about it.
+   */
+  async conflictsFor(bookingIds: readonly string[]): Promise<
+    Map<
+      string,
+      {
+        itemId: string;
+        changeId: string;
+        kind: string;
+        reason: string;
+        staffId: string | null;
+        resourceType: string | null;
+        rung: string | null;
+        proposal: unknown;
+        raisedAt: Date;
+      }
+    >
+  > {
+    if (bookingIds.length === 0) return new Map();
+
+    const rows = await this.prisma.$queryRaw<
+      {
+        booking_id: string;
+        item_id: string;
+        change_id: string;
+        kind: string;
+        reason: string;
+        staff_id: string | null;
+        resource_type: string | null;
+        rung: string | null;
+        proposal: unknown;
+        raised_at: Date;
+      }[]
+    >`
+      SELECT ri.booking_id, ri.id AS item_id, rc.id AS change_id,
+             rc.kind::text AS kind, rc.reason,
+             rc.staff_id::text AS staff_id, rc.resource_type,
+             ri.rung::text AS rung, ri.proposal, rc.created_at AS raised_at
+        FROM roster_change_item ri
+        JOIN roster_change rc ON rc.id = ri.change_id
+       WHERE ri.state = 'open'
+         AND ri.booking_id = ANY(${[...bookingIds]}::uuid[])
+       ORDER BY rc.created_at DESC`;
+
+    // Newest first, so first-wins keeps the most recent conflict per booking.
+    const out = new Map<string, (typeof rows)[number]>();
+    for (const r of rows) if (!out.has(r.booking_id)) out.set(r.booking_id, r);
+
+    return new Map(
+      [...out].map(([id, r]) => [
+        id,
+        {
+          itemId: r.item_id,
+          changeId: r.change_id,
+          kind: r.kind,
+          reason: r.reason,
+          staffId: r.staff_id,
+          resourceType: r.resource_type,
+          rung: r.rung,
+          proposal: r.proposal,
+          raisedAt: r.raised_at,
+        },
+      ]),
+    );
+  }
+
   /** How many walk-ins are waiting, and how long the longest has been there. */
   async walkInPressure(
     branchId: string,

@@ -1,4 +1,5 @@
-import { Body, Controller, Param, Post } from '@nestjs/common';
+import { Body, Controller, Param, Post, UseInterceptors } from '@nestjs/common';
+import { IdempotentInterceptor } from './idempotent.interceptor';
 import {
   ApiConflictResponse,
   ApiForbiddenResponse,
@@ -156,6 +157,15 @@ export class RescheduleDto {
 }
 
 @ApiTags('lifecycle')
+/**
+ * IDEMPOTENT WHERE A KEY IS SENT.
+ *
+ * The front end mints an Idempotency-Key per tap on these routes. Without
+ * this, a retry on a flaky connection moved a booking twice, or seated a
+ * walk-in twice. See idempotent.interceptor.ts for what it does and does
+ * not promise.
+ */
+@UseInterceptors(IdempotentInterceptor)
 @Controller('bookings/:id')
 export class LifecycleController {
   constructor(

@@ -232,6 +232,146 @@ export class SeriesRepository {
     });
   }
 
+  /**
+   * Detach one occurrence from its series.
+   *
+   * It keeps its booking and stops following the pattern, which is what
+   * `THIS_OCCURRENCE` means: the customer moved one visit, not the standing
+   * arrangement. Later series edits skip it because `detached` is not a state
+   * any scope selects.
+   */
+  async detachOccurrence(occurrenceId: string): Promise<boolean> {
+    const done = await this.prisma.seriesOccurrence.updateMany({
+      where: { id: occurrenceId, state: { notIn: ['detached'] } },
+      data: { state: 'detached' },
+    });
+    return done.count > 0;
+  }
+
+  /**
+   * Re-anchor a series on a new cadence.
+   *
+   * THE PAST IS NOT REWRITTEN. Only the occurrences the caller names are
+   * cleared, and the caller got that list from `planEdit`, which already
+   * refuses to touch a visit that has started or closed. So a series edited
+   * mid-course keeps every visit already delivered, exactly as it happened.
+   *
+   * WHY CLEAR-THEN-INSERT RATHER THAN UPDATE-IN-PLACE. A new pattern produces
+   * a different NUMBER of visits, not just different dates -- fortnightly to
+   * weekly doubles them. Matching old rows to new ones would be a guess, and
+   * the ordinal is unique per series, so the guess would collide. Removing
+   * the future and re-expanding is the only version that is correct for every
+   * pattern change.
+   *
+   * The index continues from the highest that survived, so a detached or
+   * completed occurrence can never be overwritten by a regenerated one.
+   */
+  async rewritePattern(input: {
+    readonly seriesId: string;
+    readonly clearOccurrenceIds: readonly string[];
+    readonly pattern: {
+      readonly kind: 'weekly' | 'every_n_weeks' | 'monthly_on_date' | 'custom';
+      readonly weekdays: readonly number[];
+      readonly intervalWeeks: number | null;
+      readonly dayOfMonth: number | null;
+      readonly customDates: readonly string[];
+    };
+    readonly startMin: number | null;
+    readonly anchorDay: string | null;
+    readonly occurrences: readonly Occurrence[];
+    readonly horizonEnd: string;
+    readonly reason: string;
+  }): Promise<{ cleared: number; created: number }> {
+    return this.prisma.$transaction(
+      async (tx) => {
+        // 1. Release what the new cadence replaces. cancelOccurrences is not
+        //    reused here because these visits are not CANCELLED -- they are
+        //    being re-planned, and a customer who moved their standing slot
+        //    should not see a wall of cancellations in their history.
+        const doomed = await tx.seriesOccurrence.findMany({
+          where: { id: { in: [...input.clearOccurrenceIds] } },
+          select: { id: true, bookingId: true },
+        });
+
+        for (const o of doomed) {
+          if (o.bookingId === null) continue;
+          // The booking goes, and so does the capacity it was holding. A
+          // status change alone leaves the professional booked for a visit
+          // nobody is coming to.
+          await tx.booking.update({
+            where: { id: o.bookingId },
+            data: { status: 'rescheduled' },
+          });
+          await tx.staffReservation.updateMany({
+            where: { bookingItem: { bookingId: o.bookingId } },
+            data: { blocking: false },
+          });
+          await tx.resourceReservation.updateMany({
+            where: { bookingItem: { bookingId: o.bookingId } },
+            data: { blocking: false },
+          });
+          await tx.bookingStatusHistory.create({
+            data: {
+              bookingId: o.bookingId,
+              fromStatus: 'confirmed',
+              toStatus: 'rescheduled',
+              reason: input.reason,
+              actorKind: 'system',
+            },
+          });
+        }
+
+        await tx.seriesOccurrence.deleteMany({
+          where: { id: { in: doomed.map((o) => o.id) } },
+        });
+
+        // 2. The pattern itself.
+        await tx.bookingSeries.update({
+          where: { id: input.seriesId },
+          data: {
+            pattern: input.pattern.kind,
+            weekdays: [...input.pattern.weekdays],
+            intervalWeeks: input.pattern.intervalWeeks,
+            dayOfMonth: input.pattern.dayOfMonth,
+            customDates: [...input.pattern.customDates],
+            ...(input.startMin === null ? {} : { startMin: input.startMin }),
+            ...(input.anchorDay === null
+              ? {}
+              : { anchorDay: new Date(`${input.anchorDay}T00:00:00Z`) }),
+            materialisedThrough: new Date(`${input.horizonEnd}T00:00:00Z`),
+          },
+        });
+
+        // 3. Continue the ordinal past everything that survived, so a
+        //    regenerated visit can never collide with a kept one.
+        const highest = await tx.seriesOccurrence.aggregate({
+          where: { seriesId: input.seriesId },
+          _max: { index: true },
+        });
+        const from = (highest._max.index ?? -1) + 1;
+
+        const made = await tx.seriesOccurrence.createMany({
+          data: input.occurrences.map((o, i) => ({
+            seriesId: input.seriesId,
+            index: from + i,
+            plannedDay: new Date(`${o.date}T00:00:00Z`),
+            plannedStartMin: o.startMin,
+            movedFromDayOfMonth: o.movedFromDayOfMonth,
+            state: 'planned' as const,
+          })),
+          skipDuplicates: true,
+        });
+
+        SeriesRepository.log.log(
+          `series ${input.seriesId} re-patterned: ${doomed.length} cleared, ${made.count} planned`,
+        );
+
+        return { cleared: doomed.length, created: made.count };
+      },
+      { timeout: 20_000, maxWait: 10_000 },
+    );
+  }
+
   async load(seriesId: string): Promise<SeriesRow | null> {
     const s = await this.prisma.bookingSeries.findUnique({
       where: { id: seriesId },
