@@ -1,19 +1,37 @@
-// Go Style Booking: core schema (Step 2)
+// Go Style Booking: core schema
 // Everything the confirm transaction touches on the happy path.
 //
 // Two things Prisma cannot express live in prisma/migrations/ as raw SQL:
 //   1. EXCLUDE USING gist  (the anti-double-booking guarantee)
 //   2. CHECK constraints   (sanity rules on money and time)
 // Never let a `migrate dev` drop them.
+//
+// ---------------------------------------------------------------------------
+// ADDITIONS FOR booking-create.md  (marked  // + FE  throughout)
+//
+// Every addition is OPTIONAL or DEFAULTED, so the 222 existing bookings and
+// all existing code keep working untouched. Nothing was removed, nothing
+// changed type, no constraint was altered.
+//
+//   BookingProduct        new table  -- products[] in the payload
+//   Booking.bookingType   defaulted  -- SINGLE / ROUTINE
+//   Booking.netFils       nullable   -- amount_without_tax
+//   Booking.taxFils       nullable   -- tax_amount
+//   Booking.discountFils  nullable   -- discount
+//   Booking.promoCode     nullable   -- promo_code
+//   Booking.paymentMethod nullable   -- payment_method
+//   Booking.seriesId      nullable   -- convenience link for ROUTINE
+//   DepositLedger.gatewayRef is now @unique  -- payment_reference (§11.3)
+// ---------------------------------------------------------------------------
 
 // Prisma 7: the connection url lives in prisma.config.ts, not here.
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
   // REQUIRED. Prisma 7 generates ESM by default, and NestJS compiles to
   // CommonJS. Without this, the app boots under ts-node but dies under
   // plain node with "exports is not defined in ES module scope".
-  moduleFormat = "cjs"
+  moduleFormat        = "cjs"
   // Bare specifiers: "./internal/class", not "./internal/class.ts".
   //
   // tsc NEVER rewrites import specifiers. With the default of "ts",
@@ -72,10 +90,38 @@ enum SegmentKind {
   @@map("segment_kind")
 }
 
+/// + FE. booking_type in the payload.
+///
+/// `single` is the default, so every existing row is a SINGLE without a
+/// backfill. `routine` marks a booking that belongs to a BookingSeries; the
+/// recurrence RULE still lives on the series, because a pattern, an end rule
+/// and an occurrence ordinal cannot be stored on one visit.
+enum BookingType {
+  single
+  routine
+
+  @@map("booking_type")
+}
+
+/// + FE. payment_method in the PATCH payload (§11).
+///
+/// Distinct from PaymentRail below: the rail is how money physically moved
+/// through the ledger, this is what the customer picked in the app. They agree
+/// today and will not forever (a wallet top-up paid by card is rail=wallet,
+/// method=WALLET), which is why this is not reusing PaymentRail.
+enum PaymentMethod {
+  wallet
+  card
+  google
+  apple
+  others
+
+  @@map("payment_method_kind")
+}
+
 // ============================================================ booking
 
 model Booking {
-
   /// WHO THIS ROW BELONGS TO, captured and not yet enforced.
   ///
   /// Stamped from the X-Tenant-Id header on the way in (falling back to the
@@ -84,7 +130,12 @@ model Booking {
   /// hides the rows written without one. Backfill first, then filter, then
   /// make it NOT NULL -- in that order, and each step observable.
   tenantId String? @map("tenant_id")
-  id   String @id @default(uuid()) @db.Uuid
+  id       String  @id @default(uuid()) @db.Uuid
+
+  /// Also the pass_qr_code of booking-create.md §6. One value, one column:
+  /// the code IS what proves the booking at the door, so a second field
+  /// holding the same fact would be the one that goes stale. Fill it with a
+  /// random suffix, never with anything derived from the id.
   code String @unique
 
   // External ids. No FK: these rows live in other services.
@@ -93,6 +144,17 @@ model Booking {
 
   status        BookingStatus @default(draft)
   paymentStatus PaymentStatus @default(none_required) @map("payment_status")
+
+  /// + FE. SINGLE or ROUTINE. Defaulted, so no backfill.
+  bookingType BookingType @default(single) @map("booking_type")
+
+  /// + FE. Convenience link for a ROUTINE booking.
+  ///
+  /// SeriesOccurrence.bookingId remains the authoritative link -- it carries
+  /// the ordinal, which is what makes "the twelfth of twenty" survive. This
+  /// is a denormalised shortcut so a booking can name its series without a
+  /// join through the occurrence table. Write both or neither.
+  seriesId String? @map("series_id") @db.Uuid
 
   // Time, stored twice on purpose.
   // start_at/end_at  -> Postgres, for the overlap constraint
@@ -108,6 +170,23 @@ model Booking {
   depositFils       Int     @default(0) @map("deposit_fils")
   requirementSource String? @map("requirement_source")
 
+  /// + FE. The breakdown booking-create.md §2 sends.
+  ///
+  /// SNAPSHOT OF WHAT THE CLIENT DISPLAYED, not money this server verified.
+  /// There is no tax engine and no promo engine here, so §3's "recompute and
+  /// compare" cannot yet be honoured for these four. priceFils stays the only
+  /// authoritative total; do not invoice from these columns. When a tax engine
+  /// exists they become derived and this warning comes off.
+  ///
+  /// Nullable, so every existing row is valid as it stands.
+  netFils      Int?    @map("net_fils")
+  taxFils      Int?    @map("tax_fils")
+  discountFils Int?    @map("discount_fils")
+  promoCode    String? @map("promo_code")
+
+  /// + FE. What the customer chose in the app. Null until the §11 PATCH.
+  paymentMethod PaymentMethod? @map("payment_method")
+
   channel        String
   moveCount      Int     @default(0) @map("move_count") @db.SmallInt
   overbooked     Boolean @default(false)
@@ -116,6 +195,11 @@ model Booking {
   /// The payment link window. Set when a booking is confirmed on the link
   /// rail; null on every other rail. An unpaid link holds a professional and
   /// a chair exactly as a confirmed booking does, so it needs a closing time.
+  ///
+  /// THIS IS ALSO THE DRAFT HOLD WINDOW of booking-create.md §4, and the
+  /// expires_at that §10 returns. The Hold model below is the PRE-booking
+  /// step; once a booking exists its reservations hang off booking_item, so
+  /// the unpaid window lives here.
   /// Set when this booking is one participant's lane in a group.
   groupId String? @map("group_id") @db.Uuid
 
@@ -133,12 +217,14 @@ model Booking {
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   items           BookingItem[]
+  products        BookingProduct[] // + FE
   ledger          DepositLedger[]
   statusHistory   BookingStatusHistory[]
   idempotencyKeys IdempotencyKey[]
 
   @@index([branchId, tradingDay, status], map: "booking_branch_day_idx")
   @@index([customerId, startAt(sort: Desc)], map: "booking_customer_idx")
+  @@index([seriesId], map: "booking_series_idx") // + FE
   @@map("booking")
 }
 
@@ -159,6 +245,18 @@ model BookingItem {
   durationMin Int @map("duration_min") @db.SmallInt
   position    Int @db.SmallInt
 
+  /// STAYS NOT NULL, and this is the one place the FE doc cannot be met by a
+  /// schema change.
+  ///
+  /// §5 offers an empty stylists[] meaning "the salon assigns at confirm".
+  /// An item with no staffId has no StaffReservation, and a booking with no
+  /// reservation HOLDS NO TIME -- staff_reservation_no_overlap never sees it,
+  /// the slot stays sellable, and two customers are sold one chair. Making
+  /// this nullable would compile, pass tests, and double-book on a Saturday.
+  ///
+  /// The empty array is honoured by RESOLVING a qualified free professional
+  /// during create (one call to platform-api) and writing the result here.
+  /// Same outcome for the customer, guarantee intact.
   staffId String @map("staff_id") @db.Uuid
 
   staffReservations    StaffReservation[]
@@ -167,6 +265,42 @@ model BookingItem {
   @@unique([bookingId, position])
   @@index([bookingId], map: "booking_item_booking_idx")
   @@map("booking_item")
+}
+
+// ============================================================ booking_product
+// + FE. products[] in booking-create.md §2.
+//
+// A SEPARATE TABLE, not a flag on booking_item. A product has no duration, no
+// required skill and no resource type, and takes no reservation: it consumes
+// none of the day. Sharing booking_item would mean four columns that are
+// meaningless for half the rows, and every availability query would have to
+// remember to filter them out -- which one of them eventually would not.
+//
+// Stock is NOT tracked here. This records what was sold with the visit; the
+// inventory that decrements lives in platform-api.
+
+model BookingProduct {
+  id        String  @id @default(uuid()) @db.Uuid
+  bookingId String  @map("booking_id") @db.Uuid
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  // The same snapshot discipline as booking_item: the catalogue moves, the
+  // sold line does not.
+  productId   String @map("product_id") @db.Uuid
+  productName String @map("product_name")
+
+  /// Unit price, whole fils. Line total is priceFils * quantity.
+  priceFils Int @map("price_fils")
+  quantity  Int @default(1) @db.SmallInt
+
+  /// The order the customer picked them in, same rule as items.
+  position Int @db.SmallInt
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([bookingId, position], map: "booking_product_position_uniq")
+  @@index([bookingId], map: "booking_product_booking_idx")
+  @@map("booking_product")
 }
 
 // ============================================================ hold
@@ -302,9 +436,17 @@ model DepositLedger {
   entryType  LedgerEntryType @map("entry_type")
   amountFils Int             @map("amount_fils")
 
-  rail             PaymentRail?
-  gatewayRef       String?      @map("gateway_ref")
-  posTransactionId String?      @map("pos_transaction_id")
+  rail PaymentRail?
+
+  /// Also the payment_reference of booking-create.md §11.
+  ///
+  /// + FE: now @unique. Rule 3 -- "the same reference patched twice returns
+  /// the same booking rather than recording a second payment" -- is not a
+  /// rule until the database refuses the second row. The index is PARTIAL in
+  /// the migration (WHERE gateway_ref IS NOT NULL) because cash, internal and
+  /// course_draw entries carry no reference and must stay duplicable.
+  gatewayRef       String? @unique @map("gateway_ref")
+  posTransactionId String? @map("pos_transaction_id")
 
   // A reversal or partial refund names the row it corrects.
   linkedEntryId String?         @map("linked_entry_id") @db.Uuid
@@ -358,6 +500,9 @@ model EventOutbox {
   lastError   String?   @map("last_error")
 
   @@index([aggregateType, aggregateId], map: "event_outbox_aggregate_idx")
+  /// + FE. The publisher claims on "publishedAt IS NULL ORDER BY createdAt".
+  /// Without this it scans the whole table on every poll, forever.
+  @@index([createdAt], map: "event_outbox_unpublished_idx")
   @@map("event_outbox")
 }
 
@@ -369,6 +514,13 @@ model IdempotencyKey {
 
   responseStatus Int?  @map("response_status") @db.SmallInt
   responseBody   Json? @map("response_body")
+
+  /// + FE. §7: "Keys are scoped to the customer."
+  ///
+  /// Nullable so existing rows stay valid. Without it, one customer's key
+  /// collides with another's and the second caller is handed back the first
+  /// caller's booking -- a leak, not just a bug.
+  customerId String? @map("customer_id") @db.Uuid
 
   bookingId String?  @map("booking_id") @db.Uuid
   booking   Booking? @relation(fields: [bookingId], references: [id], onDelete: SetNull)
@@ -394,7 +546,6 @@ enum WaitlistStatus {
 }
 
 model WaitlistEntry {
-
   /// WHO THIS ROW BELONGS TO, captured and not yet enforced.
   ///
   /// Stamped from the X-Tenant-Id header on the way in (falling back to the
@@ -403,7 +554,7 @@ model WaitlistEntry {
   /// hides the rows written without one. Backfill first, then filter, then
   /// make it NOT NULL -- in that order, and each step observable.
   tenantId String? @map("tenant_id")
-  id String @id @default(uuid()) @db.Uuid
+  id       String  @id @default(uuid()) @db.Uuid
 
   branchId   String @map("branch_id") @db.Uuid
   customerId String @map("customer_id") @db.Uuid
@@ -470,7 +621,6 @@ enum GroupArrangement {
 }
 
 model BookingGroup {
-
   /// WHO THIS ROW BELONGS TO, captured and not yet enforced.
   ///
   /// Stamped from the X-Tenant-Id header on the way in (falling back to the
@@ -479,7 +629,7 @@ model BookingGroup {
   /// hides the rows written without one. Backfill first, then filter, then
   /// make it NOT NULL -- in that order, and each step observable.
   tenantId String? @map("tenant_id")
-  id String @id @default(uuid()) @db.Uuid
+  id       String  @id @default(uuid()) @db.Uuid
 
   branchId    String @map("branch_id") @db.Uuid
   organiserId String @map("organiser_id") @db.Uuid
@@ -552,6 +702,13 @@ model GroupParticipant {
 // The definition is the series. Each generated visit is an occurrence, which
 // is an ordinary booking with a link back. Everything that works on a booking
 // works on an occurrence unchanged.
+//
+// + FE: booking_type: "ROUTINE" in booking-create.md §2 names THIS. The
+// payload carries no recurrence rule -- no frequency, no end date, no count --
+// so POST /booking cannot build a series from it. Either the payload grows a
+// `recurrence` object matching the fields below, or ROUTINE is created here
+// and POST /booking rejects it. Nothing in the schema decides that; the two
+// teams do.
 
 enum RecurrencePattern {
   weekly
@@ -603,7 +760,6 @@ enum OccurrenceState {
 }
 
 model BookingSeries {
-
   /// WHO THIS ROW BELONGS TO, captured and not yet enforced.
   ///
   /// Stamped from the X-Tenant-Id header on the way in (falling back to the
@@ -612,7 +768,7 @@ model BookingSeries {
   /// hides the rows written without one. Backfill first, then filter, then
   /// make it NOT NULL -- in that order, and each step observable.
   tenantId String? @map("tenant_id")
-  id String @id @default(uuid()) @db.Uuid
+  id       String  @id @default(uuid()) @db.Uuid
 
   branchId   String @map("branch_id") @db.Uuid
   customerId String @map("customer_id") @db.Uuid
@@ -733,7 +889,6 @@ enum WorklistItemState {
 }
 
 model RosterChange {
-
   /// WHO THIS ROW BELONGS TO, captured and not yet enforced.
   ///
   /// Stamped from the X-Tenant-Id header on the way in (falling back to the
@@ -742,7 +897,7 @@ model RosterChange {
   /// hides the rows written without one. Backfill first, then filter, then
   /// make it NOT NULL -- in that order, and each step observable.
   tenantId String? @map("tenant_id")
-  id String @id @default(uuid()) @db.Uuid
+  id       String  @id @default(uuid()) @db.Uuid
 
   branchId   String   @map("branch_id") @db.Uuid
   tradingDay DateTime @map("trading_day") @db.Date
@@ -750,7 +905,7 @@ model RosterChange {
   kind RosterChangeKind
 
   /// The professional going off, for a shift conflict.
-  staffId String? @map("staff_id") @db.Uuid
+  staffId      String? @map("staff_id") @db.Uuid
   /// The chair type going out of service.
   resourceType String? @map("resource_type")
 
@@ -817,7 +972,6 @@ enum WalkInStatus {
 }
 
 model WalkInEntry {
-
   /// WHO THIS ROW BELONGS TO, captured and not yet enforced.
   ///
   /// Stamped from the X-Tenant-Id header on the way in (falling back to the
@@ -826,7 +980,7 @@ model WalkInEntry {
   /// hides the rows written without one. Backfill first, then filter, then
   /// make it NOT NULL -- in that order, and each step observable.
   tenantId String? @map("tenant_id")
-  id String @id @default(uuid()) @db.Uuid
+  id       String  @id @default(uuid()) @db.Uuid
 
   branchId   String   @map("branch_id") @db.Uuid
   tradingDay DateTime @map("trading_day") @db.Date
