@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { ResourceIdPipe } from './resource-id.pipe';
 import {
   ApiCreatedResponse,
@@ -96,7 +104,16 @@ export class SeatWalkInDto {
  * any customer token before this decorator.
  */
 @ApiTags('walk-ins')
-@Controller('walk-ins')
+/**
+ * TWO PATHS, ONE CONTROLLER.
+ *
+ * The front-end contract mounts everything under /v1/bookings/*; this
+ * service mounted by aggregate. Nest takes an array of controller paths, so
+ * both spellings reach the SAME handlers -- no second controller, no
+ * forwarding, nothing to drift. The aggregate path stays because existing
+ * clients use it.
+ */
+@Controller(['walk-ins', 'bookings/walk-ins'])
 @DeskOnly()
 export class WalkInsController {
   constructor(private readonly handler: WalkInHandler) {}
@@ -149,6 +166,19 @@ export class WalkInsController {
     @Body() dto: SeatWalkInDto,
   ): Promise<unknown> {
     return this.handler.seat(id, dto.startMin, dto.staffId);
+  }
+
+  @Delete(':id')
+  @ApiOperation({
+    summary: 'Leave the queue',
+    description:
+      'The contract spells this DELETE; the POST below is the original and ' +
+      'stays for existing callers. Same handler, so they cannot diverge.',
+  })
+  async remove(
+    @Param('id', ResourceIdPipe) id: string,
+  ): Promise<{ left: boolean }> {
+    return this.handler.leave(id);
   }
 
   @Post(':id/leave')

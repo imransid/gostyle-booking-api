@@ -103,7 +103,16 @@ export class ResolveItemDto {
  * may take them -- a customer token committed a roster change before this.
  */
 @ApiTags('roster-changes')
-@Controller('roster-changes')
+/**
+ * TWO PATHS, ONE CONTROLLER.
+ *
+ * The front-end contract mounts everything under /v1/bookings/*; this
+ * service mounted by aggregate. Nest takes an array of controller paths, so
+ * both spellings reach the SAME handlers -- no second controller, no
+ * forwarding, nothing to drift. The aggregate path stays because existing
+ * clients use it.
+ */
+@Controller(['roster-changes', 'bookings/conflicts'])
 @DeskOnly()
 export class RosterChangesController {
   constructor(private readonly handler: RosterChangeHandler) {}

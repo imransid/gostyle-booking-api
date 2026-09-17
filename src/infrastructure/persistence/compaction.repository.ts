@@ -51,6 +51,9 @@ export class CompactionRepository {
         durationMin: true,
         customerId: true,
         groupId: true,
+        // Feeds the "moved too often" rule. Without it the planner assumes
+        // every booking is untouched and cheerfully proposes a fourth move.
+        moveCount: true,
         items: {
           select: { staffId: true, resourceType: true },
           orderBy: { position: 'asc' },
@@ -99,6 +102,7 @@ export class CompactionRepository {
           staffId: this.staff.toSlug(b.items[0]?.staffId ?? ''),
           startMin: b.startMinute,
           endMin: b.startMinute + b.durationMin,
+          moveCount: b.moveCount,
           ...(ineligible === undefined ? {} : { ineligible }),
         },
         customerId: b.customerId,

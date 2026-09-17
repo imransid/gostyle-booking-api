@@ -37,6 +37,10 @@ import {
   type CustomerContextReader,
 } from '@application/ports/customer-context.port';
 import { formatMinute } from '@domain/availability/grid';
+import {
+  IdempotencyRepository,
+  hashRequestBody,
+} from '@infrastructure/persistence/idempotency.repository';
 import { priceOf } from './confirm-booking.handler';
 import type { BookingStatus } from '@domain/booking/lifecycle';
 
@@ -51,6 +55,15 @@ export interface CreateSeriesCommand {
     'auto_confirm_on_schedule' | 'ask_each_time' | 'vip_standing';
   readonly serviceId: string;
   readonly preferredStaffId: string | null;
+  /**
+   * Idempotency-Key. A retried create must not make a SECOND series.
+   *
+   * Optional here rather than required, because the aggregate route has
+   * existing callers that do not send one. When it is absent the handler
+   * derives a key from the request itself, which closes the double-create
+   * hole for them too -- the same trick confirm uses with `hold:<id>`.
+   */
+  readonly idempotencyKey?: string | undefined;
   readonly course: {
     readonly totalNetFils: number;
     readonly visits: number;
@@ -63,17 +76,52 @@ export interface SeriesView {
   readonly horizonEnd: string;
   readonly explanation: string;
   readonly firstOccurrences: readonly string[];
+  /** True when this answer came from a stored response, not a new series. */
+  readonly replayed?: boolean;
 }
+
+/** The operation name stored beside the key, for support. */
+const SERIES_OPERATION = 'POST /v1/series';
 
 @Injectable()
 export class CreateSeriesHandler {
   constructor(
     private readonly repo: SeriesRepository,
+    private readonly idempotency: IdempotencyRepository,
     @Inject(BOOKING_CONTEXT) private readonly context: BookingContextReader,
     @Inject(CUSTOMER_CONTEXT) private readonly customers: CustomerContextReader,
   ) {}
 
   async execute(cmd: CreateSeriesCommand): Promise<SeriesView> {
+    /**
+     * THE REAL BUG THIS CLOSES. A retried create made a second series --
+     * a standing weekly appointment duplicated for a year, with the customer
+     * finding out before we did. `POST /v1/bookings` has replayed correctly
+     * since it was written; this route never read the header at all.
+     *
+     * The fingerprint is everything that DEFINES the series. Two creates
+     * with the same customer, service, anchor, time and pattern are the same
+     * intent whether or not anyone sent a key.
+     */
+    const fingerprint = hashRequestBody({
+      branchId: cmd.branchId,
+      customerId: cmd.customerId,
+      anchorDay: cmd.anchorDay,
+      startMin: cmd.startMin,
+      pattern: cmd.pattern,
+      end: cmd.end,
+      serviceId: cmd.serviceId,
+      autoConfirmRule: cmd.autoConfirmRule,
+    });
+    const key = cmd.idempotencyKey ?? `series:${fingerprint}`;
+
+    const replay = await this.idempotency.replay<SeriesView>(
+      key,
+      SERIES_OPERATION,
+      fingerprint,
+    );
+    if (replay !== null) return replay;
+
     const services = await this.context.loadServices(cmd.branchId, [
       cmd.serviceId,
     ]);
@@ -139,7 +187,7 @@ export class CreateSeriesHandler {
       horizonEnd: expansion.horizonEnd,
     });
 
-    return {
+    const view: SeriesView = {
       seriesId: created.seriesId,
       planned: created.planned,
       horizonEnd: expansion.horizonEnd,
@@ -148,6 +196,25 @@ export class CreateSeriesHandler {
         .slice(0, 5)
         .map((o) => `${o.date} ${formatMinute(o.startMin)}`),
     };
+
+    /**
+     * REMEMBERED AFTER THE WRITE, not inside its transaction.
+     *
+     * The series row is what must not be duplicated, and it already exists by
+     * the time this runs. If remembering fails the series is still correct --
+     * a later retry simply gets a fresh one, which is the behaviour we have
+     * today. Failing the whole create because the receipt could not be filed
+     * would be strictly worse.
+     */
+    await this.idempotency.remember({
+      key,
+      operation: SERIES_OPERATION,
+      requestHash: fingerprint,
+      status: 201,
+      body: view,
+    });
+
+    return view;
   }
 }
 

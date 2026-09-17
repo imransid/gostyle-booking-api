@@ -11,6 +11,7 @@ import { PersistenceModule } from './infrastructure/persistence/persistence.modu
 import { APP_GUARD } from '@nestjs/core';
 import { BookingAuthGuard } from './auth/booking-auth.guard';
 import { TenantMiddleware } from './infrastructure/tenancy/tenant.middleware';
+import { BranchMiddleware } from './infrastructure/tenancy/branch.middleware';
 
 @Module({
   imports: [
@@ -30,6 +31,6 @@ export class AppModule implements NestModule {
    * same header.
    */
   configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(TenantMiddleware).forRoutes('*');
+    consumer.apply(TenantMiddleware, BranchMiddleware).forRoutes('*');
   }
 }

@@ -133,7 +133,16 @@ export class CatalogueQueryDto {
 }
 
 @ApiTags('availability')
-@Controller('availability')
+/**
+ * TWO PATHS, ONE CONTROLLER.
+ *
+ * The front-end contract mounts everything under /v1/bookings/*; this
+ * service mounted by aggregate. Nest takes an array of controller paths, so
+ * both spellings reach the SAME handlers -- no second controller, no
+ * forwarding, nothing to drift. The aggregate path stays because existing
+ * clients use it.
+ */
+@Controller(['availability', 'bookings/availability'])
 @Public()
 export class AvailabilityController {
   constructor(

@@ -58,6 +58,18 @@ import { StaffGrpcModule } from './infrastructure/grpc/staff-grpc.module';
 import { StaffDirectoryController } from '@interface/http/staff-directory.controller';
 import { ListStylistsHandler } from '@application/queries/list-stylists.handler';
 
+import { ReadModelsController } from '@interface/http/read-models.controller';
+import { MoneyController } from '@interface/http/money.controller';
+import { DeskExtrasController } from '@interface/http/desk-extras.controller';
+import { DeskExtrasHandler } from '@application/commands/desk-extras.handler';
+import { MoneyRepository } from '@infrastructure/persistence/money.repository';
+import {
+  CustomerRiskController,
+  DeskActionsController,
+} from '@interface/http/desk-actions.controller';
+import { DeskActionsHandler } from '@application/commands/desk-actions.handler';
+import { BookingReadHandler } from '@application/queries/read-models.handler';
+import { ReadModelRepository } from '@infrastructure/persistence/read-model.repository';
 import { ServicesGrpcModule } from './infrastructure/grpc/services-grpc.module';
 import { ServicesDirectoryController } from '@interface/http/services-directory.controller';
 import { ListServicesHandler } from '@application/queries/list-services.handler';
@@ -81,6 +93,11 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     // route-order.spec.ts, not left to memory.
     ServicesDirectoryController,
     SettingsController,
+    ReadModelsController,
+    MoneyController,
+    DeskExtrasController,
+    DeskActionsController,
+    CustomerRiskController,
     EligibleStaffController,
     StaffDirectoryController,
     QuoteController,
@@ -101,6 +118,11 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
   ],
   providers: [
     GetSettingsHandler,
+    BookingReadHandler,
+    MoneyRepository,
+    DeskExtrasHandler,
+    DeskActionsHandler,
+    ReadModelRepository,
     GetQuoteHandler,
     GroupAvailabilityHandler,
     SeriesPreviewHandler,

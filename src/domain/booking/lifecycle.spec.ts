@@ -21,6 +21,10 @@ import {
   AUTO_NO_SHOW_MIN,
   type BookingStatus,
   type CheckInGates,
+  canUndoCheckIn,
+  UNDO_WINDOW_MIN,
+  shortenTo,
+  MIN_SHORTENED_MIN,
 } from './lifecycle';
 
 const ALL: BookingStatus[] = [
@@ -407,5 +411,57 @@ describe('money is never invented or destroyed', () => {
       initiatedBy: 'customer',
     });
     expect(balances(o, 12345)).toBe(true);
+  });
+});
+
+describe('check-in undo', () => {
+  const at = (
+    minutesAgo: number,
+  ): { checkedInAtMs: number; nowMs: number } => ({
+    checkedInAtMs: 1_000_000,
+    nowMs: 1_000_000 + minutesAgo * 60_000,
+  });
+
+  it('is allowed immediately', () => {
+    expect(canUndoCheckIn(at(0)).kind).toBe('allowed');
+  });
+
+  it('is allowed right up to the window', () => {
+    expect(canUndoCheckIn(at(UNDO_WINDOW_MIN)).kind).toBe('allowed');
+  });
+
+  it('is refused past it, and says how long ago', () => {
+    const v = canUndoCheckIn(at(UNDO_WINDOW_MIN + 3));
+    expect(v.kind).toBe('too_late');
+    if (v.kind !== 'too_late') throw new Error('unreachable');
+    expect(v.minutesAgo).toBe(UNDO_WINDOW_MIN + 3);
+  });
+
+  it('is a legal transition back to confirmed, for the salon only', () => {
+    const t = TRANSITIONS.find(
+      (x) => x.from === 'checked_in' && x.to === 'confirmed',
+    );
+    expect(t, 'checked_in -> confirmed must exist').toBeDefined();
+    expect(t!.requiresReason).toBe(true);
+    expect(t!.allowedActors).not.toContain('customer');
+  });
+});
+
+describe('shortenTo', () => {
+  it('shortens to what was asked', () => {
+    expect(shortenTo({ originalMin: 60, requestedMin: 30 })).toBe(30);
+  });
+
+  it('refuses to lengthen, which is a different operation entirely', () => {
+    expect(shortenTo({ originalMin: 60, requestedMin: 90 })).toBeNull();
+    expect(shortenTo({ originalMin: 60, requestedMin: 60 })).toBeNull();
+  });
+
+  it('refuses a stub too short to be a real visit', () => {
+    // A ten-minute haircut is a disappointed customer, not a service.
+    expect(shortenTo({ originalMin: 60, requestedMin: 10 })).toBeNull();
+    expect(
+      shortenTo({ originalMin: 60, requestedMin: MIN_SHORTENED_MIN }),
+    ).toBe(MIN_SHORTENED_MIN);
   });
 });

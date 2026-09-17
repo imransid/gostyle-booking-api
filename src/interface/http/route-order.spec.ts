@@ -67,15 +67,42 @@ function fileFor(className: string): string | null {
   return null;
 }
 
+/**
+ * A controller's base paths.
+ *
+ * Nest accepts `@Controller('a')` AND `@Controller(['a', 'b'])`, and the
+ * array form registers every route under BOTH prefixes. The aliases that
+ * mount the aggregate controllers under /v1/bookings/* use it.
+ *
+ * Parsing only the single-string form returned '' for an aliased controller,
+ * which put `@Get(':id')` at the ROOT of the route table and made this spec
+ * report that it shadowed /health. The report was wrong, but the reason it
+ * appeared was right: an unparsed base path is an unchecked base path.
+ */
+function basePathsOf(src: string): string[] {
+  const decorator = /@Controller\(\s*(\[[^\]]*\]|'[^']*')?\s*\)/.exec(src)?.[1];
+  if (decorator === undefined) return [''];
+  if (!decorator.startsWith('[')) return [decorator.replace(/'/g, '')];
+  return [...decorator.matchAll(/'([^']*)'/g)].map((m) => m[1]!);
+}
+
 function routesOf(file: string, className: string): Route[] {
   const src = stripComments(readFileSync(join(HTTP, file), 'utf8'));
-  const base = /@Controller\(\s*(?:'([^']*)')?\s*\)/.exec(src)?.[1] ?? '';
+  const bases = basePathsOf(src);
   const out: Route[] = [];
   src.split('\n').forEach((text, i) => {
     const m = /@(Get|Post|Patch|Put|Delete)\(\s*(?:'([^']*)')?\s*\)/.exec(text);
     if (m === null) return;
-    const full = [base, m[2] ?? ''].filter(Boolean).join('/');
-    out.push({ method: m[1]!, path: full, controller: className, line: i + 1 });
+    // EVERY base, because every base is a real registered path.
+    for (const base of bases) {
+      const full = [base, m[2] ?? ''].filter(Boolean).join('/');
+      out.push({
+        method: m[1]!,
+        path: full,
+        controller: className,
+        line: i + 1,
+      });
+    }
   });
   return out;
 }
@@ -95,6 +122,35 @@ function routeTable(): Route[] {
     return file === null ? [] : routesOf(file, cls);
   });
 }
+
+describe('base path parsing', () => {
+  it('reads a single-string controller path', () => {
+    expect(basePathsOf("@Controller('holds')")).toEqual(['holds']);
+  });
+
+  it('reads BOTH paths of an aliased controller', () => {
+    // The alias is what mounts /v1/walk-ins ALSO at /v1/bookings/walk-ins.
+    // Missing the second one means half the route table is unchecked.
+    expect(
+      basePathsOf("@Controller(['walk-ins', 'bookings/walk-ins'])"),
+    ).toEqual(['walk-ins', 'bookings/walk-ins']);
+  });
+
+  it('falls back to the root for a controller with no path', () => {
+    expect(basePathsOf('@Controller()')).toEqual(['']);
+  });
+
+  it('finds at least one aliased controller in the codebase', () => {
+    const aliased = readdirSync(HTTP)
+      .filter((f) => f.endsWith('.controller.ts'))
+      .filter(
+        (f) =>
+          basePathsOf(stripComments(readFileSync(join(HTTP, f), 'utf8')))
+            .length > 1,
+      );
+    expect(aliased.length).toBeGreaterThan(0);
+  });
+});
 
 describe('route registration order', () => {
   it('reads the module and finds every controller', () => {
