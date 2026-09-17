@@ -33,3 +33,59 @@ export function isExclusionViolation(e: unknown): boolean {
       .meta?.driverAdapterError?.cause?.code === '23P01'
   );
 }
+
+/**
+ * Postgres SQLSTATE 23505, unique_violation, NAMING THE COLUMN.
+ *
+ * Which column matters, because two very different things arrive as P2002 in
+ * the confirm path and only one of them is a retry:
+ *
+ *   idempotency_key.key   the same request twice -> replay the booking
+ *   deposit_ledger.gateway_ref  a DIFFERENT request reusing a payment intent
+ *
+ * Treating the second as the first looks up a replay that is not there and
+ * rethrows, so a foreseeable client mistake reached the caller as a 500.
+ *
+ * The adapter's shape, read off a real failure rather than guessed:
+ *
+ *   PrismaClientKnownRequestError
+ *     .code                                               "P2002"
+ *     .meta.driverAdapterError.cause.originalCode         "23505"
+ *     .meta.driverAdapterError.cause.constraint.fields    ["gateway_ref"]
+ *
+ * `meta.target` is the classic (pre-adapter) spelling and is still checked,
+ * so this keeps working if the driver adapter is ever swapped out.
+ */
+export function isUniqueViolationOn(e: unknown, field: string): boolean {
+  return uniqueViolationFields(e).includes(field);
+}
+
+/** The columns a unique violation names, or empty for any other error. */
+export function uniqueViolationFields(e: unknown): readonly string[] {
+  if (typeof e !== 'object' || e === null) return [];
+
+  const err = e as {
+    code?: unknown;
+    meta?: {
+      target?: unknown;
+      driverAdapterError?: {
+        cause?: { originalCode?: unknown; constraint?: { fields?: unknown } };
+      };
+    };
+  };
+
+  const cause = err.meta?.driverAdapterError?.cause;
+  const isUnique = err.code === 'P2002' || cause?.originalCode === '23505';
+  if (!isUnique) return [];
+
+  const fields = cause?.constraint?.fields;
+  if (Array.isArray(fields)) return fields.filter((f) => typeof f === 'string');
+
+  // Classic Prisma: meta.target, either a list of columns or a constraint
+  // name as a bare string.
+  const target = err.meta?.target;
+  if (Array.isArray(target)) return target.filter((t) => typeof t === 'string');
+  if (typeof target === 'string') return [target];
+
+  return [];
+}

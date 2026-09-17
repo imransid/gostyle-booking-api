@@ -3,6 +3,7 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { corsOptions } from './cors';
 
 async function bootstrap(): Promise<void> {
   // rawBody keeps the exact bytes the client sent, alongside the parsed body.
@@ -13,6 +14,11 @@ async function bootstrap(): Promise<void> {
   // common way this integration gets quietly broken, and it fails closed:
   // every webhook is rejected as forged.
   const app = await NestFactory.create(AppModule, { rawBody: true });
+
+  // Browsers only. curl and Swagger never needed this, which is exactly why
+  // it was missing: see src/cors.ts for the allowlist and for why
+  // Idempotency-Key has to be named in it.
+  app.enableCors(corsOptions());
 
   // Every route is /v1/*, except the health probe.
   //
