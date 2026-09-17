@@ -12,7 +12,7 @@
 
 ---
 
-## 1. Read this first — five things that changed
+## 1. Read this first — six things that changed
 
 **1. Every refusal now carries a machine-readable `code`.** You no longer have to string-match
 error messages. The prose stays, because a desk agent reads it aloud, but you branch on `code`.
@@ -30,6 +30,11 @@ send one — that is fixed.
 
 **5. Money is minor units (fils) on the wire.** Your module contract asked for whole AED; we
 publish both (`priceMinor` **and** `price`). See §9 — this is one of the open decisions.
+
+**6. `POST /v1/series` used to double-create on retry.** It never read `Idempotency-Key`, so a
+retried create made a second standing appointment for a year. Fixed, and the same store now
+backs every keyed route. Even without a key, a create is now deduplicated by its own
+fingerprint.
 
 ---
 
@@ -324,8 +329,8 @@ The detail drawer adds the **worked policy maths** so the desk can answer a disp
 ```
 GET  /v1/bookings/walk-ins?branchId=&tradingDay=&nowMin=
 POST /v1/bookings/walk-ins
-POST /v1/bookings/walk-ins/{id}/seat
-POST /v1/bookings/walk-ins/{id}/leave
+POST   /v1/bookings/walk-ins/{id}/seat
+DELETE /v1/bookings/walk-ins/{id}          ← leave the queue
 ```
 
 Each queue row carries `waitingMin` and a live `quote` from **the same availability engine the
@@ -337,11 +342,16 @@ take a phone here, so "a matching phone attaches to the existing customer" does 
 ### 3.7 Waitlist — `/bookings/waitlist`
 
 ```
-GET  /v1/bookings/waitlist
-POST /v1/bookings/waitlist
-POST /v1/bookings/waitlist/{id}/accept
-POST /v1/bookings/waitlist/{id}/decline
+GET    /v1/bookings/waitlist
+POST   /v1/bookings/waitlist
+POST   /v1/bookings/waitlist/{id}/accept
+POST   /v1/bookings/waitlist/{id}/decline
+DELETE /v1/bookings/waitlist/{id}          ← leave the list
 ```
+
+Both `DELETE`s are **idempotent and never 404**: leaving twice, or leaving an entry that already
+lapsed, answers `{ "left": false }`. A desk that cannot tell a double-click from a real error
+will retry, and a 404 makes that retry look like a bug.
 
 ```json
 {
@@ -375,8 +385,11 @@ omission — see §9.
 ### 3.8 Check-in drawer
 
 ```
-GET  /v1/bookings/{id}/check-in      ← the gates
-POST /v1/bookings/{id}/check-in      ← perform it
+GET  /v1/bookings/{id}/check-in        ← the gates
+POST /v1/bookings/{id}/check-in        ← perform it
+POST /v1/bookings/{id}/check-in/undo   ← within 5 minutes
+POST /v1/bookings/{id}/shorten         ← triage a late arrival
+POST /v1/bookings/{id}/waiver          ← manager only
 ```
 
 ```json
@@ -409,6 +422,50 @@ untested client gets a colour service. Render the null as "unknown", not as a gr
 
 `availableChairs` is free/busy **by resource class**, not individual named chairs — this service
 models capacity as counted units per class, not a chair map.
+
+**Undo** is valid for five minutes and returns the booking to `CONFIRMED`, releasing the chair.
+Past that it is refused — by then the station has been given away, and undoing would be a claim
+that the customer never arrived.
+
+**Shorten** triages a late arrival down to what still fits:
+
+```json
+POST /v1/bookings/{id}/shorten
+{ "toDurationMinutes": 30, "reason": "arrived 15 min late" }
+
+200 { "code": "GS-1003", "fromDurationMinutes": 45,
+      "toDurationMinutes": 30, "releasedMinutes": 15 }
+```
+
+The **reservations shrink with the booking**, so those 15 minutes are genuinely back in the
+diary rather than freed on paper. Anything under 15 minutes is refused: that is a disappointed
+customer, not a service — rebook or record a no-show instead.
+
+**Waiver** is manager-only and writes an audited `booking.patch_test_waived` event carrying who
+waived it and why. The question support asks months later is "who waived this", and a boolean
+on the booking cannot answer it.
+
+### 3.9 Reminders
+
+```
+POST /v1/bookings/{id}/remind
+POST /v1/bookings/reminders/bulk      { "limit": 50 }
+```
+
+```json
+{ "sent": false, "queued": true, "channel": "OUTBOX",
+  "queuedUntil": "2026-09-18T05:00:00.000Z",
+  "explanation": "Inside quiet hours. It will go out at 09:00 this morning.",
+  "delivered": false,
+  "note": "No message transport is wired yet; the event is queued in the outbox." }
+```
+
+**Quiet hours (21:00–09:00) queue rather than fail.** A desk agent pressing this at 22:30 wants
+the customer reminded, not woken; refusing would only move the waiting onto a person.
+
+**`delivered` is always `false`.** The event is written to the outbox and will be relayed, but
+nothing in this service actually sends a WhatsApp. A `sent: true` meaning "we wrote a row" is a
+lie the desk would act on, so both fields are published and they mean different things.
 
 ---
 
@@ -514,6 +571,37 @@ Idempotency-Key: 5f3a…
 
 `rail` ∈ `WALLET` · `CARD` · `APPLE_PAY` · `CASH` · `LINK` · `INTERNAL`.
 
+### Late capture
+
+```
+POST /v1/bookings/{code}/late-capture
+{ "intentId": "pi_abc123", "amountMinor": 24000, "rail": "CARD" }
+```
+
+Money that arrived after the payment window closed. Runs **the same decision the gateway webhook
+runs** — reinstate if the slot survived, refund in full if it was resold — because a second copy
+of that rule matters most exactly when it disagrees. Normally the webhook drives this; the
+endpoint exists so the desk can replay it.
+
+### Course draw
+
+```
+POST /v1/bookings/series-admin/{seriesId}/course-draw
+{ "bookingId": "bk_…" }
+
+200
+{ "visit": 1, "of": 6,
+  "drawnMinor": 31500, "drawnDisplay": "AED 315.00",
+  "netMinor": 30000, "vatMinor": 1500,
+  "remainingMinor": 157500, "remainingDisplay": "AED 1575.00",
+  "endsCourse": false, "tender": "Course credit applied" }
+```
+
+The amount comes from the draw **schedule**, not a division — the draws must sum back to exactly
+what was sold, or the course never closes at zero and somebody shuts it by hand. **VAT is
+recognised per draw**, not at the point of sale: the salon has not earned the sixth visit's
+revenue on the day the course is bought.
+
 **Goodwill and revive are alternatives, not a sequence.** Both credit the same forfeited
 deposit, so doing both hands it back twice. `revive` refuses when a goodwill credit already
 exists and tells you to apply that credit instead. (Found by doing exactly that against a
@@ -600,33 +688,68 @@ Aliased under `/v1/bookings/*`; the original aggregate paths still work.
 3. The commit gate is a **database trigger**, so a caller that ignores it is refused anyway.
    That is your `BOOKING_SCAN_PENDING`.
 
-Compaction honours every limit you specified: at most 3 moves, at most 30 minutes each, singles
-only (groups, series occurrences and anything not confirmed are excluded), sliver threshold 25
-minutes, and every move **re-validated at apply time**, not at plan time. The one limit missing
-is your `moveCount >= 3` exclusion.
+Compaction honours **every** limit you specified: at most 3 moves, at most 30 minutes each,
+singles only (groups, series occurrences and anything not confirmed are excluded), sliver
+threshold 25 minutes, a booking already moved three times is left alone, and every move is
+**re-validated at apply time**, not at plan time.
 
 ---
 
 ## 8. Not built — do not design around these
 
-Listed plainly so you can plan. None of it is faked; where an endpoint would have to invent
-data, it returns an empty list or a null rather than something plausible.
+Everything the contract asked for that could be built without a provider or an owner decision
+now exists. What is left is listed plainly, and none of it is faked: where an endpoint would
+have to invent data it returns an empty list or a null rather than something plausible.
+
+### Blocked on a decision that is not ours
 
 | Area | State |
 | ---- | ----- |
-| **Payment intents** | No provider is wired. We never create an intent; we consume gateway webhooks. Your card sheet is blocked on this. |
-| **Notifications** | Nothing sends a message. The reminder ladder decides *which* rung is due (24 h / 3 h / T−15) and records that it fired; there is no transport. No quiet hours anywhere. `messageLog` is always `[]`. |
-| **`POST /{id}/remind`, `/reminders/bulk`** | Not built — the ladder is scheduler-driven only. |
-| **Realtime (§20)** | No socket. The events themselves exist and are correct — a transactional outbox writes `booking.confirmed`, `booking.rescheduled`, `waitlist.offered` and more in the same commit as the change — but the publisher currently writes to the log. Transport is an infrastructure decision. |
-| **Customer endpoints** | Only `GET /v1/customers/{id}/risk` exists. No `require-deposit` writer, no merge, no 3-settled-visit expiry. The flag is *read* by the deposit ladder; nothing writes it. |
-| **Check-in extras** | No `undo`, `shorten`, `patch-test` or `waiver`. |
-| **Series writes** | No `pattern` write (the scope planner exists as a **GET** `…/edit-scope`), no `confirm-ask`, no `course-draw` endpoint. Course draw-down logic exists in the domain, unrouted. |
-| **`POST /webhooks/messaging`** | Not built. |
-| **Jobs** | Running: series materialiser (nightly 02:00), auto no-show (60 s), hold + waitlist expiry (30 s), reminder ladder (60 s), payment-link sweeper (60 s). **Missing:** confirm-ask expiry, risk-flag expiry. |
+| **Payment intents** | No provider is wired. We never create an intent; we consume gateway webhooks. Your card sheet is blocked on this, and nothing else is. |
+| **Message delivery** | Reminders, consent asks and confirm asks all **queue correctly** — the event is written, quiet hours are enforced, `queuedUntil` is populated. Nothing sends. `delivered` is always `false` and `messageLog` is always `[]`. Wiring a transport is a provider choice. |
+| **`POST /v1/webhooks/messaging`** | Not built; there is nothing on the other end of it yet. |
+| **Realtime (§20)** | No socket. The events exist and are correct — a transactional outbox writes them in the same commit as the change — but the publisher currently writes to the log. Transport is an infrastructure decision. |
+| **Customer writes** | `GET /v1/customers/{id}/risk` exists. `require-deposit` and `merge` write to the **customer service's** record, which this module reads through a port and cannot write. The nightly sweep now identifies who has earned a flag lift and emits `customer.deposit_flag_liftable`; consuming it needs an endpoint on their side. |
 | **Per-branch config** | There is no branch table. Grace, cancel windows, sliver threshold and hold TTL are constants — correct values, wrong storage. `GET /v1/bookings/settings` publishes them and is explicit that it is not a configuration surface. |
 | **Tenant isolation** | `X-Tenant-Id` is captured and stored. **Nothing filters on it.** Do not build UI that assumes isolation. |
-| **Idempotency** | Enforced on `POST /v1/bookings` and on all four money actions. **Not** on the other ⚿ routes — notably `POST /v1/series`. |
+
+### Genuinely still missing
+
+| Area | State |
+| ---- | ----- |
+| **`POST /{id}/patch-test`** | Books the free 10-minute patch-test visit and chains it to the colour. **There is no patch-test service in the catalogue**, so there is nothing to book. Needs a catalogue entry before the endpoint can mean anything. The `waiver` half of that gate is built. |
+| **Series `pattern` write** | The scope planner exists and is correct — `GET …/edit-scope` returns which occurrences a `THIS_OCCURRENCE` / `THIS_AND_FUTURE` / `ENTIRE_SERIES` edit would touch, detach and skip. The **write** that applies it is not built. |
+| **`POST /series/{id}/confirm-ask`** | The 48-hour window is enforced and now expires on schedule (below). Sending the ask itself is blocked on message delivery. |
 | **Worklist tiles** | `DUPLICATE_CUSTOMER` needs the customer service. `DIARY_SLIVERS` needs a per-day compaction run, which would make the cheapest screen the slowest. Neither is emitted; an INFO tile that always reads zero is worse than no tile. |
+| **`columns[].timeOff`** | Always `[]`. Time off *is* excluded from availability, but it reaches the engine as opaque calendar entries, so there is no labelled list to publish. |
+
+### Scheduled jobs — all six now run
+
+| Job | Cadence |
+| --- | ------- |
+| Series materialiser | nightly, 02:00 |
+| Automatic no-show | every 60 s |
+| Hold expiry | every 30 s |
+| Waitlist offer expiry | every 30 s |
+| Reminder ladder | every 60 s |
+| Payment-link sweeper | every 60 s |
+| **Confirm-ask expiry** | **hourly — new** |
+| **Risk-flag lift** | **nightly, 03:00 — new** |
+
+The confirm-ask rule had been written, specified and tested for months and **nothing ever ran
+it**: every unanswered ask sat as `PENDING_CONFIRMATION` forever, holding a chair against a visit
+that was never going to happen. Both jobs were driven against the real database to confirm they
+fire — see §11.
+
+### Idempotency
+
+`Idempotency-Key` is now honoured on `POST /v1/bookings`, `POST /v1/series` and all four money
+actions, through one shared store. Same key and same body replays the stored response with
+`replayed: true`; same key and a **different** body is a `409 IDEMPOTENCY_KEY_REUSED`, because
+that is a client bug and answering the first response would hide it.
+
+The fingerprint ignores JSON key order, so two client builds that serialise the same request
+differently are still recognised as the same request.
 
 ---
 
@@ -698,15 +821,36 @@ engine's back. Specifically confirmed:
 - The waitlist chain end to end: cancel → outbox event → listener → offer on the board with its
   15-minute TTL.
 - Idempotent goodwill (same key twice → one entry, `replayed: true`, balance unchanged).
+- **Series idempotency**: the same key returned the same `seriesId` with `replayed: true`,
+  instead of a second year of standing appointments.
 - Capture invalidating the payment link in the same transaction.
+- **Shorten releasing real capacity**: booking, staff reservation and chair reservation all read
+  30 minutes after a 45 → 30 shorten, so the 15 minutes are genuinely back in the diary.
+- **Course draw maths**: AED 1,800 net over 6 visits drew AED 315 gross (AED 300 net + 5% VAT),
+  leaving AED 1,575 — the draws sum back to the receipt.
+- **Both new jobs driven against the real database**: the confirm-ask sweep expired a 49-hour-old
+  ask and wrote its history row and event; the risk-flag sweep identified a customer with three
+  clean visits and emitted `customer.deposit_flag_liftable`.
+- Queue deletions are idempotent and never 404 — leaving twice, or leaving an unknown entry, both
+  answer `{ "left": false }`.
 - Skill and capacity refusals returning the right code plus actionable `details`.
 
-Test suite: **1,075 passing, 11 todo, across 49 files** (up from 970). `tsc --noEmit` and
-`eslint` both clean.
+Test suite: **1,107 passing, 11 todo, across 51 files** (up from 970 before this work).
+`tsc --noEmit` and `eslint` both clean.
 
-Three bugs were found by running it rather than reading it, and all three are fixed: the events
-feed windowed on the wrong date, the staff-name lookup missed because the roster speaks slugs
-and the column holds a hash, and a 5-second Prisma transaction timeout killed a move
-mid-transaction. Two more were caught by the database's own constraints — a zero-amount ledger
-row and an unlinked reversal — and one by the repo's vocabulary test, which spotted a lowercase
-enum that would have reached you as `"card"` instead of `"CARD"`.
+**Seven bugs were found by running it rather than reading it**, and all seven are fixed:
+
+1. The events feed windowed on the visit's date instead of when the event happened, hiding
+   exactly the events the screen exists to show.
+2. The staff-name lookup missed, because the roster speaks slugs and the column holds a hash.
+3. A 5-second Prisma transaction timeout killed a move mid-transaction.
+4. `POST /v1/series` never read `Idempotency-Key`, so a retry made a second series.
+5. Goodwill followed by revive credited the same forfeited deposit **twice** — the ledger was
+   right about every row and the total was nonsense.
+6. Shorten and waiver wrote `from == to` rows to the status history.
+7. A reversal was written without naming what it reversed.
+
+**Four of those were caught by the database's own constraints**, not by the code: a zero-amount
+ledger row, an unlinked reversal, and the `bsh_actually_moved` check that refuses a status
+history entry recording no movement. One more was caught by the repo's vocabulary test, which
+spotted a lowercase enum that would have reached you as `"card"` instead of `"CARD"`.
