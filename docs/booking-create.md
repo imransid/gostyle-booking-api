@@ -121,21 +121,68 @@ Any other value on create is `422` / `invalid_status`. The field is accepted in
 the payload only so the contract stays explicit; the server may equally ignore
 it and always store `BOOKED`.
 
-`payment_status` starts at `DRAFT` and moves on only through §11:
+`payment_status` accepts **two** values on create, and they are not variations
+of one another — they produce different bookings with different lifecycles:
 
-| Value                | Meaning                                                      |
-| -------------------- | ------------------------------------------------------------ |
-| `DRAFT`              | Created, nothing settled. The only value accepted on create. |
-| `PARTIALLY`          | Deposit taken, the rest due at the salon.                    |
-| `FULLY_PAID`         | Settled in full.                                             |
-| `PAY_AFTER_CHECK_IN` | Nothing to pay now by arrangement; due at the salon.         |
+| Value                | On create | What it produces                                             |
+| -------------------- | --------- | ------------------------------------------------------------ |
+| `DRAFT`              | yes       | A payment link goes out. `PENDING_PAYMENT`, with a window.   |
+| `PAY_AFTER_CHECK_IN` | yes       | Nothing collected by arrangement. Confirmed outright.        |
+| `PARTIALLY`          | no        | Deposit taken, the rest due at the salon. Recorded via §11.  |
+| `FULLY_PAID`         | no        | Settled in full. Recorded via §11.                           |
 
-Any other value on create is `422` / `invalid_payment_status`.
+Any other value on create is `422` / `invalid_payment_status`. `PARTIALLY` and
+`FULLY_PAID` are refused there too: money that has already moved is **recorded**
+against a booking that exists, never declared as a fact at creation time.
 
-**A `DRAFT` booking holds its slot, so it must not hold it forever.** Give the
-draft a hold window — 15 minutes is typical — after which an unpaid draft is
-released and the slot returns to `booking-nearest-available.md`. Without that,
-every abandoned checkout silently removes a slot from sale.
+### `DRAFT` — pay by link
+
+**A `DRAFT` booking holds its slot, so it must not hold it forever.** The
+booking is created `PENDING_PAYMENT` with a `link_expires_at` window, and a
+sweeper releases it if nobody pays, returning the slot to
+`booking-nearest-available.md`. Without that, every abandoned checkout silently
+removes a slot from sale. `expires_at` in the §8 response is that window.
+
+### `PAY_AFTER_CHECK_IN` — pay on arrival
+
+Nothing is collected now, by arrangement with the salon. This is **not a draft
+that skipped payment**:
+
+- the booking is **`CONFIRMED`**, and the slot is held outright;
+- there is **no payment link** and no `link_expires_at`;
+- `expires_at` in the §8 response is `null`;
+- **nothing expires it.** The sweeper takes only bookings that are
+  `PENDING_PAYMENT` *and* carry a link window, and this booking is neither. A
+  customer who arranged to pay on arrival will not find their booking cancelled
+  from under them.
+
+Two consequences worth reading before you send it:
+
+**The `status` that comes back is `CONFIRMED_BY_SALON`, not `BOOKED`.** The
+booking really is confirmed the moment it is created — that is what the
+arrangement means — so reporting `BOOKED` would be untrue. `status_detail`
+carries the underlying value as always.
+
+**The salon's deposit rules still apply, and the client cannot waive them.**
+The server decides what is owed (§3). If the deposit ladder asks for anything —
+a first-visit percentage, a risk flag, a service-level deposit, a channel
+default — then sending `PAY_AFTER_CHECK_IN` is refused:
+
+```json
+{
+  "statusCode": 402,
+  "code": "BOOKING_PAYMENT_REQUIRED",
+  "message": "AED 40.00 is required before this booking can be confirmed."
+}
+```
+
+So `PAY_AFTER_CHECK_IN` succeeds only where the salon's own policy asks for
+nothing up front. It is an arrangement the salon has already made, expressed by
+its deposit configuration — not a flag the app can set to skip a deposit. If a
+salon wants pay-on-arrival to be generally available, that is a change to its
+deposit rules, not to this field.
+
+Paying at the salon afterwards is §11's last section.
 
 ---
 
@@ -319,7 +366,9 @@ Rules:
 
 1. **Only from `DRAFT`.** A booking already `PARTIALLY` or `FULLY_PAID` is not
    patched again — `409` / `already_paid`. Refunds and top-ups are their own
-   endpoints, not this one.
+   endpoints, not this one. **A `PAY_AFTER_CHECK_IN` booking is not in `DRAFT`
+   either**, so it is refused here too — see "Paying at the salon" below for
+   where that money goes.
 2. **The amount is checked against the booking**, not accepted on trust:
    `advance_paid_amount` must be at most `total`, and must equal `total` when
    `payment_status` is `FULLY_PAID`. A deposit must satisfy the salon's deposit
@@ -338,11 +387,40 @@ Rules:
 
 Responds `200 OK` with the full booking, in the same shape as §8.
 
+### Paying at the salon — not this endpoint
+
+A `PAY_AFTER_CHECK_IN` booking (§4) owes its money when the customer walks in.
+**That payment is not a `PATCH`.** It goes through the desk:
+
+```
+POST /v1/bookings/:id/capture     { "rail": "CASH", "reason": "Paid at check-in" }
+```
+
+Three reasons, and they are worth stating because the alternative looks
+tempting:
+
+- **It is a desk event, not an app event.** This `PATCH` exists for a gateway
+  callback — that is what `payment_reference` is. Cash or a card machine at
+  check-in has no gateway reference to send.
+- **`capture` already does all of it**, and has since before this endpoint
+  existed: one ledger row, the payment status moved, the actor recorded,
+  idempotent on `Idempotency-Key`. Adding a second way in would be two code
+  paths writing the same ledger, and one of them would eventually drift.
+- **It refuses a second charge.** Capturing an already-paid booking is a `409`,
+  so a desk that clicks twice does not take the money twice.
+
+Patching such a booking returns `409` / `already_paid` with a message that says
+so, rather than the nonsense of "this booking is already `PAY_AFTER_CHECK_IN`":
+
+> This booking pays on arrival, so there is nothing to record here. Take the
+> money at the desk, which writes it to the ledger against this booking.
+
 Errors, on top of the shared envelope:
 
 | Case                                         | Status | `code`                      |
 | -------------------------------------------- | ------ | --------------------------- |
 | Booking is not in `DRAFT`                    | 409    | `already_paid`              |
+| Booking is `PAY_AFTER_CHECK_IN`              | 409    | `already_paid`              |
 | `payment_status` sent as `DRAFT`             | 422    | `invalid_payment_status`    |
 | `advance_paid_amount` disagrees with `total` | 422    | `amount_mismatch`           |
 | Deposit below the salon's minimum            | 422    | `deposit_too_low`           |

@@ -26,6 +26,7 @@ import {
   type PatchTarget,
   dateAgreesWithStart,
   filsToAed,
+  createIntentOf,
   refuseUnsupported,
   stylistsLineUp,
   toBranchMoment,
@@ -138,11 +139,20 @@ export class MobileBookingHandler {
         'Only BOOKED may be sent on create.',
       );
     }
-    if (cmd.paymentStatus !== 'DRAFT') {
+    /**
+     * Two arrangements, decided here and carried to the end of the method.
+     *
+     * PARTIALLY and FULLY_PAID stay out: money that has already moved is
+     * recorded through §11 against a booking that exists, not declared as
+     * a fact at creation time by the client.
+     */
+    const intent = createIntentOf(cmd.paymentStatus);
+    if (intent === null) {
       throw MobileContractError.of(
         'payment_status',
         'invalid_payment_status',
-        'Only DRAFT may be sent on create.',
+        'Only DRAFT or PAY_AFTER_CHECK_IN may be sent on create. ' +
+          'PARTIALLY and FULLY_PAID are recorded later, through PATCH.',
       );
     }
     if (!stylistsLineUp(cmd.stylists, cmd.services)) {
@@ -266,10 +276,33 @@ export class MobileBookingHandler {
         tradingDay: start.tradingDay,
         serviceIds,
         channel: 'online',
-        // LINK is what puts the booking at PENDING_PAYMENT with a window on
-        // it, which is the contract's DRAFT: created, slot held, nothing
-        // settled, and released if nobody pays (§4).
-        payment: { amountFils: quote.depositMinor, rail: 'link' },
+        /**
+         * LINK is what puts the booking at PENDING_PAYMENT with a window on
+         * it, which is the contract's DRAFT: created, slot held, nothing
+         * settled, and released if nobody pays (§4).
+         *
+         * PAY_AFTER_CHECK_IN OMITS `payment` ENTIRELY, and that is not a
+         * shortcut -- it is the existing no-requirement path. Table 8.8 in
+         * booking.repository already answers a null payment with
+         * { confirmed, none_required }, which is exactly what this
+         * arrangement means: nothing collected, slot held outright, no
+         * window, nothing for the PaymentLinkSweeper to find (it takes
+         * only status = 'pending_payment' AND link_expires_at IS NOT NULL,
+         * and this booking fails both).
+         *
+         * IT DOES NOT BYPASS THE DEPOSIT LADDER. Omitting payment tenders
+         * zero, and confirm refuses with 402 when the ladder asked for
+         * more. A customer cannot waive a required deposit by asking for
+         * this status; only a service that requires nothing can use it.
+         */
+        ...(intent.kind === 'link'
+          ? {
+              payment: {
+                amountFils: quote.depositMinor,
+                rail: 'link' as const,
+              },
+            }
+          : {}),
         actorId: cmd.customerId,
         /**
          * NAMESPACED, and it has to be.
@@ -291,12 +324,23 @@ export class MobileBookingHandler {
           : { idempotencyKey: `mobile:${cmd.idempotencyKey}` }),
       });
 
-      const link = await this.links.execute(booking.bookingId, {
-        kind: 'customer',
-        id: cmd.customerId,
-      });
+      /**
+       * NO LINK FOR AN ON-ARRIVAL BOOKING. There is nothing to pay now, so
+       * a payment page would be a page asking for zero, and the
+       * `expires_at` it returned would tell the app the slot is about to
+       * lapse when it is confirmed and permanent.
+       */
+      const expiresAt =
+        intent.kind === 'link'
+          ? (
+              await this.links.execute(booking.bookingId, {
+                kind: 'customer',
+                id: cmd.customerId,
+              })
+            ).expiresAt
+          : null;
 
-      return this.present(cmd, booking.bookingId, link.expiresAt, quote);
+      return this.present(cmd, booking.bookingId, expiresAt, quote);
     } catch (e) {
       // The hold is ours and the booking is not going to exist. Give the
       // slot back now rather than leaving it dark until the sweeper runs.
@@ -477,9 +521,19 @@ export class MobileBookingHandler {
       case 'not_found':
         throw MobileContractError.notFoundBooking();
       case 'already_paid':
+        /**
+         * The code stays `already_paid` because §11 defines it as "not in
+         * DRAFT", and a PAY_AFTER_CHECK_IN booking is not in DRAFT. The
+         * MESSAGE must not, though: "this booking is already
+         * none_required" is not English and tells nobody what to do next.
+         */
         throw MobileContractError.alreadyPaid(
-          `This booking is already ${outcome.paymentStatus}. Refunds and ` +
-            'top-ups are their own endpoints.',
+          outcome.paymentStatus === 'none_required'
+            ? 'This booking pays on arrival, so there is nothing to record ' +
+                'here. Take the money at the desk, which writes it to the ' +
+                'ledger against this booking.'
+            : `This booking is already ${outcome.paymentStatus}. Refunds ` +
+                'and top-ups are their own endpoints.',
         );
       case 'expired':
         throw MobileContractError.bookingExpired(

@@ -82,6 +82,38 @@ export function toMobilePaymentStatus(
   return PAYMENT_TO_MOBILE[status];
 }
 
+/**
+ * What the caller is asking for when they create a booking.
+ *
+ * TWO ARRANGEMENTS, and they are not variations of one another -- they
+ * produce different bookings with different lifecycles:
+ *
+ *   DRAFT               a payment link goes out, the booking sits at
+ *                       pending_payment with link_expires_at set, and the
+ *                       sweeper releases the slot if nobody pays (§4)
+ *
+ *   PAY_AFTER_CHECK_IN  nothing is collected now, by arrangement. There is
+ *                       no link, no window, and nothing to expire: the
+ *                       booking is CONFIRMED and the slot is held outright
+ *
+ * The second is not "a draft that skipped payment". Sending it down the
+ * link path would give it a link_expires_at and hand it to the
+ * PaymentLinkSweeper, which would cancel a booking the salon had agreed to
+ * hold -- the customer arrives to find it gone.
+ *
+ * PARTIALLY and FULLY_PAID are absent on purpose: money that has already
+ * moved is recorded, not declared at creation, and §11 is where that
+ * happens.
+ */
+export type CreateIntent =
+  { readonly kind: 'link' } | { readonly kind: 'on_arrival' };
+
+export function createIntentOf(paymentStatus: string): CreateIntent | null {
+  if (paymentStatus === 'DRAFT') return { kind: 'link' };
+  if (paymentStatus === 'PAY_AFTER_CHECK_IN') return { kind: 'on_arrival' };
+  return null;
+}
+
 // ------------------------------------------------------------ money
 
 /**

@@ -3,18 +3,19 @@ import {
   AMOUNT_TOLERANCE_FILS,
   aedToFils,
   amountsAgree,
+  checkPatch,
+  createIntentOf,
   dateAgreesWithStart,
   filsToAed,
+  methodToRail,
+  paymentStatusAfterPatch,
+  railToMethod,
   refuseUnsupported,
   stylistsLineUp,
   toBranchMoment,
-  toOffsetIso,
-  methodToRail,
-  railToMethod,
-  checkPatch,
-  paymentStatusAfterPatch,
   toMobilePaymentStatus,
   toMobileStatus,
+  toOffsetIso,
 } from './mobile-contract';
 import type { BookingStatus } from './lifecycle';
 
@@ -489,5 +490,39 @@ describe('checkPatch reports every figure in decimal AED', () => {
     // places; a fils value would be two orders of magnitude out.
     expect(r!.expected).toBeLessThan(1000);
     expect(aedToFils(r!.expected!)).not.toBeNull();
+  });
+});
+
+describe('createIntentOf', () => {
+  it('sends DRAFT down the payment-link path', () => {
+    expect(createIntentOf('DRAFT')).toEqual({ kind: 'link' });
+  });
+
+  it('sends PAY_AFTER_CHECK_IN down the no-collection path', () => {
+    // Not a draft that skipped payment. A link here would give the booking
+    // a link_expires_at and hand it to the sweeper, which would cancel a
+    // slot the salon agreed to hold.
+    expect(createIntentOf('PAY_AFTER_CHECK_IN')).toEqual({
+      kind: 'on_arrival',
+    });
+  });
+
+  it('refuses money that has already moved', () => {
+    // Recorded through §11, never declared at creation.
+    expect(createIntentOf('PARTIALLY')).toBeNull();
+    expect(createIntentOf('FULLY_PAID')).toBeNull();
+  });
+
+  it('refuses anything else, including case variants', () => {
+    for (const v of ['', 'draft', 'pay_after_check_in', 'PAID', 'UNPAID']) {
+      expect(createIntentOf(v)).toBeNull();
+    }
+  });
+
+  it('round-trips with the outbound mapping', () => {
+    // What create accepts must be what GET reports back, or the app sees a
+    // status it never sent.
+    expect(toMobilePaymentStatus('unpaid')).toBe('DRAFT');
+    expect(toMobilePaymentStatus('none_required')).toBe('PAY_AFTER_CHECK_IN');
   });
 });
