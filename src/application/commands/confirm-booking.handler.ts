@@ -63,6 +63,12 @@ export interface ConfirmBookingCommand {
   };
   readonly actorId?: string;
   readonly idempotencyKey?: string;
+  /**
+   * The customer is paying at the salon, so a deposit shortfall is not a
+   * refusal. The requirement is still computed and still stored; only the
+   * 402 is skipped. See the guard in `execute`.
+   */
+  readonly depositDeferred?: boolean;
 }
 
 export interface BookingView {
@@ -202,10 +208,27 @@ export class ConfirmBookingHandler {
         : Money.fils(cmd.payment.amountFils);
     const required = Money.fils(requirement.amountFils);
 
-    // Short of the requirement, nothing is charged and the desk is told the
-    // figure AND why, so "why was I charged this" is answered before the
-    // customer has to ask.
-    if (tendered.lessThan(required)) {
+    /**
+     * PAY AT THE SALON IS ALLOWED TO OWE THE DEPOSIT, for now.
+     *
+     * The ladder still RUNS -- `requirement` is computed, stored on the row
+     * as `deposit_fils` and still explains itself -- but a caller that has
+     * said "this customer will pay on arrival" is no longer refused for
+     * tendering nothing.
+     *
+     * WHAT THIS GIVES UP, so nobody has to rediscover it: the deposit is
+     * what makes a no-show cost the customer something. Waiving it means a
+     * booking can be made, hold a chair, and simply not be turned up for, at
+     * no cost. That is a business decision and it has been taken; it is not
+     * a property of the engine, which is why this is a flag on the command
+     * rather than a deleted rule.
+     *
+     * NARROW ON PURPOSE. Only the caller that sets it is exempt -- the desk,
+     * the wizard and every other confirm path still get the 402. Remove the
+     * flag at the call site and the ladder is enforced again, with nothing
+     * to rebuild.
+     */
+    if (tendered.lessThan(required) && !cmd.depositDeferred) {
       throw new HttpException(
         {
           statusCode: HttpStatus.PAYMENT_REQUIRED,
@@ -266,6 +289,16 @@ export class ConfirmBookingHandler {
       items,
       priceFils: total.fils,
       depositFils: deposit.fils,
+      /**
+       * THE BREAKDOWN, STORED. `priced` was computed here and then thrown
+       * away, so every booking carried NULLs in the four columns the FE
+       * contract added for it -- and a booking that could not be re-quoted
+       * later had nothing to be priced from. These are the SERVER's figures,
+       * not the client's claim.
+       */
+      netFils: priced.subtotalNetFils,
+      taxFils: priced.vatFils,
+      discountFils: priced.tierDiscountFils + priced.bundleDiscountFils,
       requirementSource:
         requirement.kind === 'none' ? null : requirement.source,
       payment:

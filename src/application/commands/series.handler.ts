@@ -44,6 +44,10 @@ import {
 import { priceOf } from './confirm-booking.handler';
 import { priceOfService } from '@domain/booking/service-resolution';
 import type { BookingStatus } from '@domain/booking/lifecycle';
+import {
+  BookingReadHandler,
+  type SeriesRowView,
+} from '@application/queries/read-models.handler';
 
 export interface CreateSeriesCommand {
   readonly branchId: string;
@@ -224,10 +228,24 @@ export interface OccurrenceView {
   readonly index: number;
   readonly day: string;
   readonly start: string;
+  /** The same moment as `day` + `start`, as an instant. */
+  readonly startsAt: string;
   readonly state: Shouted<OccurrenceState>;
+  /**
+   * The booking's RESOURCE id. `bookingCode` is the label; this is what
+   * `GET /v1/bookings/:id` and `POST .../course-draw` actually take.
+   */
+  readonly bookingId: string | null;
   readonly bookingCode: string | null;
   readonly bookingStatus: Shouted<BookingStatus> | null;
   readonly movedFromDayOfMonth: number | null;
+  /**
+   * The nearest alternatives the repair ladder found, in the shape
+   * `POST /v1/bookings/series/preview` returns. Populated on
+   * NEEDS_ATTENTION, null everywhere else -- a stale ladder on a visit that
+   * has since been seated is a list of slots nobody will take, and the
+   * `occurrence_alternatives_only_when_stuck` constraint enforces that.
+   */
   readonly alternatives: unknown;
 }
 
@@ -238,6 +256,15 @@ export interface SeriesPanelView {
   readonly healthReasons: readonly Shouted<RiskReason>[];
   readonly healthExplanation: string;
   readonly horizonEnd: string | null;
+  /**
+   * WHO, WHAT, WHEN AND HOW MUCH -- the header the screen actually draws.
+   *
+   * Every one of these lived only on the board row, so a deep link or a page
+   * refresh landed on a panel with a timeline and no title. It is the SAME
+   * projection the board publishes, from the same mapper, so the two cannot
+   * disagree; `null` only when the series has vanished between reads.
+   */
+  readonly summary: SeriesRowView | null;
   readonly occurrences: readonly OccurrenceView[];
   readonly course: {
     readonly visits: number;
@@ -251,15 +278,23 @@ export interface SeriesPanelView {
 
 @Injectable()
 export class SeriesPanelHandler {
-  constructor(private readonly repo: SeriesRepository) {}
+  constructor(
+    private readonly repo: SeriesRepository,
+    /**
+     * The BOARD's projection, borrowed rather than rebuilt. See
+     * SeriesPanelView.summary.
+     */
+    private readonly reads: BookingReadHandler,
+  ) {}
 
   async execute(seriesId: string): Promise<SeriesPanelView> {
     const series = await this.repo.load(seriesId);
     if (series === null) throw new NotFoundException('No such series');
 
-    const [timeline, facts] = await Promise.all([
+    const [timeline, facts, summary] = await Promise.all([
       this.repo.timeline(seriesId),
       this.repo.healthFacts(seriesId),
+      this.reads.seriesOne(seriesId),
     ]);
 
     const health = deriveSeriesHealth({
@@ -298,12 +333,15 @@ export class SeriesPanelHandler {
       // so the panel showed no line at all — and the row has held the answer
       // since the series was created.
       horizonEnd: series.materialisedThrough,
+      summary,
       occurrences: timeline.map((o) => ({
         id: o.id,
         index: o.index,
         day: o.day,
         start: formatMinute(o.startMin),
+        startsAt: o.startsAt,
         state: shout(o.state),
+        bookingId: o.bookingId,
         bookingCode: o.bookingCode,
         bookingStatus: o.bookingStatus === null ? null : shout(o.bookingStatus),
         movedFromDayOfMonth: o.movedFromDayOfMonth,
@@ -558,7 +596,9 @@ export class SeriesLifecycleHandler {
       index: o.index,
       day: o.day,
       start: formatMinute(o.startMin),
+      startsAt: o.startsAt,
       state: shout(o.state),
+      bookingId: o.bookingId,
       bookingCode: o.bookingCode,
       bookingStatus: o.bookingStatus === null ? null : shout(o.bookingStatus),
       movedFromDayOfMonth: o.movedFromDayOfMonth,

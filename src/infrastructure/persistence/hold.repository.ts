@@ -5,6 +5,20 @@ import { isExclusionViolation } from './pg-errors';
 /** Asia/Dhaka is UTC+6 all year. A branch with DST would need a real tz lib. */
 export const BRANCH_UTC_OFFSET_MIN = 360;
 
+/**
+ * The SAME fact, spelled the way a browser can use it.
+ *
+ * Every read model returns branch-local minutes -- `nowMinute: 597` -- and
+ * published no timezone anywhere, so a client could read "now" and still had
+ * to guess "today" from the machine it was running on. A desk open in Dubai
+ * looking at a Dhaka branch guesses wrong for four hours a day.
+ *
+ * Kept beside the offset it describes, for the same reason `branchToday` is:
+ * two spellings of one fact, in one place, so a branch that moves timezone is
+ * one edit (CLAUDE.md 4).
+ */
+export const BRANCH_TIMEZONE = 'Asia/Dhaka';
+
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

@@ -38,7 +38,9 @@ export type MobileErrorCode =
   | 'already_paid'
   | 'deposit_too_low'
   | 'missing_payment_reference'
-  | 'booking_expired';
+  | 'booking_expired'
+  // booking-list.md §5
+  | 'invalid_filter';
 
 export interface MobileFieldError {
   readonly field: string;
@@ -110,6 +112,21 @@ export class MobileContractError extends Error {
     return new MobileContractError(
       [{ field: 'payment_status', code: 'already_paid', message }],
       409,
+    );
+  }
+
+  /**
+   * booking-list.md §5: `filter` is not one of the three.
+   *
+   * REFUSED RATHER THAN DEFAULTED. Falling back to `upcoming` for a word
+   * nobody recognises is how a client ships a tab that has never once shown
+   * what its label claims -- and it would look like it worked.
+   */
+  static invalidFilter(raw: string): MobileContractError {
+    return MobileContractError.of(
+      'filter',
+      'invalid_filter',
+      `filter must be upcoming, recurring or archive. Got "${raw}".`,
     );
   }
 

@@ -21,6 +21,18 @@ customer comes from the token, never from a parameter.
 GET /bookings?filter=upcoming&page=1&pageSize=20
 ```
 
+Implemented as `GET /v1/mobile-booking`, on the same controller as create and
+read. NOT the `GET /v1/bookings` in `read-models.controller.ts` — that one is
+the salon desk's diary, scoped by `@BranchId()`, and cannot answer "my
+bookings across every salon I have ever visited".
+
+The customer comes from the token and there is no `customerId` parameter.
+There must never be one: a list endpoint that takes whose list to show is an
+enumeration of every booking in the system behind one valid login.
+
+`gostyle-customer-api` is what the app actually calls. It forwards this page
+and fills in the three fields of §9 on the way back out.
+
 ### Query parameters
 
 | Param      | Type | Required | Default    | Notes                                           |
@@ -45,9 +57,12 @@ Rules:
    lists never double-count.
 2. **A routine appears under `recurring`, not `upcoming`**, even though its next
    session is in the future. One row per routine, not one per session.
-3. **`DRAFT` payments are not bookings yet.** A checkout still inside its hold
-   window (`booking-create.md` §4) appears in none of the three lists, and an
-   expired one is simply gone — not archived.
+3. **A LIVE `DRAFT` is listed; an abandoned one is not.** Changed from the
+   original rule, which hid both. Hiding a live one meant a customer who
+   started paying and closed the app found nothing at all — with a slot held
+   against them and no way back to it, while §6.3 exists precisely so an
+   interrupted checkout can be resumed. A checkout whose window ran out is
+   `expired` and stays hidden: that one is litter, not history.
 4. **"Past" is measured against the salon's clock**, not the caller's, so a
    booking abroad does not jump to `archive` early.
 5. **A cancelled booking moves to `archive` immediately**, whatever its
@@ -205,15 +220,24 @@ creation and pays at the desk.
 
 ---
 
-## 9. What this server does not return yet
+## 9. Three fields this server does not answer — and who does
 
-Two fields in §3 are specified and **not implemented**, each because the data
+Three fields in §3 are **not returned by this service**, each because the data
 does not exist in any service this one can reach.
 
-| Field                          | Why it is missing                                                                                                                                    |
-| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `salon`                        | A booking stores `branch_id` and nothing else. No proto exposes a branch's name, logo or city, so the object could only be faked. Needs a platform ask. |
-| `can_cancel` / `can_reschedule` | Both are answers to the salon's cancellation policy, which lives in platform and is not exposed. A hardcoded `true` would be a promise this server cannot keep. |
+| Field                           | Why it is missing here                                                                                                                                 |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `salon`                         | A booking stores `branch_id` and nothing else. No proto exposes a branch's name, logo or city, so the object could only be faked.                       |
+| `can_cancel` / `can_reschedule` | Both answer the salon's cancellation policy, which lives in platform and is not exposed here. A hardcoded `true` would be a promise this server cannot keep. |
 
-`salon_id` is returned in `GET /booking/:id`, so the app can resolve the salon
-itself in the meantime. See `api/PLATFORM-ASKS-BOOKING-CONTEXT.md`.
+**They are filled in by `gostyle-customer-api`, which reads the platform
+tables directly.** `salon` comes from `storefront` + `branch` +
+`storefront_media`, and the two booleans from
+`storefront_policy.cancel_window_hours`. Its `docs/BOOKING_LIST_API.md` §5 is
+the specification for how, including what happens when a salon cannot be
+resolved (`null`, not an object with holes in it).
+
+This service returns `salon_id` on every row and on `GET /booking/:id` for
+exactly that purpose. Anything calling this service directly, without going
+through customer-api, must resolve those three itself. See
+`api/PLATFORM-ASKS-BOOKING-CONTEXT.md`.

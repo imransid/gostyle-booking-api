@@ -211,6 +211,58 @@ export class PlatformServiceCatalogue {
   }
 
   /**
+   * EVERYTHING THIS BRANCH SELLS, as the engine's own type.
+   *
+   * WHY IT IS SEPARATE FROM `resolve`. `resolve` answers about ids somebody
+   * is trying to BOOK, and it refuses a basket it cannot price or staff.
+   * This answers "what is on the menu", which is a browse: a service with an
+   * unusable price is left out of the list rather than made to fail the
+   * whole call, and the skills gate does not fire because nothing is being
+   * sold yet. The gate still fires at `loadServices`, which is where the
+   * money is.
+   *
+   * WHAT THIS FIXES. `loadCatalogue` was the fixture and only the fixture,
+   * so `GET /availability/catalogue` offered haircut-finish, blow-dry,
+   * fringe-trim and hair-colour to a tenant whose real menu is Keratin,
+   * NO Kampos, Occasion Styling and Olaplex -- while `/services-directory`,
+   * reading the same platform source this now reads, returned the real four.
+   * A wizard built on the directory named a service the engine then refused;
+   * a wizard built on the engine offered services the salon does not sell.
+   */
+  async catalogue(branchId: string): Promise<Service[]> {
+    const tenantId = this.tenants.current();
+    if (tenantId === null) {
+      PlatformServiceCatalogue.log.warn(
+        'Cannot list the platform catalogue: no X-Tenant-Id on this request, ' +
+          'and ListServices is tenant-scoped. Falling back to the fixture.',
+      );
+      return [];
+    }
+
+    const rows = await this.directory.listServices(tenantId, branchId);
+    const usable: Service[] = [];
+    for (const row of rows) {
+      if (!Number.isInteger(row.priceMinor) || row.priceMinor <= 0) {
+        // Left out rather than thrown. A menu that refuses to render because
+        // one row is misconfigured is worse than a menu missing that row --
+        // and booking it still refuses, loudly, in `resolve`.
+        PlatformServiceCatalogue.log.warn(
+          `Leaving ${row.id} out of the catalogue: price_minor=` +
+            `${JSON.stringify(row.priceMinor)} is not a positive whole ` +
+            'minor unit.',
+        );
+        continue;
+      }
+      usable.push(toEngineService(row));
+    }
+
+    PlatformServiceCatalogue.log.log(
+      `catalogue branch=${branchId} platform=${usable.length} of ${rows.length}`,
+    );
+    return usable;
+  }
+
+  /**
    * Say where each service came from, and refuse a basket we cannot price.
    *
    * Called once per resolution with everything that was found, from both

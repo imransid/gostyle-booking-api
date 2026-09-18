@@ -168,6 +168,26 @@ export function repairOccurrence(request: RepairRequest): RepairOutcome {
   };
 }
 
+/**
+ * The nearest alternatives for a set of candidates, without running a repair.
+ *
+ * WHY THIS IS EXPORTED. Rung 4 is not the only way an occurrence ends up
+ * needing attention: the materialiser also gives up after three lost races,
+ * and it was attaching `[]` because the only code that could turn candidates
+ * into offers was private to this file. So every NEEDS_ATTENTION occurrence
+ * the desk opened showed an empty list, and "pick another slot" was not
+ * offered even where slots existed.
+ *
+ * Same `toOffer`, same spacing, same ordering as rung 4 -- one definition of
+ * "the nearest three", however the occurrence got stuck (CLAUDE.md 4).
+ */
+export function alternativesFor(request: RepairRequest): RepairOffer[] {
+  return nearestAlternatives(
+    request.candidates.map((c) => toOffer(c, request)),
+    request.spacingMin,
+  );
+}
+
 function toOffer(c: RepairCandidate, request: RepairRequest): RepairOffer {
   const distance = Math.abs(c.startMin - request.originalStartMin);
   return {

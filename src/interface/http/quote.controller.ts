@@ -1,4 +1,5 @@
 import { Body, Controller, Post } from '@nestjs/common';
+import { BranchId } from './branch.decorator';
 import {
   ApiNotFoundResponse,
   ApiOkResponse,
@@ -31,10 +32,16 @@ const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const CHANNELS = ['desk', 'online'] as const;
 
 export class QuoteDto {
-  @ApiPropertyOptional({ example: 'marina-walk', default: 'marina-walk' })
+  @ApiPropertyOptional({
+    description:
+      'OPTIONAL. The branch is taken from the token when the token names ' +
+      'one; send this only for a token scoped to no particular branch. ' +
+      'Sending a branch the token does not cover is 403 ' +
+      'BOOKING_BRANCH_MISMATCH rather than a write nobody can read back.',
+  })
   @IsOptional()
   @IsString()
-  branchId: string = 'marina-walk';
+  branchId?: string;
 
   @ApiProperty({ example: '2026-09-01' })
   @Matches(DAY, { message: 'day must be YYYY-MM-DD' })
@@ -97,9 +104,12 @@ export class QuoteController {
   @ApiNotFoundResponse({
     description: 'One of the service ids does not exist.',
   })
-  quote(@Body() dto: QuoteDto): Promise<QuoteView> {
+  quote(
+    @Body() dto: QuoteDto,
+    @BranchId() branchId: string,
+  ): Promise<QuoteView> {
     return this.handler.execute({
-      branchId: dto.branchId,
+      branchId,
       tradingDay: dto.day,
       serviceIds: dto.serviceIds,
       customerId: dto.customerId,

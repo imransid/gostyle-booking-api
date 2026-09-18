@@ -6,6 +6,7 @@ import {
   Param,
   Post,
 } from '@nestjs/common';
+import { BranchId } from './branch.decorator';
 import {
   ApiConflictResponse,
   ApiCreatedResponse,
@@ -38,7 +39,18 @@ export class PlaceHoldDto {
   @ApiPropertyOptional({ example: 'marina-walk', default: 'marina-walk' })
   @IsOptional()
   @IsString()
-  branch = 'marina-walk';
+  @ApiPropertyOptional({
+    description:
+      'OPTIONAL. The branch comes from the token when the token names one; ' +
+      'send this only for a token scoped to no particular branch. A branch ' +
+      'the token does not cover is 403 BOOKING_BRANCH_MISMATCH \u2014 it used to ' +
+      'be accepted, and the write then landed somewhere the reads could not ' +
+      'see. Spelled `branch` here rather than `branchId` because this route ' +
+      'shipped before the wire contract and existing callers send `branch`.',
+  })
+  @IsOptional()
+  @IsString()
+  branch?: string;
 
   @ApiProperty({ example: '2026-08-24' })
   @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'day must be YYYY-MM-DD' })
@@ -108,9 +120,10 @@ export class HoldsController {
   place(
     @Body() dto: PlaceHoldDto,
     @CurrentActor() actor: Actor,
+    @BranchId('branch') branchId: string,
   ): Promise<HoldView> {
     return this.handler.execute({
-      branchId: dto.branch,
+      branchId,
       tradingDay: dto.day,
       serviceIds: dto.services,
       startMin: dto.startMin,

@@ -161,6 +161,30 @@ export class LifecycleRepository {
     };
   }
 
+  /**
+   * When this booking starts, and whose it is.
+   *
+   * Read for the day-of gates alone. `start_at` rather than `start_minute`
+   * because both gates compare against NOW, and a minute-of-day cannot tell
+   * today's 16:45 from Sunday's -- which is exactly how a booking two days
+   * out was checked in and a no-show was taken six hours early.
+   */
+  async timingFor(bookingId: string): Promise<{
+    startAtMs: number;
+    customerId: string;
+  } | null> {
+    const rows = await this.prisma.$queryRaw<
+      { start_at: Date; customer_id: string }[]
+    >`
+      SELECT b.start_at, b.customer_id
+        FROM booking b
+       WHERE b.id = ${bookingId}::uuid`;
+    const row = rows[0];
+    return row === undefined
+      ? null
+      : { startAtMs: row.start_at.getTime(), customerId: row.customer_id };
+  }
+
   async transition(input: TransitionInput): Promise<TransitionOutcome> {
     const nowMs = input.nowMs ?? Date.now();
 

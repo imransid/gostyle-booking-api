@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PlaceHoldHandler } from './place-hold.handler';
 import { ConfirmBookingHandler } from './confirm-booking.handler';
 import { PaymentLinkHandler } from './payment-link.handler';
+import { LifecycleRepository } from '@infrastructure/persistence/lifecycle.repository';
 import { GetQuoteHandler } from '@application/queries/get-quote.handler';
 import {
   BOOKING_CONTEXT,
@@ -14,6 +15,7 @@ import {
   toUuid,
 } from '@infrastructure/persistence/hold.repository';
 import { MobilePaymentRepository } from '@infrastructure/persistence/mobile-payment.repository';
+import { TenantContext } from '@infrastructure/tenancy/tenant-context';
 import { SlugIndex } from '@infrastructure/persistence/slug-uuid';
 import { DEFAULT_BRANCH_ID } from '@infrastructure/tenancy/branch-context';
 import {
@@ -40,6 +42,8 @@ import {
   isMobileContractError,
 } from './mobile-booking.error';
 import { isBookingError } from '@application/contract/errors';
+import type { ListFilter } from '@domain/booking/booking-shelf';
+import { storedTotalFils } from '@domain/booking/stored-money';
 
 /**
  * One call for the mobile app: hold, confirm, and issue the payment link.
@@ -66,6 +70,76 @@ import { isBookingError } from '@application/contract/errors';
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * What `quoteFor` actually reads off a booking.
+ *
+ * Structural, not `detail()`'s row type: the list fetches the same booking
+ * WITHOUT `statusHistory`, which no quote has ever looked at, and typing the
+ * parameter to the drawer's query would force the list to fetch an unbounded
+ * relation to satisfy the compiler.
+ */
+interface QuotableBooking {
+  readonly branchId: string;
+  readonly tradingDay: Date;
+  readonly customerId: string;
+  readonly startMinute: number;
+  readonly items: readonly { readonly serviceId: string }[];
+}
+
+/**
+ * The contract's three badges, from the repository's two shelves.
+ *
+ * ONE PLACE, because every response carries this object and a second spot
+ * that built it would be the one that forgot a key. `recurring` is 0 until
+ * series are wired -- a real count of a real, empty shelf.
+ */
+function withRecurring(counts: {
+  readonly upcoming: number;
+  readonly archive: number;
+}): { upcoming: number; recurring: number; archive: number } {
+  return { upcoming: counts.upcoming, recurring: 0, archive: counts.archive };
+}
+
+/** The money columns a booking carries when the catalogue cannot price it. */
+interface StoredMoney {
+  readonly id: string;
+  /** The tenant the booking was written under. Scopes its own catalogue. */
+  readonly tenantId: string | null;
+  readonly netFils: number | null;
+  readonly taxFils: number | null;
+  readonly discountFils: number | null;
+  readonly depositFils: number;
+}
+
+/**
+ * A booking's figures, however they were arrived at.
+ *
+ * `priced` says WHICH: true when the live quote produced them, false when
+ * they came off the row because the catalogue could not price the booking.
+ * Callers that must not act on a stale figure check it; §8's read simply
+ * reports what it has.
+ */
+interface BookingMoney {
+  readonly subtotalFils: number | null;
+  readonly vatFils: number;
+  readonly discountFils: number;
+  readonly totalFils: number | null;
+  readonly depositFils: number;
+  readonly priced: boolean;
+}
+
+/** One branch's names, resolved once per page rather than once per row. */
+interface BranchNames {
+  readonly index: SlugIndex;
+  readonly staff: ReadonlyMap<string, { name: string; avatar: string | null }>;
+}
+
+/** What a branch looks like when platform could not be reached. */
+const EMPTY_BRANCH: BranchNames = {
+  index: new SlugIndex([]),
+  staff: new Map(),
+};
 
 export interface MobileBookingCommand {
   readonly salonId: string;
@@ -105,6 +179,10 @@ export class MobileBookingHandler {
     private readonly quotes: GetQuoteHandler,
     private readonly bookings: BookingRepository,
     private readonly payments: MobilePaymentRepository,
+    private readonly tenants: TenantContext,
+    // The SAME transition the PaymentLinkSweeper writes for a checkout
+    // that ran out of time -- this one just gets there sooner.
+    private readonly lifecycle: LifecycleRepository,
     @Inject(BOOKING_CONTEXT) private readonly context: BookingContextReader,
   ) {}
 
@@ -268,6 +346,14 @@ export class MobileBookingHandler {
       throw translate(e);
     }
 
+    /**
+     * WHAT WAS CREATED BEFORE THINGS WENT WRONG, so the catch can undo it.
+     *
+     * Declared out here rather than inside the try because the catch has to
+     * reach it: a booking written and then abandoned is the whole bug below.
+     */
+    let orphanId: string | null = null;
+
     try {
       const booking = await this.confirms.execute({
         holdId: hold.holdId,
@@ -290,11 +376,22 @@ export class MobileBookingHandler {
          * only status = 'pending_payment' AND link_expires_at IS NOT NULL,
          * and this booking fails both).
          *
-         * IT DOES NOT BYPASS THE DEPOSIT LADDER. Omitting payment tenders
-         * zero, and confirm refuses with 402 when the ladder asked for
-         * more. A customer cannot waive a required deposit by asking for
-         * this status; only a service that requires nothing can use it.
+         * IT NOW DEFERS THE DEPOSIT RATHER THAN BEING REFUSED BY IT.
+         *
+         * This said the opposite: omitting payment tendered zero and confirm
+         * refused with 402, so only a service requiring nothing could use
+         * this status. In practice every service requires something, so
+         * PAY_AFTER_CHECK_IN was unusable -- it answered "AED 70.00 is
+         * required before this booking can be confirmed" to a customer who
+         * had just said they would pay at the salon.
+         *
+         * The ladder still runs and the requirement is still stored on the
+         * row, so the desk can ask for it on arrival. What it no longer does
+         * is refuse the booking. What that gives up is written down in
+         * confirm-booking.handler: a waived deposit means a no-show costs
+         * the customer nothing.
          */
+        depositDeferred: intent.kind === 'on_arrival',
         ...(intent.kind === 'link'
           ? {
               payment: {
@@ -324,6 +421,8 @@ export class MobileBookingHandler {
           : { idempotencyKey: `mobile:${cmd.idempotencyKey}` }),
       });
 
+      orphanId = booking.bookingId;
+
       /**
        * NO LINK FOR AN ON-ARRIVAL BOOKING. There is nothing to pay now, so
        * a payment page would be a page asking for zero, and the
@@ -340,11 +439,62 @@ export class MobileBookingHandler {
             ).expiresAt
           : null;
 
-      return this.present(cmd, booking.bookingId, expiresAt, quote);
+      // A freshly quoted booking, so the figures are the quote's own.
+      return this.present(cmd, booking.bookingId, expiresAt, {
+        subtotalFils: quote.subtotalMinor,
+        vatFils: quote.vatMinor,
+        discountFils: quote.tierDiscountMinor + quote.bundleDiscountMinor,
+        totalFils: quote.totalMinor,
+        depositFils: quote.depositMinor,
+        priced: true,
+      });
     } catch (e) {
       // The hold is ours and the booking is not going to exist. Give the
       // slot back now rather than leaving it dark until the sweeper runs.
       await this.holds.release(hold.holdId).catch(() => undefined);
+
+      /**
+       * AND THE BOOKING, IF ONE WAS ALREADY WRITTEN.
+       *
+       * THE BUG THIS FIXES. `confirms.execute` creates the booking, and
+       * everything after it -- issuing the payment link, presenting the
+       * response -- could still throw. The catch released the HOLD and left
+       * the BOOKING, so the caller got an error while a `pending_payment`
+       * row silently occupied the slot. Every failed checkout consumed a
+       * chair the salon could never sell, and the next attempt at the same
+       * time was refused as "no longer available" -- about a slot that was
+       * free until we broke it. Seven of them accumulated in one afternoon
+       * of testing before anyone looked in the table.
+       *
+       * `expired` and NOT a delete: it is a releasing state, so capacity
+       * comes back immediately, and it is the same word the sweeper writes
+       * for a checkout that ran out of time -- which is exactly what this
+       * is, arrived at sooner. Deleting would take the audit trail with it
+       * and trip the foreign keys the status history holds.
+       *
+       * Its own failure is swallowed and logged, never rethrown: the caller
+       * is already receiving an error about their booking, and replacing it
+       * with one about our cleanup would lose the reason they needed.
+       */
+      if (orphanId !== null) {
+        const undone = await this.lifecycle
+          .transition({
+            bookingId: orphanId,
+            to: 'expired',
+            actor: 'system',
+            actorId: null,
+            reason: 'Creation failed after the booking was written.',
+          })
+          .catch(() => null);
+
+        MobileBookingHandler.log.warn(
+          undone === null || undone.kind !== 'transitioned'
+            ? `mobile create failed; booking ${orphanId} could NOT be ` +
+                'released and is holding a slot until the sweeper runs'
+            : `mobile create failed; booking ${orphanId} expired, slot released`,
+        );
+      }
+
       MobileBookingHandler.log.warn(
         `mobile create failed after hold ${hold.holdId}; slot released`,
       );
@@ -436,16 +586,253 @@ export class MobileBookingHandler {
   }): Promise<unknown> {
     const b = await this.visibleOrNotFound(input);
 
-    const quote = await this.quoteFor(b);
+    const money = await this.moneyFor(b);
 
-    return this.present(
-      { salonId: b.branchId, promoCode: null },
-      b.id,
-      // §10.3: present while the draft hold is still running, gone once the
-      // booking is paid -- which is exactly when the column is cleared.
-      b.linkExpiresAt === null ? null : b.linkExpiresAt.toISOString(),
-      quote,
+    // Scoped too: `present` resolves the staff and service names, and both
+    // of those lookups are tenant-scoped exactly as the catalogue is.
+    return this.inBookingTenant(b, () =>
+      this.present(
+        { salonId: b.branchId, promoCode: null },
+        b.id,
+        // §10.3: present while the draft hold is still running, gone once
+        // the booking is paid -- exactly when the column is cleared.
+        b.linkExpiresAt === null ? null : b.linkExpiresAt.toISOString(),
+        money,
+      ),
     );
+  }
+
+  /**
+   * booking-list.md §1: one shelf of the caller's own bookings.
+   *
+   * THE CUSTOMER COMES FROM THE TOKEN. There is no customerId parameter and
+   * there must never be one -- a list endpoint that takes whose list to show
+   * is an enumeration of every booking in the system behind one valid login.
+   *
+   * ROWS ARE SUMMARIES (§3), but the two figures on them are not summaries
+   * of anything: `total` and `due_amount` are the numbers the customer is
+   * about to pay, and they go through the SAME quote the drawer does. A
+   * cheaper total read off `price_fils` would be the NET figure while the
+   * drawer showed the one with VAT in it, and the customer would be looking
+   * at two prices for one haircut. The page is capped at 50 for that reason
+   * -- each row costs a quote.
+   *
+   * `salon`, `can_cancel` and `can_reschedule` are NOT here. See
+   * booking-list.md §9: a booking stores `branch_id` and nothing else, and
+   * the cancellation policy lives in platform. `salon_id` is returned so the
+   * caller can resolve all three; gostyle-customer-api does exactly that on
+   * the way out, because it reads the platform tables directly.
+   */
+  async list(input: {
+    readonly customerId: string;
+    readonly filter: ListFilter;
+    readonly page: number;
+    readonly pageSize: number;
+  }): Promise<unknown> {
+    /**
+     * NOTHING CAN LAND ON `recurring` YET, and this answers it without
+     * touching the database. The tab exists in the app; a booking only
+     * reaches it by belonging to a series, and the mobile create path
+     * refuses ROUTINE outright (`refuseUnsupported`). An empty page is the
+     * true answer, and it is a different answer from 422.
+     */
+    if (input.filter === 'recurring') {
+      return {
+        count: 0,
+        page: input.page,
+        page_size: input.pageSize,
+        counts: await this.shelfCounts(input.customerId),
+        results: [],
+      };
+    }
+
+    const { rows, count, counts } = await this.bookings.customerPage({
+      customerId: input.customerId,
+      shelf: input.filter,
+      // §2.4 measures "past" against the salon's clock. The instant is the
+      // same one either way -- branchInstant and endAt are both absolute --
+      // so a customer abroad sees the same shelf as one standing outside.
+      now: new Date(),
+      page: input.page,
+      pageSize: input.pageSize,
+    });
+
+    /**
+     * THE CATALOGUE AND ROSTER ARE LOADED ONCE PER BRANCH, not once per
+     * row. A customer's page is usually one or two salons, and loading the
+     * day for each of twenty rows separately is twenty round trips to
+     * render one screen.
+     */
+    /**
+     * ONE LOOKUP PER (BRANCH, DAY), and BOTH halves of that key were bugs.
+     *
+     * TENANT: `moneyFor` was scoped to the booking's tenant and the names
+     * were not, so a list came back fully priced with every stylist called
+     * `null` -- the roster lookup found nothing without a tenant, exactly as
+     * the catalogue did.
+     *
+     * DAY: the roster is resolved per trading day (`rosterFor` asks platform
+     * who is bookable ON that date), and this loaded TODAY for every row. A
+     * list is mostly future bookings, so the stylist working next Monday was
+     * absent from today's roster and came back nameless anyway.
+     *
+     * Keyed rather than per row: a page is a handful of days at one or two
+     * salons, and loading per booking would be twenty round trips to draw
+     * one screen.
+     */
+    const byDay = new Map<
+      string,
+      { branchId: string; day: string; tenantId: string | null }
+    >();
+    for (const b of rows) {
+      const day = b.tradingDay.toISOString().slice(0, 10);
+      const key = `${b.branchId}|${day}`;
+      if (!byDay.has(key)) {
+        byDay.set(key, { branchId: b.branchId, day, tenantId: b.tenantId });
+      }
+    }
+    const context = new Map(
+      await Promise.all(
+        [...byDay].map(
+          async ([key, { branchId, day, tenantId }]) =>
+            [
+              key,
+              await this.inBookingTenant({ tenantId }, () =>
+                this.branchNames(branchId, day),
+              ),
+            ] as const,
+        ),
+      ),
+    );
+
+    const results = await Promise.all(
+      rows.map(async (b) => {
+        const totalFils = (await this.moneyFor(b)).totalFils;
+        const captured = b.ledger
+          .filter((l) => l.entryType === 'captured')
+          .reduce((n, l) => n + l.amountFils, 0);
+
+        const day = b.tradingDay.toISOString().slice(0, 10);
+        const names = context.get(`${b.branchId}|${day}`) ?? EMPTY_BRANCH;
+        const stylistIds = [
+          ...new Set(
+            b.items
+              .map((i) => i.staffId)
+              .filter((x): x is string => x !== null)
+              .map((id) => names.index.toSlug(id)),
+          ),
+        ];
+
+        return {
+          id: b.id,
+          /** The slug the app sent in, never the folded uuid (CLAUDE.md 8). */
+          salon_id: names.index.toSlug(b.branchId),
+          status: toMobileStatus(b.status),
+          payment_status: toMobilePaymentStatus(b.paymentStatus),
+          booking_type: b.bookingType.toUpperCase(),
+          date: day,
+          start_time: toOffsetIso(
+            branchInstant(day, b.startMinute),
+            BRANCH_UTC_OFFSET_MIN,
+          ),
+          end_time: toOffsetIso(
+            branchInstant(day, b.startMinute + b.durationMin),
+            BRANCH_UTC_OFFSET_MIN,
+          ),
+          /** §3: `{ id, name }` only. The amounts are the drawer's job. */
+          services: b.items.map((i) => ({
+            id: names.index.toSlug(i.serviceId),
+            name: i.serviceName,
+          })),
+          stylists: stylistIds.map((id) => ({
+            id,
+            name: names.staff.get(id)?.name ?? null,
+            avatar_url: names.staff.get(id)?.avatar ?? null,
+          })),
+          total: totalFils === null ? null : filsToAed(totalFils),
+          due_amount:
+            totalFils === null
+              ? null
+              : filsToAed(Math.max(0, totalFils - captured)),
+          created_at: toOffsetIso(b.createdAt, BRANCH_UTC_OFFSET_MIN),
+        };
+      }),
+    );
+
+    return {
+      count,
+      page: input.page,
+      page_size: input.pageSize,
+      /**
+       * ALL THREE BADGES, ALWAYS. The repository knows two shelves; the app
+       * draws three chips and reads this object by key. Returning
+       * `{upcoming, archive}` here left the third one `undefined`, which
+       * renders as an empty badge rather than a zero -- caught by calling
+       * the endpoint, not by a test that mocked this body.
+       */
+      counts: withRecurring(counts),
+      results,
+    };
+  }
+
+  /**
+   * The badge numbers alone, for the one filter that never queries a page.
+   *
+   * Counted through the same `customerPage` the list uses rather than a
+   * second set of predicates -- the badge and the tab it opens have to
+   * agree, and two queries for one question is how they stop agreeing.
+   */
+  private async shelfCounts(
+    customerId: string,
+  ): Promise<{ upcoming: number; recurring: number; archive: number }> {
+    const { counts } = await this.bookings.customerPage({
+      customerId,
+      shelf: 'upcoming',
+      now: new Date(),
+      page: 1,
+      // Nothing reads the rows; asking for none keeps this two COUNTs.
+      pageSize: 0,
+    });
+    return withRecurring(counts);
+  }
+
+  /**
+   * Staff names and the slug index for one branch.
+   *
+   * A NAME IS DECORATION AND THE BOOKING IS REAL EITHER WAY -- the same
+   * bargain `present` makes. A platform that is down must not empty a
+   * customer's booking history; it may only leave the names off it.
+   */
+  private async branchNames(
+    branchId: string,
+    /**
+     * THE BOOKING'S OWN DAY, not today. `rosterFor` asks platform who is
+     * bookable ON this date, so today's roster does not contain the stylist
+     * working next Monday -- and a list is mostly future bookings.
+     */
+    tradingDay: string,
+  ): Promise<BranchNames> {
+    try {
+      const [roster, catalogue] = await Promise.all([
+        this.context.loadDay(branchId, tradingDay),
+        this.context.loadCatalogue(branchId),
+      ]);
+      return {
+        index: new SlugIndex([
+          ...roster.professionals.map((p) => p.id),
+          ...catalogue.map((c) => c.id),
+          DEFAULT_BRANCH_ID,
+        ]),
+        staff: new Map(
+          roster.professionals.map((p) => [
+            p.id,
+            { name: p.name, avatar: null },
+          ]),
+        ),
+      };
+    } catch {
+      return EMPTY_BRANCH;
+    }
   }
 
   /**
@@ -484,7 +871,26 @@ export class MobileBookingHandler {
       );
     }
 
-    const quote = await this.quoteFor(b);
+    const money = await this.moneyFor(b);
+
+    /**
+     * MONEY IS NEVER CHECKED AGAINST A FIGURE WE DO NOT HAVE.
+     *
+     * `moneyFor` falls back to the stored breakdown, which is what the
+     * customer agreed to, and that is a sound bar to check a payment
+     * against. But a booking with NO stored breakdown and no quote has no
+     * total at all, and accepting a payment against an unknown total would
+     * record whatever the client claimed. Refused as a field error the app
+     * can show, not as a 404 naming a service.
+     */
+    if (money.totalFils === null) {
+      throw MobileContractError.of(
+        'advance_paid_amount',
+        'amount_mismatch',
+        'This booking cannot be priced right now, so a payment cannot be ' +
+          'checked against it. Please try again shortly.',
+      );
+    }
 
     const refusal = checkPatch({
       target: input.paymentStatus,
@@ -492,9 +898,9 @@ export class MobileBookingHandler {
       advancePaidFils: advance,
       dueFils: due,
       reference: input.paymentReference,
-      totalFils: quote.totalMinor,
+      totalFils: money.totalFils,
       // The bar the ladder set for THIS booking, not a global minimum.
-      requiredDepositFils: quote.depositMinor,
+      requiredDepositFils: money.depositFils,
     });
     if (refusal !== null) {
       throw MobileContractError.of(
@@ -544,12 +950,16 @@ export class MobileBookingHandler {
         break;
     }
 
-    return this.present(
-      { salonId: b.branchId, promoCode: null },
-      b.id,
-      // Paid, so the draft window is gone (§10.3, §11.4).
-      null,
-      quote,
+    return this.inBookingTenant(b, () =>
+      this.present(
+        { salonId: b.branchId, promoCode: null },
+        b.id,
+        // Paid, so the draft window is gone (§10.3, §11.4).
+        null,
+        // The same figures the payment was just checked against, so the
+        // response cannot report a total the check did not use.
+        money,
+      ),
     );
   }
 
@@ -599,7 +1009,7 @@ export class MobileBookingHandler {
    * was charged, so both reads go back through the quote handler.
    */
   private async quoteFor(
-    b: NonNullable<Awaited<ReturnType<BookingRepository['detail']>>>,
+    b: QuotableBooking,
   ): Promise<Awaited<ReturnType<GetQuoteHandler['execute']>>> {
     return this.quotes.execute({
       branchId: b.branchId,
@@ -611,21 +1021,111 @@ export class MobileBookingHandler {
     });
   }
 
+  /**
+   * What a booking is worth, from the quote if it can be had and from the
+   * booking's own columns if it cannot.
+   *
+   * THE BUG THIS EXISTS FOR. `read` and `recordPayment` both asked the quote
+   * handler to price the booking again, and that handler resolves every
+   * service against the LIVE catalogue and throws `Unknown service` for one
+   * it cannot find. So a booking that already exists, with money owed on it,
+   * answered `404 BOOKING_NOT_FOUND` to both "show me my booking" and "here
+   * is the payment" — the customer could neither see it nor pay for it, and
+   * the message named a service rather than saying the price could not be
+   * worked out.
+   *
+   * A service stops resolving for ordinary reasons: it is retired, renamed,
+   * moved between branches, or the request reached us without the tenant the
+   * catalogue lookup needs. None of those should make a booking unreadable.
+   *
+   * THE FALLBACK IS WHAT THE CUSTOMER AGREED TO. `net/tax/discount` are the
+   * breakdown stored at creation, and create verified them against the quote
+   * before writing them, so the two agree wherever both exist. The deposit
+   * comes from `deposit_fils`, which is the bar the ladder set for THIS
+   * booking — better than a fresh quote's, which could have moved since.
+   *
+   * NULL WHEN EVEN THAT IS ABSENT, never a guess. `price_fils` is the NET
+   * total with no VAT in it; reporting it as the total would understate
+   * every figure by the tax, and understating what someone owes is worse
+   * than admitting the number is unavailable.
+   */
+  private async moneyFor(
+    b: StoredMoney & QuotableBooking,
+  ): Promise<BookingMoney> {
+    try {
+      const quote = await this.inBookingTenant(b, () => this.quoteFor(b));
+      return {
+        subtotalFils: quote.subtotalMinor,
+        vatFils: quote.vatMinor,
+        discountFils: quote.tierDiscountMinor + quote.bundleDiscountMinor,
+        totalFils: quote.totalMinor,
+        depositFils: quote.depositMinor,
+        priced: true,
+      };
+    } catch (e) {
+      const net = b.netFils;
+      // The arithmetic lives in the domain with its own spec, not inline
+      // here: it decides what a customer is told they owe (CLAUDE.md 1, 4).
+      const total = storedTotalFils(b);
+
+      MobileBookingHandler.log.warn(
+        `Booking ${b.id}: no quote (${
+          e instanceof Error ? e.message : String(e)
+        }); ${total === null ? 'and no stored breakdown either' : 'falling back to the stored breakdown'}.`,
+      );
+
+      return {
+        subtotalFils: net,
+        vatFils: b.taxFils ?? 0,
+        discountFils: b.discountFils ?? 0,
+        totalFils: total,
+        // The row's own requirement, which is what confirm actually enforced.
+        depositFils: b.depositFils,
+        priced: false,
+      };
+    }
+  }
+
+  /**
+   * Run something with the BOOKING's tenant in scope, not the request's.
+   *
+   * WHY A READ SHOULD NOT NEED A HEADER. The service catalogue is
+   * tenant-scoped, and `TenantContext` is filled from `X-Tenant-Id` on the
+   * way in. On a create that is fine — the caller names the salon, so the
+   * tenant can be derived from it. On `GET /booking/:id` and `PATCH` the
+   * caller holds only a booking id, and there is no way to know a tenant
+   * from one. Without the header the catalogue lookup found nothing and
+   * every service looked retired, so a booking that existed answered
+   * `404 Unknown service` to both reading and paying.
+   *
+   * The booking itself records the tenant it was written under, which is a
+   * better answer than a header the caller had to guess. Used only when the
+   * request carried none: a header that IS present belongs to a caller who
+   * knows their own tenancy, and overriding it here would let this method
+   * decide whose catalogue a booking is priced against.
+   */
+  private inBookingTenant<T>(
+    b: { readonly tenantId: string | null },
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    if (this.tenants.current() !== null || b.tenantId === null) return fn();
+    return this.tenants.run(b.tenantId, fn);
+  }
+
   /** §8, read back from what was actually stored. */
   async present(
     cmd: Pick<MobileBookingCommand, 'salonId' | 'promoCode'>,
     bookingId: string,
     linkExpiresAt: string | null,
     /**
-     * THE MONEY COMES FROM THE QUOTE, not the booking row.
+     * THE MONEY, however it was arrived at.
      *
-     * `booking.price_fils` is the NET total and the only money on the row;
-     * tax and discount are computed, not stored. Re-deriving them here from
-     * the price would be a second copy of the arithmetic that could disagree
-     * with what was charged, so the figures the app receives are the ones
-     * the quote produced and the confirm was checked against.
+     * Was a raw quote. It is now `moneyFor`'s shape, because a booking whose
+     * service the catalogue can no longer price must still be readable: this
+     * endpoint used to answer 404 for one, naming the service, which left a
+     * customer unable to see or pay a booking that plainly existed.
      */
-    quote: Awaited<ReturnType<GetQuoteHandler['execute']>>,
+    money: BookingMoney,
   ): Promise<unknown> {
     const b = await this.bookings.detail(bookingId);
     if (b === null) throw new NotFoundException('No such booking');
@@ -718,10 +1218,11 @@ export class MobileBookingHandler {
         name: names.get(id)?.name ?? null,
         avatar_url: names.get(id)?.avatar ?? null,
       })),
-      amount_without_tax: filsToAed(quote.subtotalMinor),
-      tax_amount: filsToAed(quote.vatMinor),
-      discount: filsToAed(quote.tierDiscountMinor + quote.bundleDiscountMinor),
-      total: filsToAed(quote.totalMinor),
+      amount_without_tax:
+        money.subtotalFils === null ? null : filsToAed(money.subtotalFils),
+      tax_amount: filsToAed(money.vatFils),
+      discount: filsToAed(money.discountFils),
+      total: money.totalFils === null ? null : filsToAed(money.totalFils),
       promo_code: cmd.promoCode,
       /**
        * WHAT WAS ACTUALLY TAKEN, from the ledger.
@@ -734,7 +1235,10 @@ export class MobileBookingHandler {
        * derived from.
        */
       advance_paid_amount: filsToAed(captured),
-      due_amount: filsToAed(Math.max(0, quote.totalMinor - captured)),
+      due_amount:
+        money.totalFils === null
+          ? null
+          : filsToAed(Math.max(0, money.totalFils - captured)),
       payment_status: toMobilePaymentStatus(b.paymentStatus),
       payment_status_detail: b.paymentStatus.toUpperCase(),
       payment_method: railToMethod(paidRail),

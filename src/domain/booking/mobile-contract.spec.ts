@@ -360,13 +360,25 @@ describe('checkPatch', () => {
     );
   });
 
-  it('requires a reference whenever money moved', () => {
-    expect(checkPatch({ ...base, reference: null })?.code).toBe(
-      'missing_payment_reference',
-    );
-    expect(checkPatch({ ...base, reference: '   ' })?.code).toBe(
-      'missing_payment_reference',
-    );
+  /**
+   * RELAXED WHILE PAYMENT IS SIMULATED. §11.3 requires a gateway reference
+   * whenever money moved, and that is what makes a payment recordable only
+   * once. There is no gateway yet, so the rule only forced callers to invent
+   * a fake id to satisfy a guard against a real gateway's retries.
+   *
+   * The test is inverted rather than deleted, so the day the check comes
+   * back this fails and says where to look. The cost is written down in
+   * `checkPatch`: with no reference, two identical patches are two payments.
+   */
+  it('accepts a payment with no reference, for now', () => {
+    expect(checkPatch({ ...base, reference: null })).toBeNull();
+    expect(checkPatch({ ...base, reference: '   ' })).toBeNull();
+  });
+
+  it('still takes a reference when one is sent', () => {
+    // The plumbing stays wired: a reference that IS sent is stored and
+    // still enforced unique, so restoring the rule rebuilds nothing.
+    expect(checkPatch({ ...base, reference: 'pi_3Qk2xLJ8n' })).toBeNull();
   });
 
   it('refuses taking more than the booking is worth', () => {
@@ -524,5 +536,52 @@ describe('createIntentOf', () => {
     // status it never sent.
     expect(toMobilePaymentStatus('unpaid')).toBe('DRAFT');
     expect(toMobilePaymentStatus('none_required')).toBe('PAY_AFTER_CHECK_IN');
+  });
+});
+
+describe('PAY_AFTER_CHECK_IN, and what it now means', () => {
+  it('is still one of the two arrangements a create may ask for', () => {
+    expect(createIntentOf('PAY_AFTER_CHECK_IN')).toEqual({
+      kind: 'on_arrival',
+    });
+    expect(createIntentOf('DRAFT')).toEqual({ kind: 'link' });
+  });
+
+  it('is still refused money at creation', () => {
+    /**
+     * WHAT DID NOT CHANGE. The deposit is now DEFERRED for this
+     * arrangement -- confirm no longer answers 402 when nothing is tendered
+     * -- but "pay at the salon" still means nothing was taken NOW. A payload
+     * claiming money moved is still a mismatch, because the two statements
+     * cannot both be true.
+     */
+    const refusal = checkPatch({
+      target: 'PAY_AFTER_CHECK_IN',
+      method: null,
+      advancePaidFils: 5000,
+      dueFils: null,
+      reference: null,
+      totalFils: 36750,
+      requiredDepositFils: 7000,
+    });
+    expect(refusal?.code).toBe('amount_mismatch');
+    expect(refusal?.expected).toBe(0);
+  });
+
+  it('takes nothing now, whatever deposit the ladder asked for', () => {
+    // The ladder still RUNS and the figure is still stored for the desk to
+    // ask for on arrival. It just no longer refuses the booking, which is
+    // what made this status unusable: every service required something.
+    expect(
+      checkPatch({
+        target: 'PAY_AFTER_CHECK_IN',
+        method: null,
+        advancePaidFils: 0,
+        dueFils: null,
+        reference: null,
+        totalFils: 36750,
+        requiredDepositFils: 7000,
+      }),
+    ).toBeNull();
   });
 });

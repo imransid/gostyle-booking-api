@@ -96,6 +96,43 @@ export const ERROR_CODES = [
    * to pick a moment to apply one.
    */
   'BOOKING_CURRENCY_MIXED',
+  /**
+   * THE REQUEST NAMED A BRANCH ITS TOKEN DOES NOT COVER.
+   *
+   * Before this existed the two disagreed silently and the body won: a
+   * waitlist entry sent with one branch id was written there, and the read
+   * -- which has no parameter to send -- looked somewhere else and found
+   * nothing. The row was real, accepted, and invisible forever.
+   *
+   * 403, not 404: the caller is authenticated and the branch exists. They
+   * may not write into it. `details.branchId` says which branch their token
+   * actually covers, so the client can correct itself without guessing.
+   */
+  'BOOKING_BRANCH_MISMATCH',
+  /**
+   * A MALFORMED OR MISSING QUERY PARAMETER.
+   *
+   * ValidationPipe's 400 carried no code at all, so a front end had nothing
+   * to branch on and could not tell a bad parameter from a bad body. It is
+   * its own code rather than BOOKING_REASON_REQUIRED, which is a 422 about a
+   * missing cancellation reason and was standing in for this by accident.
+   */
+  'BOOKING_VALIDATION_FAILED',
+  /**
+   * THIS SERVER CANNOT CHECK A SIGNATURE, so it cannot judge the caller.
+   *
+   * `JWT_ACCESS_SECRET` unset means staff tokens cannot be verified at all.
+   * That was reported as 401 UNAUTHENTICATED -- a sentence about the
+   * CALLER'S credential -- so a front end whose token worked everywhere else
+   * was told to sign in again, and spent its time on the wrong side of the
+   * wire. The same reasoning that made a consumer-auth outage a 503 rather
+   * than a 500: whose fault it is decides the status.
+   *
+   * 503, and `details.variable` names what is missing. Nobody should ever
+   * "fix" this by skipping verification -- an unverified staff token is a
+   * forged staff token, on every route in the service.
+   */
+  'AUTH_MISCONFIGURED',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -132,6 +169,9 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   BOOKING_PAYMENT_REQUIRED: 402,
   DEPENDENCY_UNAVAILABLE: 503,
   BOOKING_CURRENCY_MIXED: 422,
+  BOOKING_BRANCH_MISMATCH: 403,
+  BOOKING_VALIDATION_FAILED: 400,
+  AUTH_MISCONFIGURED: 503,
 };
 
 /** What the client receives. `details` is absent rather than null when empty. */
@@ -233,6 +273,7 @@ export function inferCode(status: number, message: string): ErrorCode {
    * being down is never a booking-level refusal, whatever words it uses, so
    * the prose never gets a say.
    */
+  if (status === 400) return 'BOOKING_VALIDATION_FAILED';
   if (status === 401) return 'UNAUTHENTICATED';
   if (status === 402) return 'BOOKING_PAYMENT_REQUIRED';
   if (status === 404) return 'BOOKING_NOT_FOUND';

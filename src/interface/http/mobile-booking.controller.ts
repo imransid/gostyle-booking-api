@@ -7,6 +7,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UsePipes,
   UseInterceptors,
 } from '@nestjs/common';
@@ -18,6 +19,7 @@ import {
   ApiOkResponse,
   ApiOperation,
   ApiProperty,
+  ApiQuery,
   ApiPropertyOptional,
   ApiTags,
   ApiUnprocessableEntityResponse,
@@ -39,6 +41,9 @@ import { MobileBookingHandler } from '@application/commands/mobile-booking.handl
 import { IdempotentInterceptor } from './idempotent.interceptor';
 import { mobileValidationPipe } from './mobile-validation.pipe';
 import type { MobilePaymentMethod } from '@domain/booking/mobile-contract';
+import { parseFilter } from '@domain/booking/booking-shelf';
+import { BookingRepository } from '@infrastructure/persistence/booking.repository';
+import { MobileContractError } from '@application/commands/mobile-booking.error';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
 
@@ -232,7 +237,10 @@ export class MobilePaymentDto {
 // failure and another for a handler failure.
 @UsePipes(mobileValidationPipe())
 export class MobileBookingController {
-  constructor(private readonly handler: MobileBookingHandler) {}
+  constructor(
+    private readonly handler: MobileBookingHandler,
+    private readonly bookings: BookingRepository,
+  ) {}
 
   @Post()
   @HttpCode(201)
@@ -285,6 +293,146 @@ export class MobileBookingController {
       customerId: actor.id ?? 'anonymous',
       idempotencyKey,
     });
+  }
+
+  /**
+   * booking-list.md §1. DECLARED BEFORE `:id`, and that is not cosmetic --
+   * Nest matches in declaration order, and a `@Get(':id')` above this one
+   * would swallow nothing here (the path is empty) but the reverse habit is
+   * what put `read-models.controller.ts` in its own file. Keep the specific
+   * route first.
+   */
+  @Get()
+  @HttpCode(200)
+  @ApiOperation({
+    summary: "The caller's own bookings, one shelf at a time",
+    description:
+      'WHOSE LIST IS NOT A PARAMETER. The customer comes from the token, ' +
+      'because an endpoint that takes a customer id is an enumeration of ' +
+      'every booking in the system behind one valid login.\n\n' +
+      '`counts` carries all three tab badges so the app does not ask three ' +
+      'times for numbers it draws at once. `recurring` is always 0 and its ' +
+      'page always empty: nothing can reach that shelf until series are ' +
+      'wired, and an empty page is a truer answer than a 422.\n\n' +
+      '`salon`, `can_cancel` and `can_reschedule` of §3 are NOT returned ' +
+      'here -- see §9. `salon_id` is, so the caller can resolve them.',
+  })
+  @ApiQuery({
+    name: 'filter',
+    required: false,
+    enum: ['upcoming', 'recurring', 'archive'],
+  })
+  @ApiQuery({ name: 'page', required: false, example: 1 })
+  @ApiQuery({ name: 'pageSize', required: false, example: 20 })
+  @ApiOkResponse({ description: 'A page of the shelf, plus all three counts.' })
+  @ApiUnprocessableEntityResponse({
+    description: 'filter was not one of the three: code `invalid_filter`.',
+  })
+  list(
+    @CurrentActor() actor: Actor,
+    @Query('filter') filter?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ): Promise<unknown> {
+    const shelf = parseFilter(filter);
+    if (shelf === null) {
+      throw MobileContractError.invalidFilter(filter ?? '');
+    }
+
+    return this.handler.list({
+      customerId: actor.id ?? 'anonymous',
+      filter: shelf,
+      page: clampInt(page, 1, 1, 10_000),
+      // §1: capped server-side at 50. A page is a quote per row.
+      pageSize: clampInt(pageSize, 20, 1, 50),
+    });
+  }
+
+  /**
+   * The intervals given staff are already occupied for.
+   *
+   * DECLARED BEFORE `:id`, and here that matters: Nest matches in order, so
+   * `@Get(':id')` above this would swallow `/busy` as a booking id.
+   *
+   * Exists for the customer app's slot picker, which lives in
+   * gostyle-customer-api and built its grid from a `booking` table in the
+   * PLATFORM database -- one this service has never written to. It therefore
+   * offered slots that were already sold, and the customer learned so only
+   * when the booking was refused.
+   *
+   * The picker keeps its own grid (shifts, breaks, opening hours, lead time
+   * are all platform facts it holds and this service does not). It needed
+   * exactly one thing from here: who is already busy.
+   */
+  @Get('busy')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Occupied intervals for a set of staff, for a slot picker',
+    description:
+      'Bookings live in this service, so nothing else can answer this ' +
+      'truthfully. Uses BLOCKING_STATES -- the engine own answer to "does ' +
+      'this still occupy a chair" -- which includes completed and settled: ' +
+      'the visit is over but it happened, and pretending the time is free ' +
+      'would let a booking land on top of it.',
+  })
+  @ApiQuery({ name: 'branchId', required: true })
+  @ApiQuery({
+    name: 'staffIds',
+    required: true,
+    description: 'Comma separated.',
+  })
+  @ApiQuery({ name: 'from', required: true, example: '2026-09-21T00:00:00Z' })
+  @ApiQuery({ name: 'to', required: true, example: '2026-09-23T00:00:00Z' })
+  @ApiOkResponse({ description: '{ busy: [{ staff_id, start_at, end_at }] }' })
+  async busy(
+    @Query('branchId') branchId?: string,
+    @Query('staffIds') staffIds?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ): Promise<unknown> {
+    const ids = (staffIds ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const fromAt = new Date(from ?? '');
+    const toAt = new Date(to ?? '');
+
+    /**
+     * AN UNANSWERABLE QUERY RETURNS NOTHING, not an empty success.
+     *
+     * An empty `busy` list means "these people are free", and answering that
+     * to a malformed window would put the picker back to offering sold
+     * slots -- the exact bug this endpoint exists to end. Refused loudly
+     * instead.
+     */
+    if (
+      !branchId ||
+      ids.length === 0 ||
+      Number.isNaN(fromAt.getTime()) ||
+      Number.isNaN(toAt.getTime()) ||
+      toAt <= fromAt
+    ) {
+      throw MobileContractError.of(
+        'from',
+        'invalid_window',
+        'branchId, staffIds and a from/to window are all required.',
+      );
+    }
+
+    const busy = await this.bookings.busyFor({
+      branchId,
+      staffIds: ids,
+      from: fromAt,
+      to: toAt,
+    });
+
+    return {
+      busy: busy.map((b) => ({
+        staff_id: b.staffId,
+        start_at: b.startAt.toISOString(),
+        end_at: b.endAt.toISOString(),
+      })),
+    };
   }
 
   @Get(':id')
@@ -347,4 +495,23 @@ export class MobileBookingController {
       paymentReference: dto.payment_reference ?? null,
     });
   }
+}
+
+/**
+ * A query integer, clamped rather than refused.
+ *
+ * `?page=0` and `?page=abc` are client bugs that cost the customer their
+ * booking history if answered with a 422. The list has one refusal (§5) and
+ * it is `filter`, because that one changes WHICH bookings come back; a
+ * nonsense page number only changes how many.
+ */
+function clampInt(
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(n)));
 }

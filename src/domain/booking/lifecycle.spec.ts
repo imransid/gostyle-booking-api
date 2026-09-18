@@ -19,6 +19,8 @@ import {
   ARRIVAL_GRACE_MIN,
   VIP_ARRIVAL_GRACE_MIN,
   AUTO_NO_SHOW_MIN,
+  checkInTiming,
+  noShowTiming,
   type BookingStatus,
   type CheckInGates,
   canUndoCheckIn,
@@ -551,5 +553,73 @@ describe('outcomeOf — the word the desk renders', () => {
       initiatedBy: 'customer',
     });
     expect(outcomeOf(o)).toBe('NO_CHARGE');
+  });
+});
+
+describe('day-of timing, on the clock rather than the grid', () => {
+  const START = Date.parse('2026-09-20T05:45:00.000Z');
+  const min = (n: number): number => n * 60_000;
+
+  it('refuses a check-in before the window opens', () => {
+    const v = checkInTiming({ nowMs: START - min(31), startAtMs: START });
+    expect(v.kind).toBe('too_early');
+    expect(v).toMatchObject({ opensAtMs: START - min(CHECK_IN_OPENS_MIN) });
+  });
+
+  it('allows a check-in the moment the window opens', () => {
+    expect(
+      checkInTiming({
+        nowMs: START - min(CHECK_IN_OPENS_MIN),
+        startAtMs: START,
+      }).kind,
+    ).toBe('allowed');
+  });
+
+  it('sees a booking two days out as too early -- the case minutes-of-day could not', () => {
+    // 16:45 on Sunday against 10:00 today is the same MINUTE arithmetic that
+    // let a two-day-out booking check in. Two days of milliseconds is not.
+    const twoDays = 2 * 24 * 60 * 60 * 1000;
+    expect(
+      checkInTiming({ nowMs: START - twoDays, startAtMs: START }).kind,
+    ).toBe('too_early');
+  });
+
+  it('gives a VIP the longer grace before a no-show may be taken', () => {
+    const ordinary = noShowTiming({
+      nowMs: START + min(ARRIVAL_GRACE_MIN),
+      startAtMs: START,
+      actor: 'staff',
+    });
+    const vip = noShowTiming({
+      nowMs: START + min(ARRIVAL_GRACE_MIN),
+      startAtMs: START,
+      actor: 'staff',
+      isVip: true,
+    });
+    expect(ordinary.kind).toBe('allowed');
+    expect(vip.kind).toBe('within_grace');
+    expect(vip).toMatchObject({
+      graceEndsAtMs: START + min(VIP_ARRIVAL_GRACE_MIN),
+    });
+  });
+
+  it('refuses a no-show taken hours before the booking starts', () => {
+    // GS-1236: booked 16:45, marked absent at about 10:00, AED 12.00 forfeited.
+    const v = noShowTiming({
+      nowMs: START - min(6 * 60),
+      startAtMs: START,
+      actor: 'staff',
+    });
+    expect(v.kind).toBe('within_grace');
+  });
+
+  it('never blocks the sweeper, which fires past the grace by construction', () => {
+    expect(
+      noShowTiming({
+        nowMs: START - min(600),
+        startAtMs: START,
+        actor: 'system',
+      }).kind,
+    ).toBe('allowed');
   });
 });

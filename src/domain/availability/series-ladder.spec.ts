@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  alternativesFor,
   repairOccurrence,
   nearestAlternatives,
   MAX_ALTERNATIVES,
@@ -213,5 +214,57 @@ describe('beyond the booking horizon', () => {
       req({ daysAhead: 90, candidates: [cand(AT, 'maya')] }),
     );
     expect(got.kind).toBe('repaired');
+  });
+});
+
+describe('alternativesFor', () => {
+  it('agrees with rung 4, so an occurrence shows the same list however it got stuck', () => {
+    // Nothing keeps the time and nothing is a 15/30 shift, so the ladder
+    // falls to rung 4 and both paths must name the same three slots.
+    const request = {
+      originalStartMin: 600,
+      incumbentStaffId: 'maya',
+      candidates: [
+        { startMin: 720, staffId: 'maya', durationMin: 45 },
+        { startMin: 780, staffId: 'reem', durationMin: 45 },
+        { startMin: 900, staffId: 'lina', durationMin: 45 },
+        { startMin: 1020, staffId: 'sara', durationMin: 45 },
+      ],
+      daysAhead: 3,
+      bookingHorizonDays: 90,
+    };
+    const ladder = repairOccurrence(request);
+    expect(ladder.kind).toBe('needs_attention');
+    expect(alternativesFor(request)).toEqual(
+      (ladder as { alternatives: unknown }).alternatives,
+    );
+  });
+
+  it('returns the nearest three, never more', () => {
+    const offers = alternativesFor({
+      originalStartMin: 600,
+      incumbentStaffId: 'maya',
+      candidates: [660, 720, 780, 840, 900].map((startMin) => ({
+        startMin,
+        staffId: 'maya',
+        durationMin: 45,
+      })),
+      daysAhead: 1,
+      bookingHorizonDays: 90,
+    });
+    expect(offers.length).toBeLessThanOrEqual(MAX_ALTERNATIVES);
+    expect(offers.map((o) => o.startMin)).toContain(660);
+  });
+
+  it('is empty when the day offers nothing, rather than inventing a slot', () => {
+    expect(
+      alternativesFor({
+        originalStartMin: 600,
+        incumbentStaffId: 'maya',
+        candidates: [],
+        daysAhead: 1,
+        bookingHorizonDays: 90,
+      }),
+    ).toEqual([]);
   });
 });

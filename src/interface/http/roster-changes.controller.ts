@@ -30,6 +30,7 @@ import type {
   RosterChangeKind,
 } from '@domain/booking/roster-change';
 import type { WireGate } from '@application/contract/wire';
+import { BranchId } from './branch.decorator';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
 import { DeskOnly } from '../../auth/desk-only.decorator';
@@ -50,9 +51,16 @@ const RESOLUTIONS = [
 ] as const;
 
 export class OpenRosterChangeDto {
-  @ApiProperty()
+  @ApiPropertyOptional({
+    description:
+      'OPTIONAL. The branch is taken from the token when the token names ' +
+      'one; send this only for a token scoped to no particular branch. ' +
+      'Sending a branch the token does not cover is 403 ' +
+      'BOOKING_BRANCH_MISMATCH rather than a write nobody can read back.',
+  })
+  @IsOptional()
   @IsString()
-  branchId!: string;
+  branchId?: string;
 
   @ApiProperty({ example: '2026-09-04' })
   @Matches(DAY)
@@ -146,9 +154,10 @@ export class RosterChangesController {
   async open(
     @Body() dto: OpenRosterChangeDto,
     @CurrentActor() actor: Actor,
+    @BranchId() branchId: string,
   ): Promise<RosterChangeView> {
     return this.handler.open({
-      branchId: dto.branchId,
+      branchId,
       tradingDay: dto.tradingDay,
       // Folded down at the edge. unshout() takes the allowed list, so an
       // unknown word is caught here rather than at the INSERT.

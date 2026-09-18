@@ -9,6 +9,31 @@ import type { RiskBand, Tier } from '@domain/booking/customer';
  */
 export interface CustomerContext {
   readonly customerId: string;
+  /**
+   * WHAT TO PRINT ON THE ROW. Null when nobody can tell us.
+   *
+   * Added against the port's own instinct -- "the customer service owns
+   * names" is still true -- because the consequence of NOT publishing one
+   * turned out to be worse than the coupling. No read model carried a name:
+   * not the list, not the calendar day or week, not the events feed, not the
+   * series board, not the walk-in queue. The console joined against the
+   * platform customers API instead, which knows one of the twenty-one
+   * customers these bookings belong to, so thirteen of the twenty-five rows
+   * on page one rendered as "#127B" and every mount fired forty doomed
+   * lookups.
+   *
+   * A name is decoration and this module still decides nothing with it, so
+   * null is a legal answer everywhere and no caller may depend on it. But it
+   * is decoration on every screen a human looks at, and it belongs in the
+   * payload the screen already fetches rather than in a second round trip
+   * per row.
+   *
+   * POPULATING IT NEEDS A CUSTOMER DIRECTORY over gRPC -- the same shape as
+   * ListStylists and ListServices. See docs/api/PLATFORM-ASKS-BOOKING-CONTEXT.md.
+   * Until that exists the fixture answers for its own seeds and every real
+   * customer is null, which is at least a null the client can branch on.
+   */
+  readonly name: string | null;
   readonly tier: Tier;
   readonly risk: RiskBand;
   readonly riskScore: number;
@@ -30,6 +55,7 @@ export interface CustomerContext {
  */
 export const ANONYMOUS: CustomerContext = {
   customerId: 'anonymous',
+  name: null,
   tier: 'none',
   risk: 'LOW',
   riskScore: 80,

@@ -1,4 +1,5 @@
 import { TERMINAL_STATES, type BookingStatus } from './lifecycle';
+import type { PaymentStatus } from '../../generated/prisma/enums';
 
 /**
  * Which list a customer's booking belongs on.
@@ -31,6 +32,20 @@ const ALREADY_HAPPENED: ReadonlySet<BookingStatus> = new Set<BookingStatus>([
   'completed',
 ]);
 
+/**
+ * Every status that puts a booking on the archive shelf REGARDLESS of when
+ * it was for.
+ *
+ * Exported because the list query has to express the same rule in SQL: a
+ * page of bookings cannot be filtered by calling `shelfOf` on rows that
+ * have not been fetched yet. Deriving the set here rather than writing the
+ * status names a second time in the repository is the point -- the two
+ * would disagree the day a status is added, and the query is the copy
+ * nobody would think to update (CLAUDE.md 4).
+ */
+export const ARCHIVE_STATES: ReadonlySet<BookingStatus> =
+  new Set<BookingStatus>([...TERMINAL_STATES, ...ALREADY_HAPPENED]);
+
 export function shelfOf(input: {
   readonly status: BookingStatus;
   /**
@@ -43,7 +58,69 @@ export function shelfOf(input: {
   readonly endsAtMs: number;
   readonly nowMs: number;
 }): BookingShelf {
-  if (TERMINAL_STATES.has(input.status)) return 'archive';
-  if (ALREADY_HAPPENED.has(input.status)) return 'archive';
+  if (ARCHIVE_STATES.has(input.status)) return 'archive';
   return input.endsAtMs > input.nowMs ? 'upcoming' : 'archive';
 }
+
+// --------------------------------------------------------------- the tabs
+
+/**
+ * The three words the `filter` parameter accepts (booking-list.md §2).
+ *
+ * `recurring` is one of them even though nothing can land on it yet. The tab
+ * exists in the app, and answering an empty page is a different thing from
+ * answering 422 -- the first says "you have no routines", which is true, and
+ * the second says "there is no such tab", which is not.
+ */
+export type ListFilter = 'upcoming' | 'recurring' | 'archive';
+
+const FILTERS: ReadonlySet<string> = new Set<ListFilter>([
+  'upcoming',
+  'recurring',
+  'archive',
+]);
+
+/** The default is `upcoming`; anything unrecognised is null, not a guess. */
+export function parseFilter(raw: string | undefined | null): ListFilter | null {
+  if (raw === undefined || raw === null || raw === '') return 'upcoming';
+  return FILTERS.has(raw) ? (raw as ListFilter) : null;
+}
+
+/**
+ * Whether a booking belongs on any shelf at all.
+ *
+ * A LIVE DRAFT IS SHOWN. booking-list.md §2.3 said a checkout inside its
+ * hold window appears on none of the three shelves, and this enforced that
+ * -- but it meant a customer who started paying, closed the app and came
+ * back found nothing at all, with a slot held against them and no way to
+ * reach it. The booking exists, it is theirs, and the whole point of §6.3
+ * ("DRAFT bookings are readable, so an interrupted checkout can be
+ * resumed") is that they can get back to it. Hiding it from the only screen
+ * that lists bookings made that impossible.
+ *
+ * `unpaid` IS the app's `DRAFT` -- see `toMobilePaymentStatus`, the one
+ * mapping between the two vocabularies.
+ *
+ * AN ABANDONED ONE IS STILL GONE, and that half of §2.3 stands. A checkout
+ * whose window ran out is `expired`, and listing it would fill a customer's
+ * history with bookings they never made and cannot act on. The live one is
+ * a task; the dead one is litter.
+ *
+ * `none_required` is likewise shown: a PAY_AFTER_CHECK_IN booking is settled
+ * by arrangement, not unfinished.
+ */
+export function isListable(input: {
+  readonly status: BookingStatus;
+  readonly paymentStatus: PaymentStatus;
+}): boolean {
+  // An abandoned checkout: unpaid AND already run out. Not history, litter.
+  if (input.paymentStatus === 'unpaid' && input.status === 'expired') {
+    return false;
+  }
+  // Never real bookings: a `draft` row is a shell and a `held` one is a
+  // reservation that has not been confirmed into anything.
+  return input.status !== 'draft' && input.status !== 'held';
+}
+
+/** The statuses `isListable` refuses outright, for the query to exclude. */
+export const NEVER_LISTED_STATES: readonly BookingStatus[] = ['draft', 'held'];

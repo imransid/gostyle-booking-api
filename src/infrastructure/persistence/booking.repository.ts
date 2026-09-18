@@ -8,6 +8,11 @@ import { TenantContext } from '../tenancy/tenant-context';
 import { isExclusionViolation, isUniqueViolationOn } from './pg-errors';
 import { toUuid } from './hold.repository';
 import { ItemSource } from '@domain/booking/service-resolution';
+import {
+  ARCHIVE_STATES,
+  NEVER_LISTED_STATES,
+} from '@domain/booking/booking-shelf';
+import { BLOCKING_STATES } from '@domain/booking/lifecycle';
 
 export type PaymentRail =
   'wallet' | 'card' | 'apple_pay' | 'cash' | 'link' | 'internal';
@@ -47,6 +52,15 @@ export interface ConfirmBookingInput {
   readonly items: readonly ConfirmItem[];
   readonly priceFils: number;
   readonly depositFils: number;
+  /**
+   * The §2 breakdown, from the verified quote. Optional so the desk paths
+   * that have no such breakdown keep compiling and keep writing NULLs --
+   * which is what they did before, and is honest for them.
+   */
+  readonly netFils?: number | null;
+  readonly taxFils?: number | null;
+  readonly discountFils?: number | null;
+  readonly promoCode?: string | null;
   /** "Service rule 50% (Full color and gloss)". Answers "why was I charged this". */
   readonly requirementSource: string | null;
   readonly payment: PaymentRecord | null;
@@ -178,6 +192,29 @@ export class BookingRepository {
             durationMin: totalDuration,
             priceFils: input.priceFils,
             depositFils: input.depositFils,
+            /**
+             * THE BREAKDOWN, WRITTEN AT LAST.
+             *
+             * These four columns were added for the FE contract and then
+             * never filled by anything, so every booking carried NULLs. That
+             * only showed up when a booking could not be re-quoted -- a
+             * retired service, or a read that arrives without a tenant --
+             * and there was nothing on the row to fall back to, so a booking
+             * that existed could be neither read nor paid for.
+             *
+             * `price_fils` alone cannot stand in: it is the NET total with
+             * no VAT in it, and reporting it as the total understates every
+             * booking by the tax.
+             *
+             * Taken from the VERIFIED quote, never from the client's claim.
+             * §3 already compared the two and refused a mismatch, so by the
+             * time this runs they agree -- and the server's figure is the
+             * one that was actually charged.
+             */
+            netFils: input.netFils ?? null,
+            taxFils: input.taxFils ?? null,
+            discountFils: input.discountFils ?? null,
+            promoCode: input.promoCode ?? null,
             requirementSource: input.requirementSource,
             linkExpiresAt: input.linkExpiresAt,
             channel: input.channel,
@@ -347,6 +384,60 @@ export class BookingRepository {
    * every other view is translated and a second translation site is how the
    * two drift (CLAUDE.md 4).
    */
+  /**
+   * The intervals these staff are already occupied for, in one window.
+   *
+   * WHY THIS EXISTS. gostyle-customer-api builds the customer's slot picker
+   * from platform shifts and a `booking` table in the PLATFORM database --
+   * which this service has never written to, because bookings live here in
+   * `gostyle_booking`. So the picker computed free time against zero
+   * bookings and offered slots that were already sold; the customer picked
+   * one and the engine refused it, naming the stylist. It read as a stylist
+   * problem, a clock problem and a timezone problem in turn before anyone
+   * looked at which table was being queried.
+   *
+   * BLOCKING_STATES, imported not re-listed. It is the engine's own answer
+   * to "does this still occupy a chair", and a second copy here would be the
+   * one that goes stale the day a status is added (CLAUDE.md 4). Note it
+   * includes `completed` and `settled`: the visit is over but it happened,
+   * and pretending the time is free would let a booking land on top of it.
+   *
+   * OVERLAP, not containment: a booking that began before the window and
+   * runs into it occupies the same minutes as one starting inside it.
+   */
+  async busyFor(input: {
+    readonly branchId: string;
+    readonly staffIds: readonly string[];
+    readonly from: Date;
+    readonly to: Date;
+  }): Promise<readonly { staffId: string; startAt: Date; endAt: Date }[]> {
+    if (input.staffIds.length === 0) return [];
+
+    const rows = await this.prisma.bookingItem.findMany({
+      where: {
+        staffId: { in: input.staffIds.map((id) => toUuid(id)) },
+        booking: {
+          branchId: toUuid(input.branchId),
+          status: { in: [...BLOCKING_STATES] },
+          startAt: { lt: input.to },
+          endAt: { gt: input.from },
+        },
+      },
+      select: {
+        staffId: true,
+        booking: { select: { startAt: true, endAt: true } },
+      },
+    });
+
+    return rows
+      .filter((r): r is typeof r & { staffId: string } => r.staffId !== null)
+      .map((r) => ({
+        staffId: r.staffId,
+        startAt: r.booking.startAt,
+        endAt: r.booking.endAt,
+      }));
+  }
+
   async detail(bookingId: string) {
     return this.prisma.booking.findUnique({
       where: { id: bookingId },
@@ -355,6 +446,115 @@ export class BookingRepository {
         ledger: { orderBy: { createdAt: 'asc' } },
         statusHistory: { orderBy: { createdAt: 'asc' } },
       },
+    });
+  }
+
+  /**
+   * One shelf of one customer's bookings, and the size of all of them.
+   *
+   * THE SHELF IS DECIDED IN SQL, from `ARCHIVE_STATES` and `endAt`, which is
+   * the same pair `shelfOf` reads. It cannot call `shelfOf` here -- that
+   * would mean fetching every booking a customer has ever made in order to
+   * throw most of them away -- so the domain exports the set and the spec
+   * pins the two together for all fourteen statuses. Do not write status
+   * names into this file (CLAUDE.md 4).
+   *
+   * `counts` comes back with the page because the app draws three tab
+   * badges and would otherwise ask three times for numbers it renders at
+   * once. They are counted over the SAME listable set as the page, so the
+   * badge and the list it opens cannot disagree.
+   *
+   * `booking_customer_idx` is `[customer_id, start_at DESC]`, which is
+   * exactly this query: the customer narrows it and the sort is served by
+   * the index in both directions.
+   */
+  async customerPage(input: {
+    readonly customerId: string;
+    readonly shelf: 'upcoming' | 'archive';
+    readonly now: Date;
+    readonly page: number;
+    readonly pageSize: number;
+  }): Promise<{
+    readonly rows: Awaited<ReturnType<BookingRepository['pageRows']>>;
+    readonly count: number;
+    readonly counts: { readonly upcoming: number; readonly archive: number };
+  }> {
+    const customerId = toUuid(input.customerId);
+    const listable = {
+      customerId,
+      status: { notIn: [...NEVER_LISTED_STATES] },
+      // The one exclusion left, and it mirrors `isListable`: an ABANDONED
+      // checkout -- unpaid and already run out -- is litter, not history. A
+      // LIVE draft is listed, so an interrupted checkout can be found again.
+      NOT: { paymentStatus: 'unpaid' as const, status: 'expired' as const },
+    };
+
+    const upcoming = {
+      ...listable,
+      status: { notIn: [...NEVER_LISTED_STATES, ...ARCHIVE_STATES] },
+      endAt: { gt: input.now },
+    };
+    const archive = {
+      ...listable,
+      OR: [
+        { status: { in: [...ARCHIVE_STATES] } },
+        { endAt: { lte: input.now } },
+      ],
+    };
+    const where = input.shelf === 'upcoming' ? upcoming : archive;
+
+    // One round trip. The two counts are needed whichever shelf was asked
+    // for, so they are not conditional on it.
+    //
+    // A pageSize of 0 asks for the BADGES ONLY, and skips the page query
+    // rather than passing `take: 0` to Prisma -- a zero take is not a
+    // documented "no rows" and is the sort of thing that quietly becomes
+    // "all rows" across a version.
+    const [rows, count, upcomingCount, archiveCount] = await Promise.all([
+      input.pageSize > 0
+        ? this.pageRows(where, input.shelf, input.page, input.pageSize)
+        : Promise.resolve([]),
+      this.prisma.booking.count({ where }),
+      this.prisma.booking.count({ where: upcoming }),
+      this.prisma.booking.count({ where: archive }),
+    ]);
+
+    return {
+      rows,
+      count,
+      counts: { upcoming: upcomingCount, archive: archiveCount },
+    };
+  }
+
+  /**
+   * The page itself. `items` for the service and stylist lines, `ledger` for
+   * what was actually captured -- both of which the row renders, and neither
+   * of which is worth a second query per booking.
+   *
+   * `statusHistory` is NOT included: the drawer shows it, a list row does
+   * not, and it is the one relation that grows without bound.
+   */
+  private pageRows(
+    where: object,
+    shelf: 'upcoming' | 'archive',
+    page: number,
+    pageSize: number,
+  ) {
+    return this.prisma.booking.findMany({
+      where,
+      include: {
+        items: { orderBy: { position: 'asc' } },
+        ledger: { orderBy: { createdAt: 'asc' } },
+      },
+      // Soonest first on the way forward, most recent first on the way back
+      // (§2). `id` breaks a tie so a page boundary cannot show one booking
+      // twice and skip another.
+      orderBy: [
+        { startAt: shelf === 'upcoming' ? 'asc' : 'desc' },
+        { id: 'asc' },
+      ],
+      skip: (page - 1) * pageSize,
+      take: pageSize,
     });
   }
 }

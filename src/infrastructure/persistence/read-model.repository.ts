@@ -123,7 +123,14 @@ export class ReadModelRepository {
        LIMIT ${f.limit ?? 500} OFFSET ${f.offset ?? 0}`;
   }
 
-  /** The unfiltered total behind a page, for `total` in the envelope. */
+  /**
+   * The total behind a page, for `total` in the envelope.
+   *
+   * IT HAS TO NARROW BY EXACTLY WHAT `list` NARROWS BY, and it did not:
+   * `staffId` and `customerId` were applied to the rows and not to the count,
+   * so a filtered read returned five rows and reported `total: 109`. Every
+   * pager built on that asks for pages that do not exist.
+   */
   async count(f: ListFilters): Promise<number> {
     const statuses = [...(f.statuses ?? LIVE_STATUSES)];
     const rows = await this.prisma.$queryRaw<{ n: bigint }[]>`
@@ -133,6 +140,16 @@ export class ReadModelRepository {
          AND b.trading_day >= ${f.fromDay}::date
          AND b.trading_day < ${f.toDay}::date
          AND b.status::text = ANY(${statuses}::text[])
+         AND (${f.staffId ?? null}::text IS NULL OR EXISTS (
+               SELECT 1 FROM booking_item si
+                WHERE si.booking_id = b.id
+                  AND si.staff_id = ${
+                    f.staffId === undefined ? null : toUuid(f.staffId)
+                  }::uuid))
+         AND (${f.customerId ?? null}::text IS NULL
+              OR b.customer_id = ${
+                f.customerId === undefined ? null : toUuid(f.customerId)
+              }::uuid)
          AND (${f.notReminded ?? false}::boolean IS FALSE
               OR b.reminded_24h_at IS NULL)
          AND (${f.conflictsOnly ?? false}::boolean IS FALSE OR EXISTS (
@@ -249,6 +266,8 @@ export class ReadModelRepository {
       reason: string | null;
       created_at: Date;
       customer_id: string;
+      trading_day: Date;
+      start_at: Date;
       start_minute: number;
       duration_min: number;
       price_fils: number;
@@ -256,19 +275,32 @@ export class ReadModelRepository {
       payment_status: string;
       service_names: string[] | null;
       staff_ids: string[] | null;
+      recovered: boolean;
     }[]
   > {
     const kinds = [...(input.kinds ?? ['cancelled', 'no_show'])];
     return this.prisma.$queryRaw`
       SELECT h.id, h.booking_id, b.code, h.to_status::text AS to_status,
              h.actor_kind::text AS actor_kind, h.reason, h.created_at,
-             b.customer_id, b.start_minute, b.duration_min,
+             b.customer_id, b.trading_day, b.start_at,
+             b.start_minute, b.duration_min,
              b.price_fils, b.deposit_fils,
              b.payment_status::text AS payment_status,
              array_agg(i.service_name ORDER BY i.position)
                FILTER (WHERE i.id IS NOT NULL) AS service_names,
              array_agg(DISTINCT i.staff_id::text)
-               FILTER (WHERE i.staff_id IS NOT NULL) AS staff_ids
+               FILTER (WHERE i.staff_id IS NOT NULL) AS staff_ids,
+             -- DID THE WAITLIST REFILL THE SLOT THIS FREED?
+             --
+             -- The only record of a recovery: an accepted entry keeps the
+             -- code of the cancellation it took (see markAccepted). No row
+             -- carried this at all, so recovered was permanently zero on a
+             -- screen whose whole point is what the salon got back.
+             EXISTS (
+               SELECT 1 FROM waitlist_entry w
+                WHERE w.status = 'accepted'
+                  AND w.offered_booking_code = b.code
+             ) AS recovered
         FROM booking_status_history h
         JOIN booking b ON b.id = h.booking_id
         LEFT JOIN booking_item i ON i.booking_id = b.id
@@ -305,42 +337,139 @@ export class ReadModelRepository {
     return Number(rows[0]?.n ?? 0n);
   }
 
-  /** One event, by its history-row id. */
-  async event(id: string): Promise<{
-    id: string;
-    booking_id: string;
-    code: string;
-    to_status: BookingStatus;
-    actor_kind: string;
-    reason: string | null;
-    created_at: Date;
-    customer_id: string;
-    start_minute: number;
-    duration_min: number;
-    price_fils: number;
-    deposit_fils: number;
-    payment_status: string;
-    service_names: string[] | null;
-    staff_ids: string[] | null;
-  } | null> {
+  /**
+   * One event, by its history-row id.
+   *
+   * THE SAME ROW SHAPE THE LIST RETURNS, deliberately. The detail read
+   * published eight fields while the list row for the same event carried
+   * fourteen, so a deep link or a page refresh -- which has no list row to
+   * merge with -- could not draw the drawer at all.
+   */
+  async event(
+    id: string,
+  ): Promise<
+    Awaited<ReturnType<ReadModelRepository['events']>>[number] | null
+  > {
     const rows = await this.prisma.$queryRaw<
       Awaited<ReturnType<ReadModelRepository['events']>>
     >`
       SELECT h.id, h.booking_id, b.code, h.to_status::text AS to_status,
              h.actor_kind::text AS actor_kind, h.reason, h.created_at,
-             b.customer_id, b.start_minute, b.duration_min,
+             b.customer_id, b.trading_day, b.start_at,
+             b.start_minute, b.duration_min,
              b.price_fils, b.deposit_fils,
              b.payment_status::text AS payment_status,
              array_agg(i.service_name ORDER BY i.position)
                FILTER (WHERE i.id IS NOT NULL) AS service_names,
              array_agg(DISTINCT i.staff_id::text)
-               FILTER (WHERE i.staff_id IS NOT NULL) AS staff_ids
+               FILTER (WHERE i.staff_id IS NOT NULL) AS staff_ids,
+             EXISTS (
+               SELECT 1 FROM waitlist_entry w
+                WHERE w.status = 'accepted'
+                  AND w.offered_booking_code = b.code
+             ) AS recovered
         FROM booking_status_history h
         JOIN booking b ON b.id = h.booking_id
         LEFT JOIN booking_item i ON i.booking_id = b.id
        WHERE h.id = ${id}::uuid
        GROUP BY h.id, b.id`;
     return rows[0] ?? null;
+  }
+
+  /**
+   * THE WHOLE WINDOW, not the page.
+   *
+   * `summary` was computed from the rows that happened to be on screen, so
+   * it tracked `pageSize` exactly -- 10 events on a 10-row page, 100 on a
+   * 100-row page -- while `total` correctly said 132. It is the KPI strip
+   * for the period, so it has to be an aggregate over the period.
+   */
+  async eventTotals(input: {
+    readonly branchId: string;
+    readonly fromDay: string;
+    readonly toDay: string;
+    readonly kinds?: readonly BookingStatus[] | undefined;
+    readonly lateOnly?: boolean | undefined;
+    readonly lateCancelWindowHours: number;
+  }): Promise<{
+    events: number;
+    noShows: number;
+    serviceValueFils: number;
+    depositsKeptFils: number;
+    recovered: number;
+  }> {
+    const kinds = [...(input.kinds ?? ['cancelled', 'no_show'])];
+    const rows = await this.prisma.$queryRaw<
+      {
+        events: bigint;
+        no_shows: bigint;
+        service_value_fils: bigint | null;
+        deposits_kept_fils: bigint | null;
+        recovered: bigint;
+      }[]
+    >`
+      SELECT count(*) AS events,
+             count(*) FILTER (WHERE h.to_status = 'no_show') AS no_shows,
+             sum(b.price_fils) AS service_value_fils,
+             sum(b.deposit_fils) FILTER (
+               WHERE b.payment_status = 'forfeited'
+             ) AS deposits_kept_fils,
+             count(*) FILTER (
+               WHERE EXISTS (
+                 SELECT 1 FROM waitlist_entry w
+                  WHERE w.status = 'accepted'
+                    AND w.offered_booking_code = b.code)
+             ) AS recovered
+        FROM booking_status_history h
+        JOIN booking b ON b.id = h.booking_id
+       WHERE b.branch_id = ${toUuid(input.branchId)}::uuid
+         AND h.created_at >= ${input.fromDay}::date
+         AND h.created_at < (${input.toDay}::date + interval '1 day')
+         AND h.to_status::text = ANY(${kinds}::text[])
+         AND (${input.lateOnly ?? false}::boolean IS FALSE
+              OR b.start_at - h.created_at
+                 < make_interval(hours => ${input.lateCancelWindowHours}))`;
+
+    const r = rows[0];
+    return {
+      events: Number(r?.events ?? 0n),
+      noShows: Number(r?.no_shows ?? 0n),
+      serviceValueFils: Number(r?.service_value_fils ?? 0n),
+      depositsKeptFils: Number(r?.deposits_kept_fils ?? 0n),
+      recovered: Number(r?.recovered ?? 0n),
+    };
+  }
+
+  /**
+   * Every reason given in the window, with what it cost.
+   *
+   * Read raw and grouped in the domain rather than `GROUP BY reason` here:
+   * the reason is free text, so "Customer called" and "customer called" are
+   * one reason, and case folding is a rule, not a query detail.
+   */
+  async eventReasons(input: {
+    readonly branchId: string;
+    readonly fromDay: string;
+    readonly toDay: string;
+    readonly kinds?: readonly BookingStatus[] | undefined;
+    readonly lateOnly?: boolean | undefined;
+    readonly lateCancelWindowHours: number;
+  }): Promise<{ reason: string | null; priceFils: number }[]> {
+    const kinds = [...(input.kinds ?? ['cancelled', 'no_show'])];
+    const rows = await this.prisma.$queryRaw<
+      { reason: string | null; price_fils: number }[]
+    >`
+      SELECT h.reason, b.price_fils
+        FROM booking_status_history h
+        JOIN booking b ON b.id = h.booking_id
+       WHERE b.branch_id = ${toUuid(input.branchId)}::uuid
+         AND h.created_at >= ${input.fromDay}::date
+         AND h.created_at < (${input.toDay}::date + interval '1 day')
+         AND h.to_status::text = ANY(${kinds}::text[])
+         AND (${input.lateOnly ?? false}::boolean IS FALSE
+              OR b.start_at - h.created_at
+                 < make_interval(hours => ${input.lateCancelWindowHours}))`;
+    return rows.map((r) => ({ reason: r.reason, priceFils: r.price_fils }));
   }
 
   /**
@@ -634,7 +763,16 @@ export class ReadModelRepository {
   }
 
   /** The recurring screen's list, with health derived from its occurrences. */
-  async seriesBoard(branchId: string): Promise<
+  async seriesBoard(
+    branchId: string,
+    /**
+     * ONE SERIES, when the panel asks. Same query, same aggregate, so the
+     * board row and the panel header cannot disagree -- which they did:
+     * every identity and economics field the detail screen needs existed
+     * only on the list, so a deep link had nothing to render.
+     */
+    seriesId?: string,
+  ): Promise<
     {
       id: string;
       customer_id: string;
@@ -681,8 +819,23 @@ export class ReadModelRepository {
         FROM booking_series s
         LEFT JOIN series_occurrence o ON o.series_id = s.id
        WHERE s.branch_id = ${toUuid(branchId)}::uuid
+         AND (${seriesId ?? null}::text IS NULL
+              OR s.id = ${seriesId ?? null}::uuid)
        GROUP BY s.id
        ORDER BY s.created_at DESC`;
+  }
+
+  /**
+   * One series' board row, found by id without needing its branch.
+   *
+   * The panel is reached by id alone -- a deep link carries no branch -- so
+   * the branch is read off the row rather than demanded from the caller.
+   */
+  async seriesBranch(seriesId: string): Promise<string | null> {
+    const rows = await this.prisma.$queryRaw<{ branch_id: string }[]>`
+      SELECT branch_id::text AS branch_id FROM booking_series
+       WHERE id = ${seriesId}::uuid LIMIT 1`;
+    return rows[0]?.branch_id ?? null;
   }
 
   /** Series flagged at risk, with the customer, for the worklist tile. */

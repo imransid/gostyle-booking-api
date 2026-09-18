@@ -11,9 +11,18 @@ import {
   ApiOkResponse,
   ApiOperation,
   ApiProperty,
+  ApiPropertyOptional,
+  ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
-import { ArrayNotEmpty, IsArray, IsString, Matches } from 'class-validator';
+import {
+  ArrayNotEmpty,
+  IsArray,
+  IsOptional,
+  IsString,
+  Matches,
+} from 'class-validator';
+import { BranchId } from './branch.decorator';
 import {
   CompactionHandler,
   type ApplyCompactionView,
@@ -25,10 +34,38 @@ import { DeskOnly } from '../../auth/desk-only.decorator';
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
-export class ApplyCompactionDto {
-  @ApiProperty()
+/**
+ * A QUERY DTO, not three bare @Query() strings.
+ *
+ * `GET /compaction` with no `tradingDay` used to reach the handler with
+ * `undefined` and die inside a date cast: 500 BOOKING_STATE_INVALID,
+ * "Something went wrong", no field named. A DTO puts the ValidationPipe in
+ * front of it, so the same mistake is a 400 that says `tradingDay`.
+ */
+export class CompactionPlanQuery {
+  @ApiProperty({ example: '2026-09-04' })
+  @Matches(DAY, { message: 'tradingDay must be YYYY-MM-DD' })
+  tradingDay!: string;
+
+  @ApiPropertyOptional({
+    description: 'OPTIONAL. See the note on the apply body.',
+  })
+  @IsOptional()
   @IsString()
-  branchId!: string;
+  branchId?: string;
+}
+
+export class ApplyCompactionDto {
+  @ApiPropertyOptional({
+    description:
+      'OPTIONAL. The branch is taken from the token when the token names ' +
+      'one; send this only for a token scoped to no particular branch. ' +
+      'Sending a branch the token does not cover is 403 ' +
+      'BOOKING_BRANCH_MISMATCH rather than a write nobody can read back.',
+  })
+  @IsOptional()
+  @IsString()
+  branchId?: string;
 
   @ApiProperty({ example: '2026-09-04' })
   @Matches(DAY)
@@ -88,11 +125,13 @@ export class CompactionController {
       'frees more than four stranded minutes. Nothing is applied.',
   })
   @ApiOkResponse({ description: 'The slivers and the proposed consent moves.' })
+  @ApiQuery({ name: 'tradingDay', example: '2026-09-04' })
+  @ApiQuery({ name: 'branchId', required: false })
   async plan(
-    @Query('branchId') branchId: string,
-    @Query('tradingDay') tradingDay: string,
+    @BranchId() branchId: string,
+    @Query() q: CompactionPlanQuery,
   ): Promise<CompactionView> {
-    return this.handler.plan(branchId, tradingDay);
+    return this.handler.plan(branchId, q.tradingDay);
   }
 
   @Post('apply')
@@ -108,8 +147,9 @@ export class CompactionController {
   async apply(
     @Body() dto: ApplyCompactionDto,
     @CurrentActor() actor: Actor,
+    @BranchId() branchId: string,
   ): Promise<ApplyCompactionView> {
-    return this.handler.apply(dto.branchId, dto.tradingDay, dto.codes, {
+    return this.handler.apply(branchId, dto.tradingDay, dto.codes, {
       kind: actor.kind,
       id: actor.id,
     });

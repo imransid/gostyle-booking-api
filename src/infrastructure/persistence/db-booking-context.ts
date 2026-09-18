@@ -79,8 +79,42 @@ export class DbBookingContext implements BookingContextReader {
     return resolved;
   }
 
-  loadCatalogue(branchId: string): Promise<Service[]> {
-    return this.fixture.loadCatalogue(branchId);
+  /**
+   * The menu: platform first, fixture behind it.
+   *
+   * THE SAME SOURCE THE DIRECTORY ENDPOINT READS. This was the fixture and
+   * nothing else, so the booking wizard and `/services-directory` described
+   * two different salons -- the desk was offered haircut-finish and
+   * fringe-trim for a tenant that sells Keratin and Olaplex. Whichever list
+   * the front end built its picker from, it was wrong: one names services
+   * nobody sells, the other names services the engine then refuses.
+   *
+   * The fixture entries STAY, appended, for exactly as long as the slug
+   * callers do (proof scripts, the desk tests, every existing integration).
+   * Platform ids win on a collision because a uuid can never be a slug, so
+   * there is no case where one shadows the other.
+   *
+   * A platform failure falls back to the fixture rather than emptying the
+   * menu, because an empty catalogue reads as "this salon sells nothing".
+   */
+  async loadCatalogue(branchId: string): Promise<Service[]> {
+    const fixture = await this.fixture.loadCatalogue(branchId);
+    if (!this.platform.enabled()) return fixture;
+
+    try {
+      const fromPlatform = await this.platform.catalogue(branchId);
+      const claimed = new Set(fromPlatform.map((s) => s.id.toLowerCase()));
+      return [
+        ...fromPlatform,
+        ...fixture.filter((s) => !claimed.has(s.id.toLowerCase())),
+      ];
+    } catch (e) {
+      DbBookingContext.log.error(
+        'Platform catalogue unreachable; serving the fixture menu. ' +
+          (e instanceof Error ? e.message : String(e)),
+      );
+      return fixture;
+    }
   }
 
   async loadDay(branchId: string, tradingDay: string): Promise<DayContext> {

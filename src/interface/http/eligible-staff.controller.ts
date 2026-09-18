@@ -1,4 +1,5 @@
 import { Controller, Get, Query } from '@nestjs/common';
+import { BranchId } from './branch.decorator';
 import {
   ApiNotFoundResponse,
   ApiOkResponse,
@@ -26,7 +27,18 @@ export class EligibleStaffQueryDto {
   @ApiPropertyOptional({ example: 'marina-walk', default: 'marina-walk' })
   @IsOptional()
   @IsString()
-  branch: string = 'marina-walk';
+  @ApiPropertyOptional({
+    description:
+      'OPTIONAL. The branch comes from the token when the token names one; ' +
+      'send this only for a token scoped to no particular branch. A branch ' +
+      'the token does not cover is 403 BOOKING_BRANCH_MISMATCH \u2014 it used to ' +
+      'be accepted, and the write then landed somewhere the reads could not ' +
+      'see. Spelled `branch` here rather than `branchId` because this route ' +
+      'shipped before the wire contract and existing callers send `branch`.',
+  })
+  @IsOptional()
+  @IsString()
+  branch?: string;
 
   @ApiProperty({ example: '2026-09-01' })
   @Matches(DAY, { message: 'day must be YYYY-MM-DD' })
@@ -86,9 +98,12 @@ export class EligibleStaffController {
   @ApiNotFoundResponse({
     description: 'One of the service ids does not exist.',
   })
-  get(@Query() q: EligibleStaffQueryDto): Promise<EligibleStaffView> {
+  get(
+    @Query() q: EligibleStaffQueryDto,
+    @BranchId('branch') branchId: string,
+  ): Promise<EligibleStaffView> {
     return this.handler.execute({
-      branchId: q.branch,
+      branchId,
       tradingDay: q.day,
       serviceIds: q.serviceIds,
       preferredStaffId: q.staffId ?? null,

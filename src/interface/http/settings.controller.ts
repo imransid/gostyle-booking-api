@@ -1,9 +1,11 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Req } from '@nestjs/common';
 import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import {
   GetSettingsHandler,
   type SettingsView,
 } from '@application/queries/get-settings.handler';
+import { resolveBranchForRequest } from '@infrastructure/tenancy/branch-context';
+import type { RequestWithActor } from '../../auth/booking-auth.guard';
 
 /**
  * Every number the front end would otherwise hard-code.
@@ -30,11 +32,13 @@ export class SettingsController {
     summary: 'The constants the engine actually runs on',
     description:
       'Read straight from the modules that own each rule, so this can never ' +
-      'drift from the behaviour. Money is in minor units. Nothing here ' +
-      'varies by branch yet, and the scope field says so.',
+      'drift from the behaviour. Money is in minor units. `branch` is ' +
+      'resolved per request and names the branch every read on this token ' +
+      'is scoped to, with its IANA timezone and its current trading day \u2014 ' +
+      'ask here rather than guessing either from the browser.',
   })
   @ApiOkResponse({ description: 'The full set.' })
-  get(): SettingsView {
-    return this.handler.execute();
+  get(@Req() req: RequestWithActor): SettingsView {
+    return this.handler.execute(resolveBranchForRequest(req));
   }
 }

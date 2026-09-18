@@ -8,6 +8,7 @@ import {
   Query,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { BranchId } from './branch.decorator';
 import { ResourceIdPipe } from './resource-id.pipe';
 import {
   ApiCreatedResponse,
@@ -131,9 +132,16 @@ export class CourseDto {
 }
 
 export class CreateSeriesDto {
-  @ApiProperty()
+  @ApiPropertyOptional({
+    description:
+      'OPTIONAL. The branch is taken from the token when the token names ' +
+      'one; send this only for a token scoped to no particular branch. ' +
+      'Sending a branch the token does not cover is 403 ' +
+      'BOOKING_BRANCH_MISMATCH rather than a write nobody can read back.',
+  })
+  @IsOptional()
   @IsString()
-  branchId!: string;
+  branchId?: string;
 
   @ApiProperty()
   @IsString()
@@ -270,10 +278,11 @@ export class SeriesController {
   async createSeries(
     @Body() dto: CreateSeriesDto,
     @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @BranchId() branchId: string,
   ): Promise<SeriesView> {
     return this.create.execute({
       ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
-      branchId: dto.branchId,
+      branchId,
       customerId: dto.customerId,
       anchorDay: dto.anchorDay,
       startMin: dto.startMin,

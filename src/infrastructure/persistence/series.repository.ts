@@ -252,7 +252,12 @@ export class SeriesRepository {
   async detachOccurrence(occurrenceId: string): Promise<boolean> {
     const done = await this.prisma.seriesOccurrence.updateMany({
       where: { id: occurrenceId, state: { notIn: ['detached'] } },
-      data: { state: 'detached' },
+      // ALTERNATIVES GO WITH THE STATE. See cancelOccurrences below for what
+      // leaving them behind costs: occurrence_alternatives_only_when_stuck
+      // holds `alternatives IS NULL OR state = 'needs_attention'`, so
+      // detaching a stuck occurrence with a ladder attached is a CHECK
+      // violation, which surfaces as a bare 500.
+      data: { state: 'detached', alternatives: Prisma.DbNull },
     });
     return done.count > 0;
   }
@@ -715,7 +720,27 @@ export class SeriesRepository {
         }
         await tx.seriesOccurrence.update({
           where: { id: r.id },
-          data: { state: 'skipped', bookingId: null },
+          data: {
+            state: 'skipped',
+            bookingId: null,
+            /**
+             * THE LADDER GOES WITH THE STATE, and this line is the whole of
+             * bug 2.5.
+             *
+             * `occurrence_alternatives_only_when_stuck` is
+             * `alternatives IS NULL OR state = 'needs_attention'`. A
+             * NEEDS_ATTENTION occurrence carries the three nearest
+             * alternatives the repair ladder found; moving it to `skipped`
+             * without clearing them violates that CHECK, the transaction
+             * aborts, and the whole pause answers 500 "Something went wrong."
+             *
+             * So pausing worked on every healthy series and failed on
+             * exactly the AT_RISK ones -- the only series anybody actually
+             * wants to pause. The constraint was right: a stale ladder on a
+             * skipped visit is a list of slots nobody is going to take.
+             */
+            alternatives: Prisma.DbNull,
+          },
         });
       }
 
@@ -772,8 +797,19 @@ export class SeriesRepository {
       readonly startMin: number;
       readonly state: OccurrenceState;
       readonly movedFromDayOfMonth: number | null;
+      /**
+       * THE RESOURCE ID, beside the human-readable code.
+       *
+       * An occurrence carried only `bookingCode`, and `GET /v1/bookings/GS-1230`
+       * is a 404 because a code is not a resource id. So "Open booking" had
+       * nothing to open and `course-draw` was given a code, which 500'd. The
+       * row has held this all along.
+       */
+      readonly bookingId: string | null;
       readonly bookingCode: string | null;
       readonly bookingStatus: BookingStatus | null;
+      /** The planned (or booked) start as an instant, for the timeline. */
+      readonly startsAt: string;
       readonly startsInHours: number;
       readonly alternatives: unknown;
     }[]
@@ -807,8 +843,10 @@ export class SeriesRepository {
         startMin: r.plannedStartMin,
         state: r.state,
         movedFromDayOfMonth: r.movedFromDayOfMonth,
+        bookingId: r.bookingId,
         bookingCode: b?.code ?? null,
         bookingStatus: b?.status ?? null,
+        startsAt: startsAt.toISOString(),
         startsInHours: (startsAt.getTime() - now) / 3_600_000,
         alternatives: r.alternatives,
       };
