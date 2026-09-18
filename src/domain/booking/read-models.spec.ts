@@ -10,6 +10,9 @@ import {
   showUpRate,
   utilisation,
   wholeAed,
+  categoryOf,
+  conflictKindOf,
+  conflictSourceOf,
   type SearchCandidate,
 } from './read-models';
 
@@ -281,5 +284,65 @@ describe('rankSearch', () => {
     expect(rankSearch(rows, 'a').map((r) => r.id)).toEqual(
       rankSearch(rows, 'a').map((r) => r.id),
     );
+  });
+});
+
+describe('categoryOf', () => {
+  it('reads the obvious ones', () => {
+    expect(categoryOf(['styling'])).toBe('Hair');
+    expect(categoryOf(['nail'])).toBe('Nails');
+    expect(categoryOf(['facial'])).toBe('Skin');
+    expect(categoryOf(['brow'])).toBe('Brows');
+  });
+
+  it('keeps colour and styling in the same band', () => {
+    // They are different chairs and the same category. The calendar needs
+    // one colour for hair, not one per resource class.
+    expect(categoryOf(['color'])).toBe('Hair');
+    expect(categoryOf(['wash'])).toBe('Hair');
+  });
+
+  it('takes the first match for a mixed basket, not the first element', () => {
+    // A colour plus a manicure must not flip band depending on which row
+    // the query happened to return first.
+    expect(categoryOf(['nail', 'color'])).toBe('Hair');
+    expect(categoryOf(['color', 'nail'])).toBe('Hair');
+  });
+
+  it('is case-insensitive', () => {
+    expect(categoryOf(['COLOR'])).toBe('Hair');
+  });
+
+  it('falls back rather than throwing on something new', () => {
+    expect(categoryOf(['massage-room'])).toBe('Other');
+    expect(categoryOf([])).toBe('Other');
+  });
+});
+
+describe('conflictKindOf', () => {
+  it('maps a closure and a chair directly', () => {
+    expect(conflictKindOf('closure_sweep', false)).toBe('BRANCH_CLOSURE');
+    expect(conflictKindOf('chair_out_of_service', false)).toBe('RESOURCE_OOS');
+  });
+
+  it('splits a shift conflict on whether a professional was named', () => {
+    // The only interesting part: a rota edit naming nobody is a shift
+    // change; one naming somebody is that person being away.
+    expect(conflictKindOf('shift_conflict', true)).toBe('STAFF_OFF');
+    expect(conflictKindOf('shift_conflict', false)).toBe('SHIFT_CHANGE');
+  });
+
+  it('falls back rather than returning undefined for an unknown kind', () => {
+    expect(conflictKindOf('something_new', false)).toBe('SHIFT_CHANGE');
+  });
+});
+
+describe('conflictSourceOf', () => {
+  it('names the upstream event, not our table', () => {
+    expect(conflictSourceOf('closure_sweep')).toBe('branch.closed');
+    expect(conflictSourceOf('chair_out_of_service')).toBe(
+      'resource.out_of_service',
+    );
+    expect(conflictSourceOf('shift_conflict')).toBe('staff.shift_published');
   });
 });

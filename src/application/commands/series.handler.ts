@@ -42,6 +42,7 @@ import {
   hashRequestBody,
 } from '@infrastructure/persistence/idempotency.repository';
 import { priceOf } from './confirm-booking.handler';
+import { priceOfService } from '@domain/booking/service-resolution';
 import type { BookingStatus } from '@domain/booking/lifecycle';
 
 export interface CreateSeriesCommand {
@@ -181,7 +182,7 @@ export class CreateSeriesHandler {
       preferredStaffId: cmd.preferredStaffId,
       // The SAME price source the confirm path uses. A series that priced
       // itself would drift from the catalogue the moment either moved.
-      baselinePriceFils: priceOf(service.id),
+      baselinePriceFils: priceOfService(service, priceOf),
       course: cmd.course,
       occurrences: expansion.occurrences,
       horizonEnd: expansion.horizonEnd,
@@ -415,6 +416,154 @@ export class SeriesLifecycleHandler {
       ineligible: plan.ineligible,
       explanation: plan.explanation,
     };
+  }
+
+  /**
+   * Apply a pattern change at a scope.
+   *
+   * THE SCOPE IS THREE DIFFERENT PROMISES, and the planner already decides
+   * which occurrences each one touches (`planEdit`). This only carries out
+   * what the preview said, so what the desk was shown and what happens
+   * cannot differ -- the same function answers both.
+   *
+   *   THIS_OCCURRENCE   detaches that visit; the pattern is UNCHANGED
+   *   THIS_AND_FUTURE   re-expands from it forward; the past is untouched
+   *   ENTIRE_SERIES     re-anchors the cadence; delivered visits stay
+   */
+  async applyPattern(input: {
+    readonly seriesId: string;
+    readonly occurrenceId: string;
+    readonly scope: EditScope;
+    readonly pattern?: Pattern | undefined;
+    readonly startMin?: number | undefined;
+    readonly reason: string;
+  }): Promise<unknown> {
+    // definition() rather than load(): it already returns the anchor, the
+    // end condition and the pattern in the DOMAIN's shape, which is what
+    // expandSeries takes. Rebuilding that here would be a second copy of the
+    // row-to-domain mapping.
+    const definition = await this.repo.definition(input.seriesId);
+    if (definition === null) throw new NotFoundException('No such series');
+
+    const timeline = await this.repo.timeline(input.seriesId);
+    const plan = planEdit(
+      input.scope,
+      this.toDomain(timeline),
+      input.occurrenceId,
+    );
+
+    // ---- THIS_OCCURRENCE: detach, do not re-pattern ----------------------
+    if (input.scope === 'this_occurrence') {
+      const detached = await this.repo.detachOccurrence(input.occurrenceId);
+      return {
+        seriesId: input.seriesId,
+        scope: 'THIS_OCCURRENCE',
+        detached: detached ? [input.occurrenceId] : [],
+        patternChanged: false,
+        cleared: 0,
+        planned: 0,
+        explanation:
+          'That visit now stands on its own. The series keeps its cadence, ' +
+          'and later edits skip this one.',
+        occurrences: await this.occurrenceList(input.seriesId),
+      };
+    }
+
+    if (input.pattern === undefined) {
+      throw new UnprocessableEntityException(
+        'A pattern is required for THIS_AND_FUTURE and ENTIRE_SERIES. ' +
+          'Use THIS_OCCURRENCE to detach a single visit.',
+      );
+    }
+
+    // ---- Re-expand from the right anchor ---------------------------------
+    //
+    // THIS_AND_FUTURE anchors on the occurrence the desk picked; the visits
+    // before it keep the dates they were already given. ENTIRE_SERIES
+    // re-anchors on the series' own anchor, which is what "the whole
+    // cadence changes" means.
+    const target = timeline.find((o) => o.id === input.occurrenceId);
+    if (target === undefined) {
+      throw new NotFoundException('No such occurrence in this series');
+    }
+
+    const anchor =
+      input.scope === 'this_and_future' ? target.day : definition.anchor;
+    const startMin = input.startMin ?? definition.startMin;
+
+    const expansion = expandSeries(
+      {
+        anchor,
+        startMin,
+        pattern: input.pattern,
+        // The end condition is not what is being edited here. A pattern
+        // change that silently reset "after 12 visits" would be a different
+        // and much larger promise than the desk made.
+        end: definition.end,
+      },
+      { from: anchor, horizonDays: SERIES_HORIZON_DAYS },
+    );
+
+    if (expansion.occurrences.length === 0) {
+      throw new UnprocessableEntityException(
+        `That pattern produces no visits. ${expansion.explanation}`,
+      );
+    }
+
+    const result = await this.repo.rewritePattern({
+      seriesId: input.seriesId,
+      // Only what the planner said is editable. A started or closed visit is
+      // never in this list, so history survives by construction.
+      clearOccurrenceIds: plan.affected,
+      pattern: {
+        kind: input.pattern.kind,
+        weekdays: input.pattern.kind === 'weekly' ? input.pattern.weekdays : [],
+        intervalWeeks:
+          input.pattern.kind === 'every_n_weeks' ? input.pattern.weeks : null,
+        dayOfMonth:
+          input.pattern.kind === 'monthly_on_date'
+            ? input.pattern.dayOfMonth
+            : null,
+        customDates: input.pattern.kind === 'custom' ? input.pattern.dates : [],
+      },
+      startMin: input.startMin ?? null,
+      anchorDay: input.scope === 'entire_series' ? anchor : null,
+      occurrences: expansion.occurrences,
+      horizonEnd: expansion.horizonEnd,
+      reason: input.reason,
+    });
+
+    return {
+      seriesId: input.seriesId,
+      scope: input.scope.toUpperCase(),
+      patternChanged: true,
+      cleared: result.cleared,
+      planned: result.created,
+      untouched: plan.untouched.length,
+      ineligible: plan.ineligible.length,
+      horizonEnd: expansion.horizonEnd,
+      explanation: `${plan.explanation} ${expansion.explanation}`,
+      // RETURNED IN THE SAME ROUND TRIP, so the timeline updates without a
+      // second call -- the contract asks for this and the alternative is a
+      // screen that briefly shows the old cadence.
+      occurrences: await this.occurrenceList(input.seriesId),
+    };
+  }
+
+  /** The timeline as the panel renders it. */
+  private async occurrenceList(seriesId: string): Promise<OccurrenceView[]> {
+    const timeline = await this.repo.timeline(seriesId);
+    return timeline.map((o) => ({
+      id: o.id,
+      index: o.index,
+      day: o.day,
+      start: formatMinute(o.startMin),
+      state: shout(o.state),
+      bookingCode: o.bookingCode,
+      bookingStatus: o.bookingStatus === null ? null : shout(o.bookingStatus),
+      movedFromDayOfMonth: o.movedFromDayOfMonth,
+      alternatives: o.alternatives,
+    }));
   }
 
   /**

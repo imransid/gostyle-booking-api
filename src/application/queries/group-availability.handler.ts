@@ -15,6 +15,7 @@ import {
 import { DAILY_BOOKING_CAP, formatMinute } from '@domain/availability/grid';
 import { modeToWire, type WireGroupMode } from '@application/contract/wire';
 import type { GroupMode } from '@domain/availability/party';
+import { skillsRequired } from '@domain/booking/service-resolution';
 
 export interface GroupAvailabilityQuery {
   readonly branchId: string;
@@ -107,7 +108,7 @@ export class GroupAvailabilityHandler {
           participant: {
             id: `p${i}`,
             label: p.label,
-            skills: [...new Set(services.map((s) => s.skill))],
+            skills: skillsRequired(services),
             durationMin: services.reduce((n, s) => n + s.durationMin, 0),
             resourceType: services[services.length - 1]!.resourceType,
             preferredStaffId: p.preferredStaffId,

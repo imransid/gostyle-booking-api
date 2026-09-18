@@ -5,6 +5,7 @@ import { TenantContext } from '../tenancy/tenant-context';
 import { toUuid, branchInstant } from './hold.repository';
 import { planParty, type PartyContext } from '@domain/availability/party';
 import { Money } from '@domain/shared/money';
+import { ItemSource } from '@domain/booking/service-resolution';
 
 /** Named: a heredoc eats a line ending in `<`. */
 interface HeldLane {
@@ -29,6 +30,12 @@ export interface GroupConfirmInput {
     readonly resourceType: string;
     readonly preferredStaffId: string | null;
     readonly label: string;
+    /**
+     * Which catalogue priced this participant. `mixed` where their services
+     * came from both -- this row's priceFils is their SUM, so no single
+     * catalogue accounts for it. See sourceOfAll.
+     */
+    readonly source: ItemSource;
   }[];
   readonly roster: {
     readonly professionals: readonly {
@@ -242,6 +249,7 @@ export class GroupConfirmRepository {
             durationMin: spec.durationMin,
             position: 0,
             staffId: toUuid(lane.staffId),
+            source: spec.source,
           },
           select: { id: true },
         });

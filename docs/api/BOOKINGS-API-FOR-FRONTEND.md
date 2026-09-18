@@ -519,6 +519,14 @@ We model **14** booking states; you model 10. `status` is the projection onto yo
 The other seven are one-to-one. Branch on `status`; show `statusDetail` in a tooltip or an
 audit view when the distinction matters.
 
+`category` ∈ `Hair` · `Nails` · `Skin` · `Brows` · `Other` — derived from the resource classes
+the booking occupies, so `styling`/`color`/`wash` share one band. Do not derive it from
+`resourceTypes[0]`.
+
+`conflict` is populated when a roster change has stranded the booking, and carries `changeId`
+and `itemId` — the repair path, not just the bad news. See
+[BOOKINGS-FE-ROUND-2.md](./BOOKINGS-FE-ROUND-2.md) §3.
+
 `payment.state` ∈ `NONE` · `PENDING` · `PAID` · `FULL`. Everything after settlement
 (`refunded`, `forfeited`, `settled`, `partially_refunded`) reports as `PAID` — money *was*
 taken; what became of it is the ledger's story, and the ledger travels on the booking detail.
@@ -538,6 +546,11 @@ taken; what became of it is the ledger's story, and the ledger travels on the bo
 speak slugs; we fold ids back to slugs on the way out so **every endpoint spells the same
 stylist the same way**. When the platform's real UUIDs arrive, these become UUIDs everywhere at
 once.
+
+> This was claimed here before it was true. The series and waitlist boards folded their ids; the
+> booking list and calendar did not, so the same stylist arrived as `"maya"` on one screen and a
+> uuid hash on another. Fixed, including `conflict.staffId`. If you built a lookup around the
+> hash, it now receives the slug.
 
 `customer.id` is still a UUID — there is no customer slug registry.
 
@@ -718,7 +731,7 @@ have to invent data it returns an empty list or a null rather than something pla
 | Area | State |
 | ---- | ----- |
 | **`POST /{id}/patch-test`** | Books the free 10-minute patch-test visit and chains it to the colour. **There is no patch-test service in the catalogue**, so there is nothing to book. Needs a catalogue entry before the endpoint can mean anything. The `waiver` half of that gate is built. |
-| **Series `pattern` write** | The scope planner exists and is correct — `GET …/edit-scope` returns which occurrences a `THIS_OCCURRENCE` / `THIS_AND_FUTURE` / `ENTIRE_SERIES` edit would touch, detach and skip. The **write** that applies it is not built. |
+| ~~Series `pattern` write~~ | **Built.** `POST /v1/bookings/series-admin/{id}/pattern`, backed by the same planner as `edit-scope`. |
 | **`POST /series/{id}/confirm-ask`** | The 48-hour window is enforced and now expires on schedule (below). Sending the ask itself is blocked on message delivery. |
 | **Worklist tiles** | `DUPLICATE_CUSTOMER` needs the customer service. `DIARY_SLIVERS` needs a per-day compaction run, which would make the cheapest screen the slowest. Neither is emitted; an INFO tile that always reads zero is worse than no tile. |
 | **`columns[].timeOff`** | Always `[]`. Time off *is* excluded from availability, but it reaches the engine as opaque calendar entries, so there is no labelled list to publish. |
@@ -743,8 +756,10 @@ fire — see §11.
 
 ### Idempotency
 
-`Idempotency-Key` is now honoured on `POST /v1/bookings`, `POST /v1/series` and all four money
-actions, through one shared store. Same key and same body replays the stored response with
+`Idempotency-Key` is honoured on **every write route**: the four money actions, `POST /v1/bookings`,
+`POST /v1/series`, the whole lifecycle (`move`, `reschedule`, `cancel`, `no-show`, `check-in`,
+`start`, `complete`, `settle`), the desk extras (`undo`, `shorten`, `waiver`, `remind`,
+`late-capture`, `course-draw`), the walk-in queue, compaction apply and the conflict scans. Same key and same body replays the stored response with
 `replayed: true`; same key and a **different** body is a `409 IDEMPOTENCY_KEY_REUSED`, because
 that is a client bug and answering the first response would hide it.
 

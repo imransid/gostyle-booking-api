@@ -6,7 +6,9 @@ import {
   Param,
   Post,
   Query,
+  UseInterceptors,
 } from '@nestjs/common';
+import { IdempotentInterceptor } from './idempotent.interceptor';
 import { ResourceIdPipe } from './resource-id.pipe';
 import {
   ApiCreatedResponse,
@@ -114,6 +116,15 @@ export class SeatWalkInDto {
  * clients use it.
  */
 @Controller(['walk-ins', 'bookings/walk-ins'])
+/**
+ * IDEMPOTENT WHERE A KEY IS SENT.
+ *
+ * The front end mints an Idempotency-Key per tap on these routes. Without
+ * this, a retry on a flaky connection moved a booking twice, or seated a
+ * walk-in twice. See idempotent.interceptor.ts for what it does and does
+ * not promise.
+ */
+@UseInterceptors(IdempotentInterceptor)
 @DeskOnly()
 export class WalkInsController {
   constructor(private readonly handler: WalkInHandler) {}

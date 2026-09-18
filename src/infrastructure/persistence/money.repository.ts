@@ -72,11 +72,35 @@ export class MoneyRepository {
     input: MoneyActionInput & { readonly rail: PaymentRail },
   ): Promise<MoneyOutcome> {
     return this.act(input, (b) => {
-      if (b.status !== 'pending_payment') {
+      /**
+       * TWO BOOKINGS CAN BE CAPTURED AT THE DESK, not one.
+       *
+       * The original: a live payment link, paid in person instead.
+       *
+       * And PAY_AFTER_CHECK_IN (§4) -- confirmed, none_required, nothing
+       * collected by arrangement, money due when the customer arrives.
+       * That booking had NOWHERE to pay. This guard refused it for being
+       * `confirmed`, and PATCH refused it for not being `unpaid`, so the
+       * arrangement created bookings whose payment could never be
+       * recorded. The desk would have taken the cash and the ledger would
+       * never have heard about it.
+       *
+       * Narrow on purpose: `confirmed` alone is not enough, because a
+       * deposit_paid or fully_paid booking is confirmed too and capturing
+       * those again is a second charge, which belongs to no endpoint.
+       */
+      const awaitingLink = b.status === 'pending_payment';
+      const dueOnArrival =
+        b.status === 'confirmed' && b.payment_status === 'none_required';
+
+      if (!awaitingLink && !dueOnArrival) {
         return {
-          error: `Only a booking awaiting payment can be captured at the desk; this one is ${b.status}.`,
+          error: `Only a booking awaiting payment, or one due on arrival, can be captured at the desk; this one is ${b.status} / ${b.payment_status}.`,
         };
       }
+      // deposit_fils is 0 on an on-arrival booking -- nothing was ever
+      // asked for up front -- so `owed` is the whole price and the capture
+      // lands as fully_paid, which is what paying at the desk means.
       const owed = b.deposit_fils > 0 ? b.deposit_fils : b.price_fils;
       return {
         entryType: 'captured',
@@ -355,19 +379,34 @@ export class MoneyRepository {
             decision.clearLink === true,
           );
 
-          await tx.bookingStatusHistory.create({
-            data: {
-              bookingId: b.id,
-              fromStatus: b.status as never,
-              toStatus: (decision.status ?? b.status) as never,
-              reason: input.reason,
-              actorKind: input.actor,
-              actorId:
-                input.actor === 'system' || input.actorId === null
-                  ? null
-                  : toUuid(input.actorId),
-            },
-          });
+          /**
+           * NO ROW FOR NO MOVEMENT, the mirror of "no row for no money"
+           * above. `bsh_actually_moved` refuses a history row whose from
+           * and to are the same, and it is right to: a lifecycle log that
+           * records staying put says nothing and buries what did move.
+           *
+           * Reached by capturing a PAY_AFTER_CHECK_IN booking (§4), which
+           * is already `confirmed` when the desk takes the money at
+           * check-in. Only its payment_status moves. The action is not
+           * lost -- the ledger entry above carries the amount, the rail,
+           * the reason and who took it, which is the whole of what
+           * happened.
+           */
+          if (decision.status !== undefined && decision.status !== b.status) {
+            await tx.bookingStatusHistory.create({
+              data: {
+                bookingId: b.id,
+                fromStatus: b.status as never,
+                toStatus: decision.status as never,
+                reason: input.reason,
+                actorKind: input.actor,
+                actorId:
+                  input.actor === 'system' || input.actorId === null
+                    ? null
+                    : toUuid(input.actorId),
+              },
+            });
+          }
         }
 
         MoneyRepository.log.log(

@@ -8,6 +8,7 @@ import {
   STAFF_DIRECTORY_CLIENT,
   platformGrpcAddress,
 } from './staff-grpc.constants';
+import { platformChannelOptions } from './channel-options';
 
 /**
  * Wires the staff directory port to its gRPC adapter.
@@ -30,6 +31,10 @@ import {
           // runtime and is never compiled into dist.
           protoPath: join(process.cwd(), 'proto/staff.proto'),
           url: platformGrpcAddress(),
+          // Clients are made at boot and held forever, so an idle
+          // connection dropped by a NAT or a load balancer is only
+          // discovered by a real request failing. See channel-options.ts.
+          channelOptions: platformChannelOptions(),
           loader: {
             // keepCase: true is NOT optional. The platform server sets it, so
             // fields arrive as first_name. Without it here, proto-loader

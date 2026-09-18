@@ -86,7 +86,7 @@ export interface AvailabilityView {
   readonly computeMs: number;
 }
 
-const BRANCH_TIMEZONE = 'Asia/Dubai';
+const BRANCH_TIMEZONE = 'Asia/Dhaka';
 
 /** The branch's own wall clock, not the server's. */
 function branchNow(timeZone: string): { day: string; minuteOfDay: number } {

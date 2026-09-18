@@ -283,3 +283,94 @@ function scoreOf(c: SearchCandidate, q: string): number {
 function digitsOnly(s: string): string {
   return s.replace(/\D/g, '');
 }
+
+// ------------------------------------------------------------ category
+
+/**
+ * The band a booking is coloured by on the diary.
+ *
+ * WHY THIS IS NOT resourceTypes[0]. The calendar was deriving its colour from
+ * the first resource class, which collapses `styling`, `color` and `wash`
+ * into one indistinguishable "Hair" band -- three very different jobs, one
+ * colour, on the screen whose whole purpose is telling them apart at a
+ * glance.
+ *
+ * Derived from the resource classes a booking actually occupies rather than
+ * stored, so a service that changes class changes band with it and there is
+ * no second field to migrate.
+ *
+ * ORDER MATTERS. A basket that uses several classes takes the FIRST match
+ * below, so a colour-plus-blow-dry reads as Hair rather than flipping band
+ * depending on which service the query returned first.
+ */
+export type Category = 'Hair' | 'Nails' | 'Skin' | 'Brows' | 'Other';
+
+const CATEGORY_BY_RESOURCE: readonly (readonly [
+  Category,
+  readonly string[],
+])[] = [
+  ['Hair', ['color', 'styling', 'wash', 'hair']],
+  ['Nails', ['nail', 'nails', 'pedicure', 'manicure']],
+  ['Skin', ['facial', 'skin', 'treatment']],
+  ['Brows', ['brow', 'brows', 'lash', 'lashes']],
+];
+
+export function categoryOf(resourceTypes: readonly string[]): Category {
+  const seen = resourceTypes.map((r) => r.toLowerCase());
+  for (const [category, classes] of CATEGORY_BY_RESOURCE) {
+    if (seen.some((r) => classes.includes(r))) return category;
+  }
+  return 'Other';
+}
+
+// ------------------------------------------------------------ conflicts
+
+/**
+ * The five kinds a disruption can be, in the words the screens use.
+ *
+ * Our roster-change kinds describe WHAT WAS EDITED (a shift, a closure, a
+ * chair); the front end's describe WHAT THE BOOKING LOST. `shift_conflict`
+ * splits into two of theirs depending on whether a professional was named,
+ * which is the only interesting part of this mapping: a shift edit that
+ * names nobody is a rota change, and one that names somebody is that person
+ * being away.
+ */
+export type ConflictKind =
+  | 'SHIFT_CHANGE'
+  | 'STAFF_OFF'
+  | 'RESOURCE_OOS'
+  | 'BRANCH_CLOSURE'
+  | 'SKILL_REVOKED';
+
+export function conflictKindOf(
+  rosterChangeKind: string,
+  staffNamed: boolean,
+): ConflictKind {
+  switch (rosterChangeKind) {
+    case 'closure_sweep':
+      return 'BRANCH_CLOSURE';
+    case 'chair_out_of_service':
+      return 'RESOURCE_OOS';
+    case 'shift_conflict':
+      return staffNamed ? 'STAFF_OFF' : 'SHIFT_CHANGE';
+    default:
+      return 'SHIFT_CHANGE';
+  }
+}
+
+/**
+ * The event that raised it, so the desk can say where this came from.
+ *
+ * Named after the upstream fact rather than our table, because "a roster
+ * change item is open" is not something a receptionist can act on.
+ */
+export function conflictSourceOf(rosterChangeKind: string): string {
+  switch (rosterChangeKind) {
+    case 'closure_sweep':
+      return 'branch.closed';
+    case 'chair_out_of_service':
+      return 'resource.out_of_service';
+    default:
+      return 'staff.shift_published';
+  }
+}

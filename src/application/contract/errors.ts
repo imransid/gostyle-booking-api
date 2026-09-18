@@ -30,6 +30,23 @@ export const ERROR_CODES = [
   'BOOKING_SLOT_TAKEN',
   'BOOKING_CAPACITY_BLOCKED',
   'BOOKING_STAFF_UNAVAILABLE',
+  /**
+   * A STYLIST THIS BRANCH HAS NEVER HEARD OF, which is not the same fact as
+   * BOOKING_STAFF_UNAVAILABLE and had been answering as it.
+   *
+   * The engine excludes an unknown id the only way it can -- every real
+   * professional fails the "is this the one asked for" test, the pool comes
+   * back empty, and an empty pool has one sentence: "16:00 is no longer
+   * available. Offers have refreshed." So a caller naming a stylist from a
+   * roster the engine does not share was told, in a perfectly calm voice,
+   * that a free slot was taken. Refreshing the offers returned the same slot,
+   * and clients retried into it.
+   *
+   * 422, not 409: nothing raced, and there is no later moment at which this
+   * request would succeed. The id is wrong, and `details.roster` says what
+   * the right ones look like.
+   */
+  'BOOKING_STAFF_UNKNOWN',
   'BOOKING_SKILL_MISSING',
   'BOOKING_GATE_BLOCKED',
   'BOOKING_CHECKIN_WINDOW',
@@ -58,6 +75,27 @@ export const ERROR_CODES = [
    * take more money and try again, and the amount is in `details`.
    */
   'BOOKING_PAYMENT_REQUIRED',
+  /**
+   * A DEPENDENCY IS DOWN. Not the caller's fault and not a bug here.
+   *
+   * There was no code for 503 at all, so a consumer-API outage fell through
+   * to the prose matcher, which saw the word "unavailable" in "Customer
+   * authentication is unavailable" and answered BOOKING_STAFF_UNAVAILABLE --
+   * a 409-shaped code about a STYLIST, returned with a 503, for a failure
+   * that had nothing to do with either. A client branching on the code would
+   * have offered the customer a different stylist.
+   */
+  'DEPENDENCY_UNAVAILABLE',
+  /**
+   * A basket priced in more than one currency.
+   *
+   * Production has services at the SAME branch in different currencies --
+   * Keratin in BDT, NO Kampos in AED -- and `price_fils` is one integer with
+   * no currency beside it. Summing them would quote a number that means
+   * nothing. Refused rather than converted: we have no rate and no mandate
+   * to pick a moment to apply one.
+   */
+  'BOOKING_CURRENCY_MIXED',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -78,6 +116,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   BOOKING_SLOT_TAKEN: 409,
   BOOKING_CAPACITY_BLOCKED: 409,
   BOOKING_STAFF_UNAVAILABLE: 409,
+  BOOKING_STAFF_UNKNOWN: 422,
   BOOKING_SKILL_MISSING: 409,
   BOOKING_GATE_BLOCKED: 409,
   BOOKING_CHECKIN_WINDOW: 409,
@@ -91,6 +130,8 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   IDEMPOTENCY_KEY_REUSED: 409,
   UNAUTHENTICATED: 401,
   BOOKING_PAYMENT_REQUIRED: 402,
+  DEPENDENCY_UNAVAILABLE: 503,
+  BOOKING_CURRENCY_MIXED: 422,
 };
 
 /** What the client receives. `details` is absent rather than null when empty. */
@@ -155,6 +196,7 @@ export function isBookingError(e: unknown): e is BookingError {
 const STATUS_TEXT: Readonly<Record<number, string>> = {
   401: 'Unauthorized',
   402: 'Payment Required',
+  503: 'Service Unavailable',
   403: 'Forbidden',
   404: 'Not Found',
   409: 'Conflict',
@@ -182,10 +224,20 @@ export function statusText(status: number): string {
 export function inferCode(status: number, message: string): ErrorCode {
   const m = message.toLowerCase();
 
+  /**
+   * STATUS FIRST, for every status whose meaning the prose cannot change.
+   *
+   * 503 joined this list after an outage was reported as
+   * BOOKING_STAFF_UNAVAILABLE: the matcher below looks for "unavailable",
+   * and "Customer authentication is unavailable" contains it. A dependency
+   * being down is never a booking-level refusal, whatever words it uses, so
+   * the prose never gets a say.
+   */
   if (status === 401) return 'UNAUTHENTICATED';
   if (status === 402) return 'BOOKING_PAYMENT_REQUIRED';
   if (status === 404) return 'BOOKING_NOT_FOUND';
   if (status === 403) return 'FORBIDDEN_ROLE';
+  if (status >= 500) return 'DEPENDENCY_UNAVAILABLE';
 
   if (m.includes('hold') && (m.includes('expired') || m.includes('lapsed'))) {
     return 'BOOKING_HOLD_EXPIRED';
@@ -195,7 +247,14 @@ export function inferCode(status: number, message: string): ErrorCode {
   if (m.includes('station') || m.includes('chair') || m.includes('capacity')) {
     return 'BOOKING_CAPACITY_BLOCKED';
   }
-  if (m.includes('nobody is free') || m.includes('unavailable')) {
+  // "unavailable" alone is too broad a word to key on -- it appears in
+  // dependency outages too. Anchored on the subject, not the adjective.
+  if (
+    m.includes('nobody is free') ||
+    m.includes('professional') ||
+    m.includes('stylist') ||
+    m.includes('staff is unavailable')
+  ) {
     return 'BOOKING_STAFF_UNAVAILABLE';
   }
   if (m.includes('taken') || m.includes('gone')) return 'BOOKING_SLOT_TAKEN';

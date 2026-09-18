@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  UseInterceptors,
+} from '@nestjs/common';
+import { IdempotentInterceptor } from './idempotent.interceptor';
 import {
   ApiConflictResponse,
   ApiOkResponse,
@@ -21,6 +29,7 @@ import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
 import { DeskOnly } from '../../auth/desk-only.decorator';
 import { ResourceIdPipe } from './resource-id.pipe';
+import { CustomerRiskDto } from './read-model.dto';
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const TIME = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -70,6 +79,15 @@ export class MoveBookingDto {
  * the salon does, never the customer.
  */
 @ApiTags('desk')
+/**
+ * IDEMPOTENT WHERE A KEY IS SENT.
+ *
+ * The front end mints an Idempotency-Key per tap on these routes. Without
+ * this, a retry on a flaky connection moved a booking twice, or seated a
+ * walk-in twice. See idempotent.interceptor.ts for what it does and does
+ * not promise.
+ */
+@UseInterceptors(IdempotentInterceptor)
 @Controller('bookings')
 @DeskOnly()
 export class DeskActionsController {
@@ -144,6 +162,7 @@ export class CustomerRiskController {
       'histories give the same number, and a plausible guess on a risk ' +
       'screen is worse than an honest gap.',
   })
+  @ApiOkResponse({ type: CustomerRiskDto })
   risk(@Param('id') id: string): Promise<unknown> {
     return this.desk.risk(id);
   }

@@ -2,8 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
 import { isExclusionViolation } from './pg-errors';
 
-/** Asia/Dubai is UTC+4 all year. A branch with DST would need a real tz lib. */
-export const BRANCH_UTC_OFFSET_MIN = 240;
+/** Asia/Dhaka is UTC+6 all year. A branch with DST would need a real tz lib. */
+export const BRANCH_UTC_OFFSET_MIN = 360;
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

@@ -11,6 +11,16 @@ import { DeskOnly } from '../../auth/desk-only.decorator';
 import { ResourceIdPipe } from './resource-id.pipe';
 import { LIST_FILTERS } from '@application/contract/screen-view';
 import { BOOKING_HORIZON_DAYS } from '@domain/booking/recurrence';
+import {
+  BookingEventListDto,
+  BookingListDto,
+  CalendarDayDto,
+  SearchResultsDto,
+  SeriesBoardDto,
+  SummaryDto,
+  WaitlistBoardDto,
+  WorklistDto,
+} from './read-model.dto';
 
 /**
  * The read side of the seven booking screens.
@@ -42,7 +52,10 @@ export class ReadModelsController {
       'absolute amount, and getting that wrong flips a sign on a dashboard.',
   })
   @ApiQuery({ name: 'range', required: false, example: 7 })
-  @ApiOkResponse({ description: 'KPIs and the trend series.' })
+  @ApiOkResponse({
+    type: SummaryDto,
+    description: 'KPIs and the trend series.',
+  })
   summary(
     @BranchId() branchId: string,
     @Query('range') range?: string,
@@ -57,6 +70,7 @@ export class ReadModelsController {
       'One row per real problem. A tile is ABSENT when its count is zero ' +
       'rather than present and empty, so the strip is never a row of noughts.',
   })
+  @ApiOkResponse({ type: WorklistDto })
   worklist(@BranchId() branchId: string): Promise<unknown> {
     return this.reads.worklist(branchId);
   }
@@ -71,6 +85,7 @@ export class ReadModelsController {
   })
   @ApiQuery({ name: 'date', example: '2026-07-13' })
   @ApiQuery({ name: 'staffId', required: false })
+  @ApiOkResponse({ type: CalendarDayDto })
   day(
     @BranchId() branchId: string,
     @Query('date') date: string,
@@ -115,6 +130,7 @@ export class ReadModelsController {
   })
   @ApiQuery({ name: 'q' })
   @ApiQuery({ name: 'limit', required: false, example: 10 })
+  @ApiOkResponse({ type: SearchResultsDto })
   search(
     @BranchId() branchId: string,
     @Query('q') q: string,
@@ -137,6 +153,7 @@ export class ReadModelsController {
     required: false,
     enum: ['ALL', 'NO_SHOW', 'CANCELLED'],
   })
+  @ApiOkResponse({ type: BookingEventListDto })
   events(
     @BranchId() branchId: string,
     @Query('range') range?: string,
@@ -173,6 +190,7 @@ export class ReadModelsController {
       'in the front-end contract is an open decision, recorded in ' +
       'domain/booking/waitlist.ts, not an omission.',
   })
+  @ApiOkResponse({ type: WaitlistBoardDto })
   waitlist(@BranchId() branchId: string): Promise<unknown> {
     return this.reads.waitlist(branchId);
   }
@@ -190,6 +208,7 @@ export class ReadModelsController {
     required: false,
     enum: ['ALL', 'ACTIVE', 'PAUSED', 'ENDED', 'COMPLETED', 'AT_RISK'],
   })
+  @ApiOkResponse({ type: SeriesBoardDto })
   series(
     @BranchId() branchId: string,
     @Query('status') status?: string,
@@ -210,6 +229,7 @@ export class ReadModelsController {
   @ApiQuery({ name: 'to', required: false })
   @ApiQuery({ name: 'staffId', required: false })
   @ApiQuery({ name: 'customerId', required: false })
+  @ApiOkResponse({ type: BookingListDto })
   list(
     @BranchId() branchId: string,
     @Query('filter') filter?: string,

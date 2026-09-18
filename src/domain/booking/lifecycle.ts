@@ -436,6 +436,46 @@ export type PolicyBand =
   | 'salon_initiated'
   | 'nothing_captured';
 
+/**
+ * What happened to the money, as one word.
+ *
+ * THE BAND SAYS WHICH RULE FIRED; THIS SAYS WHAT THE CUSTOMER GOT. They are
+ * not the same question, and the front end needs the second one: it renders a
+ * pill and has to name the result, not the reasoning.
+ *
+ * PARTIALLY_REFUNDED exists because of the one cell the front-end contract's
+ * matrix had no word for -- a fully prepaid booking cancelled between 2 and
+ * 24 hours out splits 50/50. Without its own value that split was being
+ * rendered as "Lost", which is wrong on screen and wrong in a dispute.
+ */
+export type CancellationOutcome =
+  /** Everything captured went back. */
+  | 'REFUNDED'
+  /** Some went back, some was kept. The prepaid middle band. */
+  | 'PARTIALLY_REFUNDED'
+  /** The salon kept all of it, per policy. */
+  | 'DEPOSIT_KEPT'
+  /** Nothing had been captured, so nothing moved. */
+  | 'NO_CHARGE';
+
+/**
+ * DERIVED FROM THE AMOUNTS, never passed in.
+ *
+ * The refund and the kept figure already balance to what was captured
+ * (see `balances`), so the word is a fact about those two numbers rather
+ * than a fifth thing that could disagree with them.
+ */
+export function outcomeOf(outcome: {
+  readonly refundFils: number;
+  readonly keptFils: number;
+}): CancellationOutcome {
+  const { refundFils, keptFils } = outcome;
+  if (refundFils === 0 && keptFils === 0) return 'NO_CHARGE';
+  if (keptFils === 0) return 'REFUNDED';
+  if (refundFils === 0) return 'DEPOSIT_KEPT';
+  return 'PARTIALLY_REFUNDED';
+}
+
 export interface MoneyOutcome {
   readonly refundFils: number;
   readonly keptFils: number;

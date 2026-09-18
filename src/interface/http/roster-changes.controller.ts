@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  UseInterceptors,
+} from '@nestjs/common';
+import { IdempotentInterceptor } from './idempotent.interceptor';
 import { ResourceIdPipe } from './resource-id.pipe';
 import {
   ApiConflictResponse,
@@ -113,6 +121,15 @@ export class ResolveItemDto {
  * clients use it.
  */
 @Controller(['roster-changes', 'bookings/conflicts'])
+/**
+ * IDEMPOTENT WHERE A KEY IS SENT.
+ *
+ * The front end mints an Idempotency-Key per tap on these routes. Without
+ * this, a retry on a flaky connection moved a booking twice, or seated a
+ * walk-in twice. See idempotent.interceptor.ts for what it does and does
+ * not promise.
+ */
+@UseInterceptors(IdempotentInterceptor)
 @DeskOnly()
 export class RosterChangesController {
   constructor(private readonly handler: RosterChangeHandler) {}

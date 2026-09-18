@@ -31,6 +31,9 @@ import {
   showUpRate,
   utilisation,
   wholeAed,
+  categoryOf,
+  conflictKindOf,
+  conflictSourceOf,
   type Kpi,
   type SearchCandidate,
 } from '@domain/booking/read-models';
@@ -80,6 +83,12 @@ export interface BookingView {
     readonly riskScore: number;
   };
   readonly services: readonly string[];
+  /**
+   * The band the calendar colours by. Derived, never stored -- see
+   * categoryOf(). The client was deriving this from resourceTypes[0], which
+   * collapsed styling/color/wash into one indistinguishable band.
+   */
+  readonly category: string;
   readonly staff: { readonly id: string | null; readonly name: string | null };
   readonly date: string;
   readonly startTime: string;
@@ -108,6 +117,26 @@ export interface BookingView {
     readonly reason: string | null;
   } | null;
   readonly group: { readonly id: string } | null;
+  /**
+   * Why this booking can no longer be delivered, and what is proposed.
+   *
+   * Null on a healthy booking. The CONFLICTS chip and the worklist tile both
+   * route here; before this was populated they routed to rows that showed no
+   * cause and offered no repair.
+   */
+  readonly conflict: {
+    readonly kind: string;
+    readonly cause: string;
+    readonly sourceEvent: string;
+    readonly raisedAt: string;
+    readonly staffId: string | null;
+    readonly resourceClass: string | null;
+    /** Where to resolve it. */
+    readonly changeId: string;
+    readonly itemId: string;
+    /** Set once the ladder has run out of rungs and prepared a cancellation. */
+    readonly proposed: unknown;
+  } | null;
   readonly resourceTypes: readonly string[];
 }
 
@@ -120,6 +149,9 @@ export interface BookingView {
 function toView(
   r: BookingRow,
   staffNames: ReadonlyMap<string, string>,
+  /** Folded id -> roster slug. See the note in decorate(). */
+  staffSlugs: ReadonlyMap<string, string>,
+  conflict: ConflictRow | undefined,
   customer: {
     tier: string;
     risk: string;
@@ -146,8 +178,18 @@ function toView(
       riskScore: customer.riskScore,
     },
     services: r.service_names ?? [],
+    category: categoryOf(r.resource_types ?? []),
     staff: {
-      id: staffId,
+      /**
+       * THE SLUG, not the stored hash.
+       *
+       * The series board and the waitlist board already published slugs, and
+       * this list published the folded uuid -- so the same stylist arrived as
+       * "maya" on one screen and "8d820e0c-…" on another. A client keying a
+       * cache on one and looking it up with the other finds nothing, silently
+       * (CLAUDE.md 8). Every endpoint now spells a professional the same way.
+       */
+      id: staffId === null ? null : (staffSlugs.get(staffId) ?? staffId),
       name: staffId === null ? null : (staffNames.get(staffId) ?? null),
     },
     date: day,
@@ -178,6 +220,24 @@ function toView(
     },
     overbook: r.overbooked ? { reason: r.overbook_reason } : null,
     group: r.group_id === null ? null : { id: r.group_id },
+    conflict:
+      conflict === undefined
+        ? null
+        : {
+            kind: conflictKindOf(conflict.kind, conflict.staffId !== null),
+            cause: conflict.reason,
+            sourceEvent: conflictSourceOf(conflict.kind),
+            raisedAt: conflict.raisedAt.toISOString(),
+            // Folded like every other professional id on this payload.
+            staffId:
+              conflict.staffId === null
+                ? null
+                : (staffSlugs.get(conflict.staffId) ?? conflict.staffId),
+            resourceClass: conflict.resourceType,
+            changeId: conflict.changeId,
+            itemId: conflict.itemId,
+            proposed: conflict.proposal ?? null,
+          },
     resourceTypes: r.resource_types ?? [],
   };
 }
@@ -696,7 +756,7 @@ export class BookingReadHandler {
       reason: r.reason,
       servicePrice: wholeAed(r.price_fils),
       depositAmount: wholeAed(r.deposit_fils),
-      outcome: outcomeOf(r.payment_status as PaymentStatus),
+      outcome: eventOutcome(r.payment_status as PaymentStatus),
     }));
 
     const lostFils = rows
@@ -750,7 +810,7 @@ export class BookingReadHandler {
         },
         {
           label: 'Outcome',
-          value: outcomeOf(r.payment_status as PaymentStatus),
+          value: eventOutcome(r.payment_status as PaymentStatus),
         },
       ],
       /**
@@ -977,6 +1037,7 @@ export class BookingReadHandler {
 
     const day = rows[0]!.trading_day.toISOString().slice(0, 10);
     const staffNames = new Map<string, string>();
+    const staffSlugs = new Map<string, string>();
     try {
       const ctx = await this.context.loadDay(branchId, day);
       // THE SLUG/UUID BOUNDARY (CLAUDE.md 8). The roster speaks slugs
@@ -991,6 +1052,7 @@ export class BookingReadHandler {
           const slug = index.toSlug(raw);
           const name = staffNames.get(slug);
           if (name !== undefined) staffNames.set(raw, name);
+          if (slug !== raw) staffSlugs.set(raw, slug);
         }
       }
     } catch {
@@ -1000,15 +1062,18 @@ export class BookingReadHandler {
     }
 
     const ids = [...new Set(rows.map((r) => r.customer_id))];
-    const contexts = new Map(
-      await Promise.all(
+    const [contexts, conflicts] = await Promise.all([
+      Promise.all(
         ids.map(async (id) => [id, await this.customers.load(id)] as const),
-      ),
-    );
+      ).then((pairs) => new Map(pairs)),
+      // ONE query for the whole page, not one per row. A day grid is forty
+      // bookings and almost always zero conflicts.
+      this.reads.conflictsFor(rows.map((r) => r.id)),
+    ]);
 
     return rows.map((r) => {
       const c = contexts.get(r.customer_id);
-      return toView(r, staffNames, {
+      return toView(r, staffNames, staffSlugs, conflicts.get(r.id), {
         tier: c?.tier ?? 'none',
         risk: c?.risk ?? 'LOW',
         riskScore: c?.riskScore ?? 80,
@@ -1019,9 +1084,18 @@ export class BookingReadHandler {
   }
 }
 
-function outcomeOf(p: PaymentStatus): string {
+/**
+ * What became of the money on a cancelled or no-showed booking.
+ *
+ * `partially_refunded` gets its OWN word now. It used to fold into REFUNDED,
+ * and anything unrecognised fell through to LOST -- so the prepaid 2-24h
+ * split, which is the one case the front-end contract had no cell for,
+ * rendered as "Lost" on the cancellations screen and in a dispute.
+ */
+function eventOutcome(p: PaymentStatus): string {
   if (p === 'forfeited') return 'DEPOSIT_KEPT';
-  if (p === 'refunded' || p === 'partially_refunded') return 'REFUNDED';
+  if (p === 'partially_refunded') return 'PARTIALLY_REFUNDED';
+  if (p === 'refunded') return 'REFUNDED';
   if (p === 'none_required' || p === 'unpaid') return 'NO_CHARGE';
   return 'LOST';
 }
@@ -1045,3 +1119,8 @@ function describeSeriesRisk(reason: RiskReason): string {
       return 'visits are being skipped rather than kept';
   }
 }
+
+/** What conflictsFor() returns for one booking. */
+type ConflictRow = NonNullable<
+  ReturnType<Awaited<ReturnType<ReadModelRepository['conflictsFor']>>['get']>
+>;

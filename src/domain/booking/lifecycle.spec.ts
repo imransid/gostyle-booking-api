@@ -25,6 +25,7 @@ import {
   UNDO_WINDOW_MIN,
   shortenTo,
   MIN_SHORTENED_MIN,
+  outcomeOf,
 } from './lifecycle';
 
 const ALL: BookingStatus[] = [
@@ -463,5 +464,92 @@ describe('shortenTo', () => {
     expect(
       shortenTo({ originalMin: 60, requestedMin: MIN_SHORTENED_MIN }),
     ).toBe(MIN_SHORTENED_MIN);
+  });
+});
+
+describe('outcomeOf — the word the desk renders', () => {
+  it('is NO_CHARGE when nothing was captured', () => {
+    expect(outcomeOf({ refundFils: 0, keptFils: 0 })).toBe('NO_CHARGE');
+  });
+
+  it('is REFUNDED when everything went back', () => {
+    expect(outcomeOf({ refundFils: 5000, keptFils: 0 })).toBe('REFUNDED');
+  });
+
+  it('is DEPOSIT_KEPT when none of it did', () => {
+    expect(outcomeOf({ refundFils: 0, keptFils: 5000 })).toBe('DEPOSIT_KEPT');
+  });
+
+  it('is PARTIALLY_REFUNDED for the prepaid split', () => {
+    // The cell the front-end contract had no word for. Without this it
+    // rendered as "Lost" -- wrong on screen and wrong in a dispute.
+    expect(outcomeOf({ refundFils: 2500, keptFils: 2500 })).toBe(
+      'PARTIALLY_REFUNDED',
+    );
+  });
+
+  it('agrees with every band the policy can produce', () => {
+    const captured = 10_000;
+    const cases = [
+      {
+        initiatedBy: 'salon' as const,
+        hoursAhead: 1,
+        paidInFull: false,
+        want: 'REFUNDED',
+      },
+      {
+        initiatedBy: 'customer' as const,
+        hoursAhead: 48,
+        paidInFull: false,
+        want: 'REFUNDED',
+      },
+      {
+        initiatedBy: 'customer' as const,
+        hoursAhead: 12,
+        paidInFull: false,
+        want: 'DEPOSIT_KEPT',
+      },
+      {
+        initiatedBy: 'customer' as const,
+        hoursAhead: 12,
+        paidInFull: true,
+        want: 'PARTIALLY_REFUNDED',
+      },
+      {
+        initiatedBy: 'customer' as const,
+        hoursAhead: 1,
+        paidInFull: false,
+        want: 'DEPOSIT_KEPT',
+      },
+    ];
+
+    for (const c of cases) {
+      const nowMs = 1_000_000_000;
+      const o = cancellationOutcome({
+        nowMs,
+        startAtMs: nowMs + c.hoursAhead * 60 * 60 * 1000,
+        capturedFils: captured,
+        paidInFull: c.paidInFull,
+        initiatedBy: c.initiatedBy,
+      });
+      expect(
+        outcomeOf(o),
+        `${c.initiatedBy} ${c.hoursAhead}h full=${c.paidInFull}`,
+      ).toBe(c.want);
+      // And the word can never contradict the money it came from.
+      expect(balances(o, captured)).toBe(true);
+    }
+  });
+
+  it('calls an uncaptured cancellation NO_CHARGE, not REFUNDED', () => {
+    const nowMs = 1_000_000_000;
+    const o = cancellationOutcome({
+      nowMs,
+      startAtMs: nowMs + 60 * 60 * 1000,
+      capturedFils: 0,
+      paidInFull: false,
+      initiatedBy: 'customer',
+    });
+    expect(outcomeOf(o)).toBe('NO_CHARGE');
   });
 });

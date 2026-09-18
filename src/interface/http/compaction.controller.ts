@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Post,
+  Query,
+  UseInterceptors,
+} from '@nestjs/common';
+import { IdempotentInterceptor } from './idempotent.interceptor';
 import {
   ApiOkResponse,
   ApiOperation,
@@ -59,6 +67,15 @@ export class ApplyCompactionDto {
  * clients use it.
  */
 @Controller(['compaction', 'bookings/compaction'])
+/**
+ * IDEMPOTENT WHERE A KEY IS SENT.
+ *
+ * The front end mints an Idempotency-Key per tap on these routes. Without
+ * this, a retry on a flaky connection moved a booking twice, or seated a
+ * walk-in twice. See idempotent.interceptor.ts for what it does and does
+ * not promise.
+ */
+@UseInterceptors(IdempotentInterceptor)
 @DeskOnly()
 export class CompactionController {
   constructor(private readonly handler: CompactionHandler) {}

@@ -54,6 +54,37 @@ export interface Service {
    */
   readonly depositPercent?: number | null;
   readonly depositFixedFils?: number | null;
+
+  /**
+   * What this service costs, when the catalogue that resolved it knew.
+   *
+   * ABSENT FOR A FIXTURE SERVICE, whose prices live in a separate slug-keyed
+   * map. Present for anything resolved from platform, where `price_minor`
+   * comes back with the service. `priceOfService` prefers this and falls
+   * back to the map -- which is what stops a platform service pricing at
+   * zero, the way an unknown id does today.
+   */
+  readonly priceFils?: number;
+
+  /**
+   * Which catalogue resolved this service.
+   *
+   * The engine never reads it. It rides along so persistence can record the
+   * provenance of what it charged, which is the question a wrong price is
+   * investigated with (see sourceOf in domain/booking/service-resolution.ts).
+   * Absent means the fixture.
+   */
+  readonly source?: 'platform' | 'fixture';
+
+  /**
+   * The currency `priceFils` is in.
+   *
+   * Absent means the house currency. It is here because production has
+   * services at ONE branch in different currencies, and a single integer
+   * with no currency beside it is a basket that can be summed wrongly. See
+   * `oneCurrency` in domain/booking/service-resolution.ts.
+   */
+  readonly currency?: string;
 }
 
 /** Grain and lead time are properties of the CHANNEL, not of the service. */

@@ -3,6 +3,9 @@ import { status } from '@grpc/grpc-js';
 import {
   isConsumerAuthUnreachable,
   describeConsumerAuthFailure,
+  isConsumerAuthFaulted,
+  isConsumerAuthTheirFault,
+  consumerAuthStatusName,
 } from './consumer-auth-failure';
 
 /**
@@ -93,5 +96,60 @@ describe('the line that reaches the log', () => {
     expect(describeConsumerAuthFailure(new Error('boom'))).toBe(
       'no gRPC code: boom',
     );
+  });
+});
+
+describe('an upstream that answers and then breaks', () => {
+  const grpcErr = (code: number, details = ''): unknown => ({ code, details });
+
+  /**
+   * THE PRODUCTION CASE. VerifyConsumer answered
+   *   2 UNKNOWN: Exception calling application: consuming input failed:
+   *   server closed the connection unexpectedly
+   * -- a Python gRPC server surfacing a psycopg error, i.e. the consumer
+   * API's own database dropped mid-call. It fell through as a raw error and
+   * became a bare 500 "Something went wrong" from THIS service.
+   */
+  it('does not call an UNKNOWN unreachable', () => {
+    expect(isConsumerAuthUnreachable(grpcErr(status.UNKNOWN))).toBe(false);
+  });
+
+  it('DOES call it their fault, which is what makes it a 503', () => {
+    expect(isConsumerAuthFaulted(grpcErr(status.UNKNOWN))).toBe(true);
+    expect(isConsumerAuthTheirFault(grpcErr(status.UNKNOWN))).toBe(true);
+  });
+
+  it('treats every code where they accepted and then failed the same way', () => {
+    for (const c of [
+      status.UNKNOWN,
+      status.INTERNAL,
+      status.RESOURCE_EXHAUSTED,
+      status.ABORTED,
+      status.DATA_LOSS,
+    ]) {
+      expect(isConsumerAuthTheirFault(grpcErr(c)), String(c)).toBe(true);
+    }
+  });
+
+  it('still keeps OUR bugs as ours', () => {
+    // A missing method is a deploy skew; a rejected argument is a malformed
+    // request. A 503 on either tells the operator to wait for a recovery
+    // that is not coming.
+    for (const c of [status.UNIMPLEMENTED, status.INVALID_ARGUMENT]) {
+      expect(isConsumerAuthTheirFault(grpcErr(c)), String(c)).toBe(false);
+    }
+  });
+
+  it('an error with no gRPC code at all is ours', () => {
+    expect(isConsumerAuthTheirFault(new Error('boom'))).toBe(false);
+    expect(isConsumerAuthTheirFault(null)).toBe(false);
+  });
+
+  it('names the status, so the 503 can say which kind of failure', () => {
+    expect(consumerAuthStatusName(grpcErr(status.UNKNOWN))).toBe('UNKNOWN');
+    expect(consumerAuthStatusName(grpcErr(status.UNAVAILABLE))).toBe(
+      'UNAVAILABLE',
+    );
+    expect(consumerAuthStatusName(new Error('boom'))).toBeNull();
   });
 });

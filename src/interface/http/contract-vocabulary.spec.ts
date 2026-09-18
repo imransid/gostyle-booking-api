@@ -29,6 +29,23 @@ const PRE_CONTRACT = new Set([
   'bookings.controller.ts',
 ]);
 
+/**
+ * Endpoints that speak SOMEBODY ELSE'S contract, on purpose.
+ *
+ * Different from PRE_CONTRACT, which is debt. These implement a payload
+ * this service does not own -- `docs/booking-create.md` specifies
+ * `salon_id`, `services`, `start_time`, `payment_status` in snake_case, and
+ * renaming any of them to our house style would simply be a different
+ * endpoint that the app cannot call.
+ *
+ * The translation to our vocabulary happens one layer in
+ * (`domain/booking/mobile-contract.ts`), which is the thing that actually
+ * matters: the foreign dialect stops at the controller and never reaches
+ * the engine. Listed rather than silently skipped, so adding another one is
+ * a decision somebody makes on purpose.
+ */
+const FOREIGN_CONTRACT = new Set(['mobile-booking.controller.ts']);
+
 function stripComments(src: string): string {
   return src
     .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' '))
@@ -36,11 +53,26 @@ function stripComments(src: string): string {
 }
 
 const files = readdirSync(HTTP).filter((f) => f.endsWith('.controller.ts'));
-const contractFiles = files.filter((f) => !PRE_CONTRACT.has(f));
+const contractFiles = files.filter(
+  (f) => !PRE_CONTRACT.has(f) && !FOREIGN_CONTRACT.has(f),
+);
 
 describe('request DTO vocabulary', () => {
   it('has controllers to check, and the exemption list is not the whole set', () => {
     expect(contractFiles.length).toBeGreaterThan(5);
+  });
+
+  it('every exempted file actually exists', () => {
+    // An exemption for a file that has been renamed or deleted is an
+    // exemption nobody notices has stopped applying.
+    for (const f of [...PRE_CONTRACT, ...FOREIGN_CONTRACT]) {
+      expect(files, `${f} is exempted but not present`).toContain(f);
+    }
+  });
+
+  it('keeps the foreign-contract list small and deliberate', () => {
+    // If this grows, our own vocabulary has stopped being the default.
+    expect(FOREIGN_CONTRACT.size).toBeLessThanOrEqual(2);
   });
 
   for (const file of contractFiles) {

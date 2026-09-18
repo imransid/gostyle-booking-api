@@ -22,7 +22,9 @@ import type {
   ActorKind,
   BookingStatus,
   CancelInitiator,
+  CancellationOutcome,
 } from '@domain/booking/lifecycle';
+import { outcomeOf } from '@domain/booking/lifecycle';
 
 export interface LifecycleView {
   readonly code: string;
@@ -31,8 +33,20 @@ export interface LifecycleView {
   readonly to: Shouted<BookingStatus>;
   readonly paymentStatus: Shouted<PaymentStatus | 'unchanged'>;
   readonly refund?: string;
+  /** The same figures as integers, so the client never parses the string. */
+  readonly refundMinor?: number;
   readonly kept?: string;
+  readonly keptMinor?: number;
   readonly lateCancel?: boolean;
+  /**
+   * What the customer actually got, as one word.
+   *
+   * Separate from `explanation` because a pill cannot render a sentence, and
+   * separate from the band because the band names the RULE that fired rather
+   * than the result. PARTIALLY_REFUNDED is the prepaid 2-24h split, which
+   * previously had no word and was rendered as "Lost".
+   */
+  readonly outcome?: CancellationOutcome;
   /** The sentence the desk reads to the customer. */
   readonly explanation?: string;
   /** Present on settlement. The receipt. */
@@ -222,8 +236,11 @@ export class LifecycleHandler {
         ? {}
         : {
             refund: Money.fils(m.refundFils).toString(),
+            refundMinor: m.refundFils,
             kept: Money.fils(m.keptFils).toString(),
+            keptMinor: m.keptFils,
             lateCancel: m.lateCancel,
+            outcome: outcomeOf(m),
             explanation: m.explanation,
           }),
     };

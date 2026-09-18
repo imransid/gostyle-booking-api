@@ -1,6 +1,7 @@
 import {
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
@@ -70,6 +71,8 @@ export interface HoldView {
 
 @Injectable()
 export class PlaceHoldHandler {
+  private static readonly log = new Logger(PlaceHoldHandler.name);
+
   constructor(
     @Inject(BOOKING_CONTEXT) private readonly context: BookingContextReader,
     private readonly holds: HoldRepository,
@@ -91,6 +94,53 @@ export class PlaceHoldHandler {
 
     const channel: Channel =
       cmd.channel === 'online' ? ONLINE_CHANNEL : DESK_CHANNEL;
+
+    /**
+     * A STYLIST NOBODY HAS HEARD OF IS NOT A BUSY STYLIST.
+     *
+     * Asked BEFORE the engine runs, because the engine cannot tell the two
+     * apart. `eligible()` drops every professional who is not the preferred
+     * one as `not_preferred`, so an id belonging to no roster at all empties
+     * the pool exactly the way a fully booked salon does -- and the refusal
+     * below then says "16:00 is no longer available. Offers have refreshed."
+     * about a slot that was free the whole time.
+     *
+     * That is what the mobile app hit: it lists stylists from the platform
+     * staff directory, which answers with `staff_profile_id` uuids, and sends
+     * one back on the booking. The engine's roster was the fixture's six
+     * slugs. Two id spaces, no overlap, and a refusal that named the time
+     * instead of the mismatch (CLAUDE.md 8).
+     */
+    const preferredStaffId = cmd.preferredStaffId;
+    if (
+      preferredStaffId !== null &&
+      !day.professionals.some((p) => p.id === preferredStaffId)
+    ) {
+      /**
+       * WHICH ROSTER SAID NO, the way `unknown_service` says which catalogue
+       * did. The id being absent is half the answer; the other half is what
+       * the roster DOES hold, because six slugs tells you instantly that
+       * STAFF_FROM_PLATFORM is off, and eleven uuids tells you it is on and
+       * this person is not among them (CLAUDE.md 9).
+       */
+      PlaceHoldHandler.log.warn(
+        `unknown_stylist at branch ${cmd.branchId} on ${cmd.tradingDay}: ` +
+          `asked for ${preferredStaffId}; BOOKING_CONTEXT rosters ` +
+          `${day.professionals.length} professional(s) ` +
+          `[${day.professionals.map((p) => p.id).join(', ')}]. This roster ` +
+          'is NOT the gRPC staff directory unless STAFF_FROM_PLATFORM=true.',
+      );
+
+      throw bookingError(
+        'BOOKING_STAFF_UNKNOWN',
+        'That stylist does not work at this salon, so no time can be held ' +
+          'with them. Pick one of the salon’s stylists.',
+        {
+          staffId: preferredStaffId,
+          roster: day.professionals.map((p) => ({ id: p.id, name: p.name })),
+        },
+      );
+    }
 
     // FRESH. The offer list the operator is looking at may be seconds old,
     // and this is the moment that stops mattering.
@@ -121,7 +171,7 @@ export class PlaceHoldHandler {
        * the code that goes with it, so the desk is told to pick someone
        * else rather than to try another time.
        */
-      const preferred = cmd.preferredStaffId;
+      const preferred = preferredStaffId;
       const named =
         preferred === null ? undefined : result.excluded.get(preferred);
 

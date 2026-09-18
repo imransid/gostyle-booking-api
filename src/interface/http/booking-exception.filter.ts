@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { isMobileContractError } from '@application/commands/mobile-booking.error';
 import {
   inferCode,
   isBookingError,
@@ -50,6 +51,17 @@ export class BookingExceptionFilter implements ExceptionFilter {
   catch(exception: unknown, host: ArgumentsHost): void {
     const res = host.switchToHttp().getResponse<Response>();
 
+    /**
+     * The mobile contract has its own envelope (booking-create.md §9) and
+     * gets to keep it. Its `errors[]` carry a per-field code and the
+     * server's correct figure, which is what lets the app show the customer
+     * what changed instead of a dead "prices moved".
+     */
+    if (isMobileContractError(exception)) {
+      res.status(exception.status).json(exception.toBody());
+      return;
+    }
+
     if (isBookingError(exception)) {
       res.status(exception.status).json(exception.toBody());
       return;
@@ -67,9 +79,43 @@ export class BookingExceptionFilter implements ExceptionFilter {
       exception instanceof Error ? exception.stack : String(exception),
     );
 
+    /**
+     * AN UPSTREAM gRPC FAILURE IS NOT OUR 500.
+     *
+     * A raw gRPC error reaching here means a dependency failed and nobody
+     * translated it. Reporting that as "Something went wrong" sends whoever
+     * is on call to read THIS codebase for a fault in another one -- which
+     * is what happened: a consumer API whose database dropped mid-call was
+     * reported as a booking-service bug.
+     *
+     * The right fix is at the throw site, and the auth path now does that.
+     * This is the backstop for every call that does not, and it names the
+     * status so the log and the response agree.
+     */
+    const grpc = grpcStatusOf(exception);
+    if (grpc !== null) {
+      res.status(HttpStatus.SERVICE_UNAVAILABLE).json({
+        statusCode: 503,
+        code: 'DEPENDENCY_UNAVAILABLE' satisfies ErrorCode,
+        message: 'An upstream service failed.',
+        details: { grpcStatus: grpc },
+        error: statusText(503),
+      });
+      return;
+    }
+
+    /**
+     * NO BOOKING CODE ON AN UNKNOWN ERROR.
+     *
+     * This hardcoded BOOKING_STATE_INVALID, which told the client its
+     * booking was in the wrong state for what was actually an unhandled
+     * exception. `inferCode` maps every 5xx to DEPENDENCY_UNAVAILABLE and
+     * this branch never called it -- so the one place a code was invented
+     * from nothing was the one place with no evidence for it.
+     */
     res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
       statusCode: 500,
-      code: 'BOOKING_STATE_INVALID' satisfies ErrorCode,
+      code: inferCode(500, message(exception)) satisfies ErrorCode,
       message: 'Something went wrong.',
       error: 'Internal Server Error',
     });
@@ -120,4 +166,22 @@ function fromHttp(e: HttpException): ErrorBody | Record<string, unknown> {
     ...(details === undefined ? {} : { details }),
     error: statusText(status),
   };
+}
+
+/**
+ * The gRPC status on an error, if it is one.
+ *
+ * grpc-js puts a numeric `code` on its errors. Anything without one came
+ * from our side of the wire and is not an upstream failure.
+ */
+function grpcStatusOf(e: unknown): number | null {
+  if (typeof e !== 'object' || e === null) return null;
+  const code = (e as { code?: unknown }).code;
+  // A Nest/Node error can also carry a string `code` ('ENOENT'); only a
+  // number is a gRPC status.
+  return typeof code === 'number' ? code : null;
+}
+
+function message(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }

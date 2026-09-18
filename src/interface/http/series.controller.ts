@@ -196,6 +196,47 @@ export class MaterialiseDto {
  * look when the answer is wrong.
  */
 @ApiTags('series')
+export class ApplyPatternDto {
+  @ApiProperty({
+    description: 'The occurrence the edit is anchored on.',
+  })
+  @IsString()
+  occurrenceId!: string;
+
+  @ApiProperty({
+    enum: ['THIS_OCCURRENCE', 'THIS_AND_FUTURE', 'ENTIRE_SERIES'],
+    description:
+      'Asked for every time, never defaulted. "Change the time" against a ' +
+      'standing booking is ambiguous in a way only the person typing it can ' +
+      'resolve, and guessing wrong either strands one visit or rewrites a ' +
+      'year of them.',
+  })
+  @WireEnum(['THIS_OCCURRENCE', 'THIS_AND_FUTURE', 'ENTIRE_SERIES'])
+  scope!: 'THIS_OCCURRENCE' | 'THIS_AND_FUTURE' | 'ENTIRE_SERIES';
+
+  @ApiPropertyOptional({
+    type: PatternDto,
+    description:
+      'Required for THIS_AND_FUTURE and ENTIRE_SERIES. Omit for ' +
+      'THIS_OCCURRENCE, which detaches the visit and leaves the cadence alone.',
+  })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => PatternDto)
+  pattern?: PatternDto;
+
+  @ApiPropertyOptional({ example: 1080, description: 'New time of day.' })
+  @IsOptional()
+  @IsInt()
+  @Min(DAY_START_MIN)
+  @Max(DAY_END_MIN)
+  startMin?: number;
+
+  @ApiProperty({ example: 'customer moved to Thursdays' })
+  @IsString()
+  reason!: string;
+}
+
 /**
  * TWO PATHS, ONE CONTROLLER.
  *
@@ -323,6 +364,41 @@ export class SeriesController {
     @Param('occurrenceId', ResourceIdPipe) occurrenceId: string,
   ): Promise<LifecycleResult> {
     return this.lifecycle.skip(id, occurrenceId);
+  }
+
+  @Post(':id/pattern')
+  @ApiOperation({
+    summary: 'Change the cadence, at a scope',
+    description:
+      'Carries out exactly what GET …/edit-scope previewed — the same ' +
+      'planner decides both, so what the desk was shown and what happens ' +
+      'cannot differ. A visit that has started or closed is never touched by ' +
+      'any scope, so history survives by construction. Returns the ' +
+      'regenerated timeline so the screen updates in one round trip.',
+  })
+  @ApiOkResponse({ description: 'Applied, with the new occurrence list.' })
+  @ApiUnprocessableEntityResponse({
+    description: 'The new pattern produces no visits.',
+  })
+  @ApiNotFoundResponse({ description: 'No such series or occurrence.' })
+  async applyPattern(
+    @Param('id', ResourceIdPipe) id: string,
+    @Body() dto: ApplyPatternDto,
+  ): Promise<unknown> {
+    const scope = unshout(dto.scope, [
+      'this_occurrence',
+      'this_and_future',
+      'entire_series',
+    ] as const)!;
+
+    return this.lifecycle.applyPattern({
+      seriesId: id,
+      occurrenceId: dto.occurrenceId,
+      scope,
+      ...(dto.pattern === undefined ? {} : { pattern: toPattern(dto.pattern) }),
+      ...(dto.startMin === undefined ? {} : { startMin: dto.startMin }),
+      reason: dto.reason,
+    });
   }
 
   @Get(':id/occurrences/:occurrenceId/edit-scope')

@@ -1,6 +1,10 @@
 import { Inject, Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
-import { firstValueFrom, timeout, Observable } from 'rxjs';
+import { Metadata } from '@grpc/grpc-js';
+import { Observable } from 'rxjs';
+
+import { callWithRetry, type GrpcCallOptions } from './call-with-retry';
+import { describeGrpcFailure } from './grpc-failure';
 
 import type {
   StaffDirectoryReader,
@@ -39,7 +43,11 @@ interface StylistWire {
 
 /** The generated client surface. Nest lowercases the first letter of each rpc. */
 interface StaffDirectoryGrpc {
-  listStylists(data: { tenant_id: string; branch_id: string }): Observable<{
+  listStylists(
+    data: { tenant_id: string; branch_id: string },
+    metadata?: Metadata,
+    options?: GrpcCallOptions,
+  ): Observable<{
     stylists?: StylistWire[];
   }>;
 }
@@ -65,21 +73,36 @@ export class GrpcStaffDirectory implements StaffDirectoryReader, OnModuleInit {
 
   async listStylists(tenantId: string, branchId: string): Promise<Stylist[]> {
     try {
-      const res = await firstValueFrom(
-        this.svc
-          .listStylists({ tenant_id: tenantId, branch_id: branchId })
-          .pipe(timeout(CALL_TIMEOUT_MS)),
+      const res = await callWithRetry(
+        this.logger,
+        `listStylists tenant=${tenantId} branch=${branchId}`,
+        CALL_TIMEOUT_MS,
+        (md, opts) =>
+          this.svc.listStylists(
+            { tenant_id: tenantId, branch_id: branchId },
+            md,
+            opts,
+          ),
       );
       return (res.stylists ?? []).map(toStylist);
     } catch (err) {
-      // CLOSED BY DEFAULT, the same rule the availability adapters follow.
-      // An empty list is honest here: platform did not answer, so this
-      // service knows of no stylists. Throwing would take down a whole
-      // screen because one panel could not load.
+      /**
+       * STILL CLOSED BY DEFAULT, unlike the services adapter beside it,
+       * and the difference is what the answer is USED FOR.
+       *
+       * This one feeds a "meet the team" list. An empty roster is a poor
+       * panel; nobody is refused anything and no money moves. The services
+       * catalogue prices a booking, so an empty answer there turns a
+       * server outage into `unknown_service` at a customer -- which is why
+       * that one now refuses and this one does not.
+       *
+       * It is still a lie of a smaller kind: a reader cannot tell an empty
+       * roster from an unreachable platform. The log line below is the only
+       * place that distinction survives, and it should become a 503 the day
+       * anything decides something on the strength of this list.
+       */
       this.logger.error(
-        `listStylists failed for tenant ${tenantId}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `listStylists failed for tenant ${tenantId}: ${describeGrpcFailure(err)}`,
       );
       return [];
     }

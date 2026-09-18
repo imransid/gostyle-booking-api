@@ -60,6 +60,8 @@ import { ListStylistsHandler } from '@application/queries/list-stylists.handler'
 
 import { ReadModelsController } from '@interface/http/read-models.controller';
 import { MoneyController } from '@interface/http/money.controller';
+import { MobileBookingController } from '@interface/http/mobile-booking.controller';
+import { MobileBookingHandler } from '@application/commands/mobile-booking.handler';
 import { DeskExtrasController } from '@interface/http/desk-extras.controller';
 import { DeskExtrasHandler } from '@application/commands/desk-extras.handler';
 import { MoneyRepository } from '@infrastructure/persistence/money.repository';
@@ -95,6 +97,7 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     SettingsController,
     ReadModelsController,
     MoneyController,
+    MobileBookingController,
     DeskExtrasController,
     DeskActionsController,
     CustomerRiskController,
@@ -120,6 +123,7 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     GetSettingsHandler,
     BookingReadHandler,
     MoneyRepository,
+    MobileBookingHandler,
     DeskExtrasHandler,
     DeskActionsHandler,
     ReadModelRepository,
