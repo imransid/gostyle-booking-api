@@ -596,25 +596,41 @@ export class MobileBookingHandler {
      * render one screen.
      */
     /**
-     * THE ROSTER IS TENANT-SCOPED TOO, and this is where that was missed.
-     * `moneyFor` was scoped to the booking's tenant and the names were not,
-     * so a list came back fully priced with every stylist called `null` --
-     * the roster lookup found nothing without a tenant, exactly as the
-     * catalogue did. Each branch is resolved under the tenant of a booking
-     * at that branch.
+     * ONE LOOKUP PER (BRANCH, DAY), and BOTH halves of that key were bugs.
+     *
+     * TENANT: `moneyFor` was scoped to the booking's tenant and the names
+     * were not, so a list came back fully priced with every stylist called
+     * `null` -- the roster lookup found nothing without a tenant, exactly as
+     * the catalogue did.
+     *
+     * DAY: the roster is resolved per trading day (`rosterFor` asks platform
+     * who is bookable ON that date), and this loaded TODAY for every row. A
+     * list is mostly future bookings, so the stylist working next Monday was
+     * absent from today's roster and came back nameless anyway.
+     *
+     * Keyed rather than per row: a page is a handful of days at one or two
+     * salons, and loading per booking would be twenty round trips to draw
+     * one screen.
      */
-    const byBranch = new Map<string, string | null>();
+    const byDay = new Map<
+      string,
+      { branchId: string; day: string; tenantId: string | null }
+    >();
     for (const b of rows) {
-      if (!byBranch.has(b.branchId)) byBranch.set(b.branchId, b.tenantId);
+      const day = b.tradingDay.toISOString().slice(0, 10);
+      const key = `${b.branchId}|${day}`;
+      if (!byDay.has(key)) {
+        byDay.set(key, { branchId: b.branchId, day, tenantId: b.tenantId });
+      }
     }
     const context = new Map(
       await Promise.all(
-        [...byBranch].map(
-          async ([branchId, tenantId]) =>
+        [...byDay].map(
+          async ([key, { branchId, day, tenantId }]) =>
             [
-              branchId,
+              key,
               await this.inBookingTenant({ tenantId }, () =>
-                this.branchNames(branchId),
+                this.branchNames(branchId, day),
               ),
             ] as const,
         ),
@@ -629,7 +645,7 @@ export class MobileBookingHandler {
           .reduce((n, l) => n + l.amountFils, 0);
 
         const day = b.tradingDay.toISOString().slice(0, 10);
-        const names = context.get(b.branchId) ?? EMPTY_BRANCH;
+        const names = context.get(`${b.branchId}|${day}`) ?? EMPTY_BRANCH;
         const stylistIds = [
           ...new Set(
             b.items
@@ -719,12 +735,18 @@ export class MobileBookingHandler {
    * bargain `present` makes. A platform that is down must not empty a
    * customer's booking history; it may only leave the names off it.
    */
-  private async branchNames(branchId: string): Promise<BranchNames> {
+  private async branchNames(
+    branchId: string,
+    /**
+     * THE BOOKING'S OWN DAY, not today. `rosterFor` asks platform who is
+     * bookable ON this date, so today's roster does not contain the stylist
+     * working next Monday -- and a list is mostly future bookings.
+     */
+    tradingDay: string,
+  ): Promise<BranchNames> {
     try {
       const [roster, catalogue] = await Promise.all([
-        // Any day resolves the roster; the professionals are the branch's,
-        // not the day's, and the list spans many days.
-        this.context.loadDay(branchId, new Date().toISOString().slice(0, 10)),
+        this.context.loadDay(branchId, tradingDay),
         this.context.loadCatalogue(branchId),
       ]);
       return {
