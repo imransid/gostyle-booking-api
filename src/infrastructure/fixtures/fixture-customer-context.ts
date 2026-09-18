@@ -8,6 +8,7 @@ import {
 } from '@application/ports/customer-context.port';
 
 interface Seed {
+  readonly name: string;
   readonly tier: CustomerContext['tier'];
   readonly history: CustomerHistory;
   readonly requireDepositFlag?: boolean;
@@ -23,31 +24,48 @@ const SEEDS: ReadonlyMap<string, Seed> = new Map([
   // Ordinary returning customer. Nothing fires but the service rule.
   [
     'dana',
-    { tier: 'none', history: { noShows: 0, lateCancels: 0, visits: 6 } },
+    {
+      name: 'Dana R.',
+      tier: 'none',
+      history: { noShows: 0, lateCancels: 0, visits: 6 },
+    },
   ],
 
   // Gold: 10% off at CHECKOUT and not a fil off the deposit.
   [
     'nour',
-    { tier: 'gold', history: { noShows: 0, lateCancels: 0, visits: 22 } },
+    {
+      name: 'Nour K.',
+      tier: 'gold',
+      history: { noShows: 0, lateCancels: 0, visits: 22 },
+    },
   ],
 
   // The document's own worked example: two no-shows, four visits, score 28.
   [
     'omar',
-    { tier: 'none', history: { noShows: 2, lateCancels: 0, visits: 4 } },
+    {
+      name: 'Omar S.',
+      tier: 'none',
+      history: { noShows: 2, lateCancels: 0, visits: 4 },
+    },
   ],
 
   // WATCH. Monitored, reminders intensify, and NOTHING is forced.
   [
     'yara',
-    { tier: 'silver', history: { noShows: 0, lateCancels: 1, visits: 3 } },
+    {
+      name: 'Yara M.',
+      tier: 'silver',
+      history: { noShows: 0, lateCancels: 1, visits: 3 },
+    },
   ],
 
   // A VIP a manager has flagged anyway. Proves tier rescues nobody.
   [
     'rania',
     {
+      name: 'Rania A.',
       tier: 'vip',
       history: { noShows: 0, lateCancels: 0, visits: 40 },
       requireDepositFlag: true,
@@ -89,6 +107,7 @@ export class FixtureCustomerContext implements CustomerContextReader {
     const risk = assessRisk(seed.history);
     return Promise.resolve({
       customerId,
+      name: seed.name,
       tier: seed.tier,
       risk: risk.band,
       riskScore: risk.score,

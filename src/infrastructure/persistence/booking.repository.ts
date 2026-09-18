@@ -8,6 +8,10 @@ import { TenantContext } from '../tenancy/tenant-context';
 import { isExclusionViolation, isUniqueViolationOn } from './pg-errors';
 import { toUuid } from './hold.repository';
 import { ItemSource } from '@domain/booking/service-resolution';
+import {
+  ARCHIVE_STATES,
+  NEVER_LISTED_STATES,
+} from '@domain/booking/booking-shelf';
 
 export type PaymentRail =
   'wallet' | 'card' | 'apple_pay' | 'cash' | 'link' | 'internal';
@@ -355,6 +359,113 @@ export class BookingRepository {
         ledger: { orderBy: { createdAt: 'asc' } },
         statusHistory: { orderBy: { createdAt: 'asc' } },
       },
+    });
+  }
+
+  /**
+   * One shelf of one customer's bookings, and the size of all of them.
+   *
+   * THE SHELF IS DECIDED IN SQL, from `ARCHIVE_STATES` and `endAt`, which is
+   * the same pair `shelfOf` reads. It cannot call `shelfOf` here -- that
+   * would mean fetching every booking a customer has ever made in order to
+   * throw most of them away -- so the domain exports the set and the spec
+   * pins the two together for all fourteen statuses. Do not write status
+   * names into this file (CLAUDE.md 4).
+   *
+   * `counts` comes back with the page because the app draws three tab
+   * badges and would otherwise ask three times for numbers it renders at
+   * once. They are counted over the SAME listable set as the page, so the
+   * badge and the list it opens cannot disagree.
+   *
+   * `booking_customer_idx` is `[customer_id, start_at DESC]`, which is
+   * exactly this query: the customer narrows it and the sort is served by
+   * the index in both directions.
+   */
+  async customerPage(input: {
+    readonly customerId: string;
+    readonly shelf: 'upcoming' | 'archive';
+    readonly now: Date;
+    readonly page: number;
+    readonly pageSize: number;
+  }): Promise<{
+    readonly rows: Awaited<ReturnType<BookingRepository['pageRows']>>;
+    readonly count: number;
+    readonly counts: { readonly upcoming: number; readonly archive: number };
+  }> {
+    const customerId = toUuid(input.customerId);
+    const listable = {
+      customerId,
+      // §2.3, via domain/booking/booking-shelf.isListable.
+      paymentStatus: { not: 'unpaid' as const },
+      status: { notIn: [...NEVER_LISTED_STATES] },
+    };
+
+    const upcoming = {
+      ...listable,
+      status: { notIn: [...NEVER_LISTED_STATES, ...ARCHIVE_STATES] },
+      endAt: { gt: input.now },
+    };
+    const archive = {
+      ...listable,
+      OR: [
+        { status: { in: [...ARCHIVE_STATES] } },
+        { endAt: { lte: input.now } },
+      ],
+    };
+    const where = input.shelf === 'upcoming' ? upcoming : archive;
+
+    // One round trip. The two counts are needed whichever shelf was asked
+    // for, so they are not conditional on it.
+    //
+    // A pageSize of 0 asks for the BADGES ONLY, and skips the page query
+    // rather than passing `take: 0` to Prisma -- a zero take is not a
+    // documented "no rows" and is the sort of thing that quietly becomes
+    // "all rows" across a version.
+    const [rows, count, upcomingCount, archiveCount] = await Promise.all([
+      input.pageSize > 0
+        ? this.pageRows(where, input.shelf, input.page, input.pageSize)
+        : Promise.resolve([]),
+      this.prisma.booking.count({ where }),
+      this.prisma.booking.count({ where: upcoming }),
+      this.prisma.booking.count({ where: archive }),
+    ]);
+
+    return {
+      rows,
+      count,
+      counts: { upcoming: upcomingCount, archive: archiveCount },
+    };
+  }
+
+  /**
+   * The page itself. `items` for the service and stylist lines, `ledger` for
+   * what was actually captured -- both of which the row renders, and neither
+   * of which is worth a second query per booking.
+   *
+   * `statusHistory` is NOT included: the drawer shows it, a list row does
+   * not, and it is the one relation that grows without bound.
+   */
+  private pageRows(
+    where: object,
+    shelf: 'upcoming' | 'archive',
+    page: number,
+    pageSize: number,
+  ) {
+    return this.prisma.booking.findMany({
+      where,
+      include: {
+        items: { orderBy: { position: 'asc' } },
+        ledger: { orderBy: { createdAt: 'asc' } },
+      },
+      // Soonest first on the way forward, most recent first on the way back
+      // (§2). `id` breaks a tie so a page boundary cannot show one booking
+      // twice and skip another.
+      orderBy: [
+        { startAt: shelf === 'upcoming' ? 'asc' : 'desc' },
+        { id: 'asc' },
+      ],
+      skip: (page - 1) * pageSize,
+      take: pageSize,
     });
   }
 }

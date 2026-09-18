@@ -14,7 +14,11 @@
  * shares nothing with this but a shape; folding them together would make a
  * customer tab and a desk chip impossible to change independently.
  */
-export const MOBILE_LIST_FILTERS = ['upcoming', 'recurring', 'archive'] as const;
+export const MOBILE_LIST_FILTERS = [
+  'upcoming',
+  'recurring',
+  'archive',
+] as const;
 
 export type MobileListFilter = (typeof MOBILE_LIST_FILTERS)[number];
 

@@ -1,6 +1,7 @@
 import {
   Injectable,
   Logger,
+  type OnModuleInit,
   ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
@@ -37,11 +38,45 @@ interface ConsumerClaims {
 const STAFF_ISSUER = 'gostyle-api';
 const CONSUMER_AUDIENCE = 'gostyle-consumer';
 
+/**
+ * The staff signing secret, or null when this service cannot verify at all.
+ *
+ * One reader, so "unset" and "empty string" mean the same thing everywhere
+ * and the boot check and the request path cannot disagree about which it is.
+ */
+export function staffSecret(
+  raw = process.env.JWT_ACCESS_SECRET,
+): string | null {
+  const trimmed = (raw ?? '').trim();
+  return trimmed === '' ? null : trimmed;
+}
+
 @Injectable()
-export class TokenVerifier {
+export class TokenVerifier implements OnModuleInit {
   private static readonly log = new Logger(TokenVerifier.name);
 
   constructor(private readonly consumerAuth: AuthService) {}
+
+  /**
+   * SAID AT BOOT, not once per rejected request.
+   *
+   * Without this the only symptom of a missing secret is a 401 per call,
+   * which reads as "bad token" from both ends: the front end checks its
+   * login, and nobody looks at the server. A deploy that drops the variable
+   * -- a `docker stack deploy` wipes anything set with `--env-add`, which is
+   * exactly how this happens -- now announces itself in the first ten lines
+   * of the service log (CLAUDE.md 9).
+   */
+  onModuleInit(): void {
+    if (staffSecret() === null) {
+      TokenVerifier.log.error(
+        'JWT_ACCESS_SECRET IS NOT SET. Every staff token will be refused ' +
+          'with 503 AUTH_MISCONFIGURED until it is, because this service ' +
+          'cannot check a signature without it. Set it to the SAME value ' +
+          'gostyle-api signs with (HS256, symmetric) and restart.',
+      );
+    }
+  }
 
   /**
    * One token in, one Actor out, whoever issued it.
@@ -86,10 +121,34 @@ export class TokenVerifier {
    * verifies these.
    */
   private verifyStaff(token: string): Actor {
-    const secret = process.env.JWT_ACCESS_SECRET;
-    if (secret === undefined || secret === '') {
-      TokenVerifier.log.error('JWT_ACCESS_SECRET is not set');
-      throw new UnauthorizedException('Staff authentication unavailable');
+    const secret = staffSecret();
+    if (secret === null) {
+      /**
+       * NOT A 401. The caller's token may be perfectly good -- this server
+       * simply cannot check it, which is our fault and not theirs.
+       *
+       * It was `401 UNAUTHENTICATED "Staff authentication unavailable"`, and
+       * a client reading the code was told to sign in again. Signing in
+       * again produces another token this server still cannot verify, so the
+       * loop closes with nobody looking at the one thing that is wrong.
+       *
+       * The temptation at this point is to skip verification and let the
+       * request through. Do not: an unverified staff token is a FORGED staff
+       * token, and this guard is the only thing standing between a stranger
+       * and every booking in every branch.
+       */
+      TokenVerifier.log.error(
+        'JWT_ACCESS_SECRET is not set; refusing a staff token this service ' +
+          'cannot verify.',
+      );
+      throw new ServiceUnavailableException({
+        statusCode: 503,
+        code: 'AUTH_MISCONFIGURED' satisfies ErrorCode,
+        message:
+          'This server cannot verify staff tokens: its signing secret is not ' +
+          'configured. Your token is probably fine. Set JWT_ACCESS_SECRET.',
+        details: { variable: 'JWT_ACCESS_SECRET' },
+      });
     }
 
     let claims: StaffClaims;

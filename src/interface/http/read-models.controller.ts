@@ -1,15 +1,9 @@
 import { Controller, Get, Param, Query } from '@nestjs/common';
-import {
-  ApiOkResponse,
-  ApiOperation,
-  ApiQuery,
-  ApiTags,
-} from '@nestjs/swagger';
+import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { BookingReadHandler } from '@application/queries/read-models.handler';
 import { BranchId } from './branch.decorator';
 import { DeskOnly } from '../../auth/desk-only.decorator';
 import { ResourceIdPipe } from './resource-id.pipe';
-import { LIST_FILTERS } from '@application/contract/screen-view';
 import { BOOKING_HORIZON_DAYS } from '@domain/booking/recurrence';
 import {
   BookingEventListDto,
@@ -21,6 +15,18 @@ import {
   WaitlistBoardDto,
   WorklistDto,
 } from './read-model.dto';
+import {
+  BookingListQuery,
+  CalendarDayQuery,
+  CalendarMonthQuery,
+  CalendarWeekQuery,
+  EventsQuery,
+  SearchQuery,
+  SeriesBoardQuery,
+  SummaryQuery,
+  WaitlistBoardQuery,
+  WorklistQuery,
+} from './read-models.query';
 
 /**
  * The read side of the seven booking screens.
@@ -51,16 +57,15 @@ export class ReadModelsController {
       'a count moves by a percentage, a rate by points and an average by an ' +
       'absolute amount, and getting that wrong flips a sign on a dashboard.',
   })
-  @ApiQuery({ name: 'range', required: false, example: 7 })
   @ApiOkResponse({
     type: SummaryDto,
     description: 'KPIs and the trend series.',
   })
   summary(
     @BranchId() branchId: string,
-    @Query('range') range?: string,
+    @Query() q: SummaryQuery,
   ): Promise<unknown> {
-    return this.reads.summary(branchId, readRange(range));
+    return this.reads.summary(branchId, q.range ?? 7);
   }
 
   @Get('worklist')
@@ -71,7 +76,10 @@ export class ReadModelsController {
       'rather than present and empty, so the strip is never a row of noughts.',
   })
   @ApiOkResponse({ type: WorklistDto })
-  worklist(@BranchId() branchId: string): Promise<unknown> {
+  worklist(
+    @BranchId() branchId: string,
+    @Query() _q: WorklistQuery,
+  ): Promise<unknown> {
     return this.reads.worklist(branchId);
   }
 
@@ -81,28 +89,28 @@ export class ReadModelsController {
     description:
       'Utilisation is measured against SELLABLE minutes — the published ' +
       'shift, less approved time off — never against trading hours. A ' +
-      'stylist rostered 10:00-14:00 and fully booked reads 100%, not 33%.',
+      'stylist rostered 10:00-14:00 and fully booked reads 100%, not 33%. ' +
+      'With `staffId` the whole strip narrows to that professional, ' +
+      'denominator included.',
   })
-  @ApiQuery({ name: 'date', example: '2026-07-13' })
-  @ApiQuery({ name: 'staffId', required: false })
   @ApiOkResponse({ type: CalendarDayDto })
   day(
     @BranchId() branchId: string,
-    @Query('date') date: string,
-    @Query('staffId') staffId?: string,
-    @Query('status') status?: string,
+    @Query() q: CalendarDayQuery,
   ): Promise<unknown> {
-    return this.reads.day(branchId, date, { staffId, status });
+    return this.reads.day(branchId, q.date, {
+      staffId: q.staffId,
+      status: q.status,
+    });
   }
 
   @Get('calendar/week')
   @ApiOperation({ summary: 'Seven day summaries from a start date' })
-  @ApiQuery({ name: 'from', example: '2026-07-13' })
   week(
     @BranchId() branchId: string,
-    @Query('from') from: string,
+    @Query() q: CalendarWeekQuery,
   ): Promise<unknown> {
-    return this.reads.week(branchId, from);
+    return this.reads.week(branchId, q.from);
   }
 
   @Get('calendar/month')
@@ -112,12 +120,12 @@ export class ReadModelsController {
       '`withinHorizon` is false past the lead limit. Those cells are real ' +
       'days that cannot be sold yet, which is different from a closed day.',
   })
-  @ApiQuery({ name: 'month', example: '2026-07' })
+  @ApiOkResponse({ type: CalendarDayDto })
   month(
     @BranchId() branchId: string,
-    @Query('month') month: string,
+    @Query() q: CalendarMonthQuery,
   ): Promise<unknown> {
-    return this.reads.month(branchId, month, BOOKING_HORIZON_DAYS);
+    return this.reads.month(branchId, q.month, BOOKING_HORIZON_DAYS);
   }
 
   @Get('search')
@@ -126,17 +134,16 @@ export class ReadModelsController {
     description:
       'Ranked in the domain, not in SQL: "exact code matches first" is a ' +
       'rule, and a rule written twice is a rule that drifts. A purely ' +
-      'numeric query shorter than three characters matches nothing.',
+      'numeric query shorter than three characters matches nothing. A ' +
+      'SERVICE hit carries the id the availability engine answers to, not ' +
+      'the stored one.',
   })
-  @ApiQuery({ name: 'q' })
-  @ApiQuery({ name: 'limit', required: false, example: 10 })
   @ApiOkResponse({ type: SearchResultsDto })
   search(
     @BranchId() branchId: string,
-    @Query('q') q: string,
-    @Query('limit') limit?: string,
+    @Query() q: SearchQuery,
   ): Promise<unknown> {
-    return this.reads.search(branchId, q ?? '', clamp(limit, 10, 1, 50));
+    return this.reads.search(branchId, q.q, q.limit ?? 10);
   }
 
   @Get('events')
@@ -145,28 +152,22 @@ export class ReadModelsController {
     description:
       'Read out of the status history rather than a second event table: ' +
       'every lifecycle write already appends the actor and the reason, and a ' +
-      'parallel log is a copy that can disagree with it.',
-  })
-  @ApiQuery({ name: 'range', required: false, example: 30 })
-  @ApiQuery({
-    name: 'kind',
-    required: false,
-    enum: ['ALL', 'NO_SHOW', 'CANCELLED'],
+      'parallel log is a copy that can disagree with it. `summary` and ' +
+      '`reasons` are computed over the WHOLE range and the active kind, not ' +
+      'over the page. LATE_CANCEL is a real filter, not an alias of ' +
+      'CANCELLED, and an unknown kind is a 400 rather than a coercion.',
   })
   @ApiOkResponse({ type: BookingEventListDto })
   events(
     @BranchId() branchId: string,
-    @Query('range') range?: string,
-    @Query('kind') kind?: string,
-    @Query('page') page?: string,
-    @Query('pageSize') pageSize?: string,
+    @Query() q: EventsQuery,
   ): Promise<unknown> {
     return this.reads.events({
       branchId,
-      range: readRange(range, 30),
-      kind,
-      page: clamp(page, 1, 1, 10_000),
-      pageSize: clamp(pageSize, 25, 1, 100),
+      range: q.range ?? 30,
+      kind: q.kind ?? 'ALL',
+      page: q.page ?? 1,
+      pageSize: Math.min(100, q.pageSize ?? 25),
     });
   }
 
@@ -174,8 +175,10 @@ export class ReadModelsController {
   @ApiOperation({
     summary: 'One event, with the worked policy maths',
     description:
-      'The figures the policy actually used, so the desk can answer a ' +
-      'dispute without anyone re-deriving them by hand.',
+      'Carries every field the list row carries, plus the maths — a deep ' +
+      'link has no row to merge with. The figures are the ones the policy ' +
+      'actually used, so the desk can answer a dispute without re-deriving ' +
+      'them by hand.',
   })
   event(@Param('id', ResourceIdPipe) id: string): Promise<unknown> {
     return this.reads.event(id);
@@ -191,7 +194,10 @@ export class ReadModelsController {
       'domain/booking/waitlist.ts, not an omission.',
   })
   @ApiOkResponse({ type: WaitlistBoardDto })
-  waitlist(@BranchId() branchId: string): Promise<unknown> {
+  waitlist(
+    @BranchId() branchId: string,
+    @Query() _q: WaitlistBoardQuery,
+  ): Promise<unknown> {
     return this.reads.waitlist(branchId);
   }
 
@@ -203,17 +209,12 @@ export class ReadModelsController {
       'stored flag and the occurrences are two facts that can disagree, and ' +
       'the stored one is always the wrong one.',
   })
-  @ApiQuery({
-    name: 'status',
-    required: false,
-    enum: ['ALL', 'ACTIVE', 'PAUSED', 'ENDED', 'COMPLETED', 'AT_RISK'],
-  })
   @ApiOkResponse({ type: SeriesBoardDto })
   series(
     @BranchId() branchId: string,
-    @Query('status') status?: string,
+    @Query() q: SeriesBoardQuery,
   ): Promise<unknown> {
-    return this.reads.series(branchId, status);
+    return this.reads.series(branchId, q.status);
   }
 
   @Get()
@@ -222,50 +223,24 @@ export class ReadModelsController {
     description:
       'Sorted by start, ascending. `counts` are computed against the ' +
       'UNFILTERED set, because a chip showing the size of what you are ' +
-      'already looking at would read the same number every time.',
+      'already looking at would read the same number every time. `from` and ' +
+      '`to` are both INCLUSIVE trading days. `pageSize` is capped at 100 and ' +
+      'the response echoes the value actually used.',
   })
-  @ApiQuery({ name: 'filter', required: false, enum: LIST_FILTERS })
-  @ApiQuery({ name: 'from', required: false, example: '2026-07-13' })
-  @ApiQuery({ name: 'to', required: false })
-  @ApiQuery({ name: 'staffId', required: false })
-  @ApiQuery({ name: 'customerId', required: false })
   @ApiOkResponse({ type: BookingListDto })
   list(
     @BranchId() branchId: string,
-    @Query('filter') filter?: string,
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-    @Query('staffId') staffId?: string,
-    @Query('customerId') customerId?: string,
-    @Query('page') page?: string,
-    @Query('pageSize') pageSize?: string,
+    @Query() q: BookingListQuery,
   ): Promise<unknown> {
     return this.reads.list({
       branchId,
-      filter,
-      from,
-      to,
-      staffId,
-      customerId,
-      page: clamp(page, 1, 1, 10_000),
-      pageSize: clamp(pageSize, 25, 1, 100),
+      filter: q.filter,
+      from: q.from,
+      to: q.to,
+      staffId: q.staffId,
+      customerId: q.customerId,
+      page: q.page ?? 1,
+      pageSize: Math.min(100, q.pageSize ?? 25),
     });
   }
-}
-
-/** 7, 30 or 90. Anything else is the default rather than a 400. */
-function readRange(raw: string | undefined, fallback = 7): number {
-  const n = Number(raw);
-  return n === 7 || n === 30 || n === 90 ? n : fallback;
-}
-
-function clamp(
-  raw: string | undefined,
-  fallback: number,
-  min: number,
-  max: number,
-): number {
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.min(max, Math.max(min, Math.trunc(n)));
 }

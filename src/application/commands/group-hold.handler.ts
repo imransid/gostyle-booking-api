@@ -181,4 +181,11 @@ export class GroupHoldHandler {
       })),
     };
   }
+
+  /**
+   * Release a held party. Idempotent; never a 404. See the repository note.
+   */
+  release(holdId: string): Promise<{ released: boolean }> {
+    return this.repo.release(holdId);
+  }
 }

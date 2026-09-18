@@ -18,6 +18,7 @@ import {
 import { toSlots } from '@domain/availability/mask';
 import { toMin, DAILY_BOOKING_CAP } from '@domain/availability/grid';
 import {
+  alternativesFor,
   repairOccurrence,
   type RepairCandidate,
 } from '@domain/availability/series-ladder';
@@ -103,6 +104,17 @@ export class MaterialiseSeriesHandler {
     const bookable = this.addDays(today, BOOKING_HORIZON_DAYS);
     const planned = await this.repo.plannedWithin(seriesId, bookable);
 
+    /**
+     * WHY, not just how many.
+     *
+     * A run that answered `{considered: 4, materialised: 0, needsAttention: 4,
+     * notes: ["4 could not be seated and need a human."]}` is indistinguishable
+     * between "the diary is full", "the branch was shut" and "the catalogue
+     * does not know this series' service" -- and it was the third. Counted by
+     * cause and reported, so the next person does not have to guess
+     * (CLAUDE.md 9).
+     */
+    const causes = new Map<string, number>();
     const notes: string[] = [];
     let materialised = 0;
     let repaired = 0;
@@ -111,7 +123,11 @@ export class MaterialiseSeriesHandler {
     let raced = 0;
 
     for (const occ of planned) {
-      const outcome = await this.seat(series, occ, today);
+      const seated = await this.seat(series, occ, today);
+      const outcome = seated.outcome;
+      if (seated.cause !== undefined) {
+        causes.set(seated.cause, (causes.get(seated.cause) ?? 0) + 1);
+      }
       switch (outcome) {
         case 'materialised':
           materialised += 1;
@@ -139,6 +155,7 @@ export class MaterialiseSeriesHandler {
     }
     if (needsAttention > 0) {
       notes.push(`${needsAttention} could not be seated and need a human.`);
+      for (const [cause, n] of causes) notes.push(`${n} ${cause}`);
     }
 
     return {
@@ -238,16 +255,43 @@ export class MaterialiseSeriesHandler {
       plannedStartMin: number;
     },
     today: string,
-  ): Promise<
-    'materialised' | 'repaired' | 'needs_attention' | 'deferred' | 'raced'
-  > {
+  ): Promise<{
+    readonly outcome:
+      'materialised' | 'repaired' | 'needs_attention' | 'deferred' | 'raced';
+    /** A phrase for the run's notes, when the reason is worth reporting. */
+    readonly cause?: string;
+  }> {
     const daysAhead = daysBetween(today, occ.plannedDay);
-    if (daysAhead > BOOKING_HORIZON_DAYS) return 'deferred';
+    if (daysAhead > BOOKING_HORIZON_DAYS) return { outcome: 'deferred' };
 
     const read = await this.candidatesFor(series, occ, today);
-    if (read.kind === 'no_service' || read.kind === 'closed') {
+    if (read.kind === 'no_service') {
+      /**
+       * THE SERVICE DID NOT RESOLVE, which is not a diary problem at all.
+       *
+       * `loadServices` answered with nothing for `series.service_id`. On this
+       * tenant that is the usual cause of a whole series materialising to
+       * zero: the engine's catalogue does not contain the id the series was
+       * created with. Said out loud, at ERROR, with the id -- it is a
+       * configuration fault and no amount of retrying fixes it.
+       */
+      MaterialiseSeriesHandler.log.error(
+        `Series ${series.id}: service ${series.serviceId} resolved to nothing ` +
+          `at branch ${series.branchId}. Every occurrence will need a human ` +
+          'until the catalogue knows it.',
+      );
       await this.repo.markNeedsAttention(occ.id, []);
-      return 'needs_attention';
+      return {
+        outcome: 'needs_attention',
+        cause: `could not be priced: the catalogue does not know service ${series.serviceId}.`,
+      };
+    }
+    if (read.kind === 'closed') {
+      await this.repo.markNeedsAttention(occ.id, []);
+      return {
+        outcome: 'needs_attention',
+        cause: `fell on a day the branch is shut (${read.reason}).`,
+      };
     }
     const { service, result, candidates } = read;
 
@@ -275,14 +319,35 @@ export class MaterialiseSeriesHandler {
         service,
         result,
       );
-      if (seated.kind !== 'raced') return seated.outcome;
+      if (seated.kind !== 'raced') return { outcome: seated.outcome };
       rejected.add(keyOf(seated.startMin, seated.staffId));
     }
 
-    // Every attempt was refused at the write. That is not a slot problem the
-    // ladder can solve, so a human sees it.
-    await this.repo.markNeedsAttention(occ.id, []);
-    return 'needs_attention';
+    /**
+     * Every attempt was refused at the write. That is not a slot problem the
+     * ladder can solve, so a human sees it -- WITH the slots that are still
+     * open, rather than an empty list.
+     *
+     * `markNeedsAttention(occ.id, [])` was why `alternatives` read `[]` on
+     * every NEEDS_ATTENTION occurrence the desk ever looked at: the ladder
+     * had candidates and this threw them away on the way out.
+     */
+    await this.repo.markNeedsAttention(
+      occ.id,
+      alternativesFor({
+        originalStartMin: occ.plannedStartMin,
+        incumbentStaffId: series.preferredStaffId ?? '',
+        candidates: candidates.filter(
+          (c) => !rejected.has(keyOf(c.startMin, c.staffId)),
+        ),
+        daysAhead,
+        bookingHorizonDays: BOOKING_HORIZON_DAYS,
+      }),
+    );
+    return {
+      outcome: 'needs_attention',
+      cause: 'lost the slot at the write three times running.',
+    };
   }
 
   /** One pass of the ladder, followed by one write. */

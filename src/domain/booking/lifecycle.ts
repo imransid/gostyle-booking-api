@@ -391,6 +391,88 @@ export function arrivalWindow(startMin: number, isVip = false): ArrivalWindow {
   };
 }
 
+/**
+ * THE SAME WINDOW, ON THE CLOCK RATHER THAN THE GRID.
+ *
+ * `arrivalWindow` is in minutes-of-day, which can only compare two moments on
+ * the SAME trading day. Every gate below has to answer "may this happen right
+ * now" about a booking that may be two days out, and minutes-of-day cannot
+ * see the day: a booking at 16:45 on Sunday and one at 16:45 today are the
+ * same number.
+ *
+ * That is exactly how both refusals went missing. `GET …/check-in` answered
+ * TOO_EARLY for a booking two days away and `POST …/check-in` accepted it,
+ * because only the GET had a day to compare against; and a no-show was taken
+ * at 10:00 for a 16:45 booking, forfeiting AED 12.00 from somebody who was
+ * still on their way.
+ *
+ * Absolute milliseconds have no such blind spot, and the caller already holds
+ * the booking's `start_at`.
+ */
+export interface DayOfWindow {
+  readonly opensAtMs: number;
+  readonly graceEndsAtMs: number;
+  readonly autoNoShowAtMs: number;
+}
+
+const MIN_MS = 60_000;
+
+export function dayOfWindow(startAtMs: number, isVip = false): DayOfWindow {
+  return {
+    opensAtMs: startAtMs - CHECK_IN_OPENS_MIN * MIN_MS,
+    graceEndsAtMs:
+      startAtMs + (isVip ? VIP_ARRIVAL_GRACE_MIN : ARRIVAL_GRACE_MIN) * MIN_MS,
+    autoNoShowAtMs: startAtMs + AUTO_NO_SHOW_MIN * MIN_MS,
+  };
+}
+
+export type TimingVerdict =
+  | { readonly kind: 'allowed' }
+  /** Check-in has not opened yet. */
+  | { readonly kind: 'too_early'; readonly opensAtMs: number }
+  /** The customer may still walk in. Marking them absent is premature. */
+  | { readonly kind: 'within_grace'; readonly graceEndsAtMs: number };
+
+/**
+ * May the desk check this booking in NOW?
+ *
+ * Only the timing. The gates (consent, payment, chair) are `canCheckIn`'s
+ * question and are answered separately, because a gate is amber and advisory
+ * where this is a hard no.
+ */
+export function checkInTiming(input: {
+  readonly nowMs: number;
+  readonly startAtMs: number;
+  readonly isVip?: boolean;
+}): TimingVerdict {
+  const window = dayOfWindow(input.startAtMs, input.isVip ?? false);
+  return input.nowMs < window.opensAtMs
+    ? { kind: 'too_early', opensAtMs: window.opensAtMs }
+    : { kind: 'allowed' };
+}
+
+/**
+ * May this booking be marked a no-show NOW?
+ *
+ * THE SYSTEM IS EXEMPT, and deliberately so. The sweeper fires at
+ * start + AUTO_NO_SHOW_MIN, which is already past the grace, and gating it on
+ * the same rule would be a second copy of a schedule it already keeps. A
+ * human at the desk is not: "they have not arrived" is only true once the
+ * grace they were given has actually run out.
+ */
+export function noShowTiming(input: {
+  readonly nowMs: number;
+  readonly startAtMs: number;
+  readonly actor: ActorKind;
+  readonly isVip?: boolean;
+}): TimingVerdict {
+  if (input.actor === 'system') return { kind: 'allowed' };
+  const window = dayOfWindow(input.startAtMs, input.isVip ?? false);
+  return input.nowMs < window.graceEndsAtMs
+    ? { kind: 'within_grace', graceEndsAtMs: window.graceEndsAtMs }
+    : { kind: 'allowed' };
+}
+
 /** Three gates. All must be green before the desk can check anyone in. */
 export interface CheckInGates {
   /** Consent on file, or a patch test on file, or a manager waiver. */

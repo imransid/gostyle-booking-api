@@ -136,7 +136,10 @@ function fromHttp(e: HttpException): ErrorBody | Record<string, unknown> {
     return {
       ...(payload as Record<string, unknown>),
       statusCode: status,
-      code: 'BOOKING_REASON_REQUIRED' satisfies ErrorCode,
+      // Its OWN code. This was BOOKING_REASON_REQUIRED, which is a 422 about
+      // a missing cancellation reason -- a client branching on the code was
+      // told the wrong thing about every malformed request it ever sent.
+      code: 'BOOKING_VALIDATION_FAILED' satisfies ErrorCode,
     };
   }
 

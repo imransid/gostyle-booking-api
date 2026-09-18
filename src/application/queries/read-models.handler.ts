@@ -47,12 +47,19 @@ import {
   type ListFilter,
 } from '@application/contract/screen-view';
 import type { BookingStatus } from '@domain/booking/lifecycle';
+import { LATE_CANCEL_WINDOW_HOURS } from '@domain/booking/lifecycle';
+import {
+  cancelTiming,
+  groupReasons,
+  policyWindow,
+  summarise,
+  type EventKind,
+} from '@domain/booking/cancellation-feed';
 import type { PaymentStatus } from '../../generated/prisma/enums';
 import { bookingError } from '@application/contract/errors';
 import {
   deriveSeriesHealth,
   type SeriesFacts,
-  type RiskReason,
 } from '@domain/booking/series-health';
 
 /**
@@ -76,6 +83,12 @@ export interface BookingView {
   readonly statusDetail: string;
   readonly customer: {
     readonly id: string;
+    /**
+     * What to print. Null when no directory could name them -- see
+     * CustomerContext.name. The client renders the id as a fallback; it must
+     * not go and look the name up per row, which is what it was doing.
+     */
+    readonly name: string | null;
     readonly tier: string | null;
     readonly isNew: boolean;
     readonly requiresDeposit: boolean;
@@ -153,6 +166,7 @@ function toView(
   staffSlugs: ReadonlyMap<string, string>,
   conflict: ConflictRow | undefined,
   customer: {
+    name: string | null;
     tier: string;
     risk: string;
     riskScore: number;
@@ -171,6 +185,7 @@ function toView(
     statusDetail: r.status.toUpperCase(),
     customer: {
       id: r.customer_id,
+      name: customer.name,
       tier: customer.tier === 'none' ? null : customer.tier.toUpperCase(),
       isNew: customer.isNewCustomer,
       requiresDeposit: customer.requireDepositFlag,
@@ -342,38 +357,59 @@ export class BookingReadHandler {
     const from = today();
     const horizon = addDays(from, 90);
 
-    const [all, todayN, tomorrow, deposit, conflicts, notReminded] =
-      await Promise.all([
-        this.reads.count({ branchId, fromDay: from, toDay: horizon }),
-        this.reads.count({
-          branchId,
-          fromDay: from,
-          toDay: addDays(from, 1),
-        }),
-        this.reads.count({
-          branchId,
-          fromDay: addDays(from, 1),
-          toDay: addDays(from, 2),
-        }),
-        this.reads.count({
-          branchId,
-          fromDay: from,
-          toDay: horizon,
-          statuses: ['pending_payment'],
-        }),
-        this.reads.count({
-          branchId,
-          fromDay: from,
-          toDay: horizon,
-          conflictsOnly: true,
-        }),
-        this.reads.count({
-          branchId,
-          fromDay: from,
-          toDay: horizon,
-          notReminded: true,
-        }),
-      ]);
+    const [
+      all,
+      todayN,
+      tomorrow,
+      deposit,
+      conflicts,
+      notReminded,
+      unconfirmed,
+    ] = await Promise.all([
+      this.reads.count({ branchId, fromDay: from, toDay: horizon }),
+      this.reads.count({
+        branchId,
+        fromDay: from,
+        toDay: addDays(from, 1),
+      }),
+      this.reads.count({
+        branchId,
+        fromDay: addDays(from, 1),
+        toDay: addDays(from, 2),
+      }),
+      this.reads.count({
+        branchId,
+        fromDay: from,
+        toDay: horizon,
+        statuses: ['pending_payment'],
+      }),
+      this.reads.count({
+        branchId,
+        fromDay: from,
+        toDay: horizon,
+        conflictsOnly: true,
+      }),
+      this.reads.count({
+        branchId,
+        fromDay: from,
+        toDay: horizon,
+        notReminded: true,
+      }),
+      /**
+       * UNCONFIRMED WAS THE ONE CHIP WITH NO NUMBER.
+       *
+       * `filter=UNCONFIRMED` worked and returned rows; the projection just
+       * never counted it, and the OpenAPI text said so as though it were a
+       * decision. The predicate already exists -- `statusesFor` owns it --
+       * so there was nothing to decide.
+       */
+      this.reads.count({
+        branchId,
+        fromDay: from,
+        toDay: horizon,
+        statuses: statusesFor('UNCONFIRMED') ?? undefined,
+      }),
+    ]);
 
     return {
       ALL: all,
@@ -382,6 +418,7 @@ export class BookingReadHandler {
       DEPOSIT_PENDING: deposit,
       CONFLICTS: conflicts,
       NOT_REMINDED: notReminded,
+      UNCONFIRMED: unconfirmed,
     };
   }
 
@@ -409,9 +446,17 @@ export class BookingReadHandler {
     if (filter === 'TOMORROW') {
       return { fromDay: addDays(base, 1), toDay: addDays(base, 2) };
     }
+    /**
+     * BOTH ENDS INCLUSIVE, and `toDay` is exclusive underneath.
+     *
+     * `to` was passed through as the exclusive bound, so `from=X&to=X` --
+     * the obvious way to ask for one day -- returned nothing, and a
+     * from-only query that returned 102 rows collapsed to 0 the moment a
+     * `to` was added. Nobody types a half-open range on a date picker.
+     */
     return {
       fromDay: from ?? base,
-      toDay: to ?? addDays(from ?? base, 90),
+      toDay: to === undefined ? addDays(from ?? base, 90) : addDays(to, 1),
     };
   }
 
@@ -438,7 +483,25 @@ export class BookingReadHandler {
     // Same boundary as decorate(): the rows hold hashes, the roster holds
     // slugs, so the load count is matched on the folded id, not the slug.
     const index = new SlugIndex(ctx.professionals.map((p) => p.id));
-    const columns = ctx.professionals.map((p) => {
+
+    /**
+     * THE DENOMINATOR NARROWS WITH THE FILTER, and it did not.
+     *
+     * `staffId=anya` narrowed the bookings to Anya's 85 minutes and still
+     * divided by the branch's 3180 sellable minutes, so a stylist who was
+     * 16% booked on her own shift rendered as "3% of sellable time". A
+     * utilisation figure whose numerator and denominator describe different
+     * populations is not a low number, it is a wrong one -- and the front
+     * end was right to refuse to recompute it client-side.
+     */
+    const inView =
+      filters.staffId === undefined
+        ? ctx.professionals
+        : ctx.professionals.filter(
+            (p) => p.id === index.toSlug(filters.staffId!),
+          );
+
+    const columns = inView.map((p) => {
       const mine = rows.filter((r) =>
         (r.staff_ids ?? []).some((id) => index.toSlug(id) === p.id),
       );
@@ -459,7 +522,7 @@ export class BookingReadHandler {
     });
 
     const bookedMin = rows.reduce((n, r) => n + r.duration_min, 0);
-    const sellable = ctx.professionals.reduce(
+    const sellable = inView.reduce(
       (n, p) =>
         n +
         sellableMinutes({
@@ -667,7 +730,10 @@ export class BookingReadHandler {
     const query = q.trim();
     if (query === '') return { results: [] };
 
-    const raw = await this.reads.searchCandidates(branchId, query, limit);
+    const [raw, slugs] = await Promise.all([
+      this.reads.searchCandidates(branchId, query, limit),
+      this.slugIndex(branchId),
+    ]);
 
     const candidates: SearchCandidate[] = [
       ...raw.bookings.map((b): SearchCandidate => {
@@ -683,7 +749,17 @@ export class BookingReadHandler {
       }),
       ...raw.services.map((s): SearchCandidate => ({
         kind: 'SERVICE',
-        id: s.service_id,
+        /**
+         * THE ENGINE'S ID, not the stored one.
+         *
+         * `booking_item.service_id` is the folded uuid, and a palette hit
+         * carrying it 404'd on `/availability` and `/eligible-staff` and
+         * appeared in no directory -- so the one useful thing to do with a
+         * SERVICE result could not be done. SlugIndex hands back the
+         * spelling the catalogue answers to, and passes a real platform
+         * uuid through untouched (CLAUDE.md 8).
+         */
+        id: slugs.toSlug(s.service_id),
         label: s.service_name,
         detail: `${s.duration_min} min · ${Money.fils(s.price_fils).toString()}`,
         haystack: [s.service_name],
@@ -715,69 +791,78 @@ export class BookingReadHandler {
     const page = Math.max(1, q.page ?? 1);
     const pageSize = Math.min(100, Math.max(1, q.pageSize ?? 25));
 
+    /**
+     * LATE_CANCEL IS A REAL FILTER NOW.
+     *
+     * It used to fall through to CANCELLED and answer 200 with every
+     * cancellation -- a filter that silently means something else, which is
+     * the most expensive kind of wrong answer a read model can give. An
+     * unknown kind is refused by the controller before it reaches here.
+     */
+    const kind = (q.kind ?? 'ALL') as EventKind;
     const kinds: BookingStatus[] =
-      q.kind === 'NO_SHOW'
+      kind === 'NO_SHOW'
         ? ['no_show']
-        : q.kind === 'CANCELLED' || q.kind === 'LATE_CANCEL'
+        : kind === 'CANCELLED' || kind === 'LATE_CANCEL'
           ? ['cancelled']
           : ['cancelled', 'no_show'];
+    const lateOnly = kind === 'LATE_CANCEL';
 
-    const [rows, total] = await Promise.all([
+    const window = {
+      branchId: q.branchId,
+      fromDay: start,
+      toDay: end,
+      kinds,
+      lateOnly,
+      lateCancelWindowHours: LATE_CANCEL_WINDOW_HOURS,
+    };
+
+    const [rows, total, totals, reasonRows] = await Promise.all([
       this.reads.events({
-        branchId: q.branchId,
-        fromDay: start,
-        toDay: end,
-        kinds,
+        ...window,
         limit: pageSize,
         offset: (page - 1) * pageSize,
       }),
-      this.reads.countEvents({
-        branchId: q.branchId,
-        fromDay: start,
-        toDay: end,
-        kinds,
-      }),
+      this.reads.countEvents(window),
+      this.reads.eventTotals(window),
+      this.reads.eventReasons(window),
     ]);
 
-    const data = rows.map((r) => ({
-      id: r.id,
-      bookingId: r.booking_id,
-      code: r.code,
-      kind: r.to_status === 'no_show' ? 'NO_SHOW' : 'CANCELLED',
-      by: r.actor_kind === 'system' ? 'AUTO' : r.actor_kind.toUpperCase(),
-      occurredAt: r.created_at.toISOString(),
-      customer: { id: r.customer_id },
-      service: (r.service_names ?? []).join(', '),
-      staffId: r.staff_ids?.[0] ?? null,
-      slot: {
-        startTime: formatMinute(r.start_minute),
-        durationMinutes: r.duration_min,
-      },
-      reason: r.reason,
-      servicePrice: wholeAed(r.price_fils),
-      depositAmount: wholeAed(r.deposit_fils),
-      outcome: eventOutcome(r.payment_status as PaymentStatus),
-    }));
+    const names = await this.customerNames(rows.map((r) => r.customer_id));
 
-    const lostFils = rows
-      .filter((r) => r.payment_status !== 'forfeited')
-      .reduce((n, r) => n + r.price_fils, 0);
+    const data = rows
+      .map((r) => toEventView(r, names))
+      // The page is fetched before the late window can be applied -- it is a
+      // fact about two timestamps, not a column -- so LATE_CANCEL narrows
+      // here as well. The COUNT and the totals narrow in SQL, on the same
+      // rule, so the numbers agree.
+      .filter((e) => !lateOnly || e.lateCancel);
 
     return {
       data,
       page,
       pageSize,
       total,
-      summary: {
-        events: data.length,
-        noShows: data.filter((d) => d.kind === 'NO_SHOW').length,
-        lostValue: wholeAed(lostFils),
-        depositsKept: wholeAed(
-          rows
-            .filter((r) => r.payment_status === 'forfeited')
-            .reduce((n, r) => n + r.deposit_fils, 0),
-        ),
-      },
+      /**
+       * OVER THE WHOLE `range`, and over the active `kind`. Never over the
+       * page: that is what made `summary.events` track `pageSize`.
+       */
+      summary: (() => {
+        const s = summarise(totals);
+        return {
+          events: s.events,
+          noShows: s.noShows,
+          lostValue: wholeAed(s.lostValueFils),
+          depositsKept: wholeAed(s.depositsKeptFils),
+          recovered: s.recovered,
+        };
+      })(),
+      /** The same window, grouped. Biggest first; free text folded on case. */
+      reasons: groupReasons(reasonRows).map((r) => ({
+        reason: r.reason,
+        count: r.count,
+        value: wholeAed(r.valueFils),
+      })),
     };
   }
 
@@ -786,27 +871,38 @@ export class BookingReadHandler {
     const r = await this.reads.event(id);
     if (r === null) throw new NotFoundException('No such event');
 
+    const view = toEventView(r, await this.customerNames([r.customer_id]));
+    const timing = cancelTiming({
+      occurredAtMs: r.created_at.getTime(),
+      startAtMs: r.start_at.getTime(),
+    });
+
     return {
-      id: r.id,
-      bookingId: r.booking_id,
-      code: r.code,
-      kind: r.to_status === 'no_show' ? 'NO_SHOW' : 'CANCELLED',
-      occurredAt: r.created_at.toISOString(),
-      reason: r.reason,
       /**
-       * THE MATHS, NOT THE VERDICT. The desk has to answer "why was I
-       * charged", and an enum cannot be read down a phone. These are the
-       * figures the policy actually used.
+       * EVERY FIELD THE LIST ROW CARRIES, and then the drawer's extras.
+       *
+       * The detail read published eight fields and the list row published
+       * fourteen, so the client cached the row and merged -- which works
+       * until somebody opens a deep link or refreshes the page, and then the
+       * drawer has nothing to merge with.
        */
+      ...view,
       math: [
         { label: 'Service value', value: wholeAed(r.price_fils) },
         { label: 'Deposit captured', value: wholeAed(r.deposit_fils) },
         {
+          /**
+           * THE WINDOW, DERIVED FROM THE TWO TIMESTAMPS.
+           *
+           * This read `r.reason` on a cancellation, so the drawer showed a
+           * labelled row saying "Policy window: qa backfill test". The
+           * reason is already published above, under its own name; the
+           * window is a fact about when the cancellation happened relative
+           * to the start, and `cancelTiming` is the same rule the refund
+           * used.
+           */
           label: 'Policy window',
-          value:
-            r.to_status === 'no_show'
-              ? 'start + grace passed'
-              : (r.reason ?? 'cancelled'),
+          value: policyWindow({ kind: view.kind, timing }),
         },
         {
           label: 'Outcome',
@@ -842,12 +938,13 @@ export class BookingReadHandler {
       this.reads.waitlistConversion(branchId, from),
       this.slugIndex(branchId),
     ]);
+    const names = await this.customerNames(rows.map((r) => r.customer_id));
 
     const toEntry = (r: (typeof rows)[number], position: number): unknown => ({
       id: r.id,
       status: r.status.toUpperCase(),
       position,
-      customer: { id: r.customer_id },
+      customer: { id: r.customer_id, name: names.get(r.customer_id) ?? null },
       service: { id: slugs.toSlug(r.service_id) },
       window: {
         date: r.trading_day.toISOString().slice(0, 10),
@@ -908,68 +1005,10 @@ export class BookingReadHandler {
       this.reads.seriesBoard(branchId),
       this.slugIndex(branchId),
     ]);
+    const names = await this.customerNames(rows.map((r) => r.customer_id));
 
     const data = rows
-      .map((r) => {
-        const facts: SeriesFacts = {
-          status: r.status as SeriesFacts['status'],
-          needsAttentionCount: Number(r.needs_attention),
-          // Not tracked per series yet; the two that are drive the verdict.
-          consecutiveConfirmationExpiries: 0,
-          noShowCount: 0,
-          skippedCount: Number(r.skipped),
-        };
-        const health = deriveSeriesHealth(facts);
-
-        return {
-          id: r.id,
-          status: r.status.toUpperCase(),
-          health: health.health.toUpperCase(),
-          riskCause: health.reasons.map(describeSeriesRisk).join('; ') || null,
-          customer: { id: r.customer_id },
-          service: { id: slugs.toSlug(r.service_id) },
-          staff: {
-            id:
-              r.preferred_staff_id === null
-                ? null
-                : slugs.toSlug(r.preferred_staff_id),
-          },
-          pattern: {
-            kind: r.pattern.toUpperCase(),
-            interval: r.interval_weeks,
-            weekdays: r.weekdays,
-            dayOfMonth: r.day_of_month,
-            timeOfDay: formatMinute(r.start_min),
-            anchorDate: r.anchor_day.toISOString().slice(0, 10),
-          },
-          confirmRule: r.auto_confirm_rule.toUpperCase(),
-          ends: {
-            kind: r.end_kind.toUpperCase(),
-            count: r.end_count,
-            date: r.end_date?.toISOString().slice(0, 10) ?? null,
-          },
-          nextDate: r.next_day?.toISOString().slice(0, 10) ?? null,
-          pricePerVisit: wholeAed(r.baseline_price_fils),
-          lifetimeValue: wholeAed(
-            r.baseline_price_fils * Number(r.total_occurrences),
-          ),
-          occurrences: {
-            total: Number(r.total_occurrences),
-            needsAttention: Number(r.needs_attention),
-            skipped: Number(r.skipped),
-          },
-          course:
-            r.course_visits === null
-              ? null
-              : {
-                  visits: r.course_visits,
-                  drawn: r.course_drawn ?? 0,
-                  totalNet: wholeAed(r.course_total_net_fils ?? 0),
-                },
-          materialisedThrough:
-            r.materialised_through?.toISOString().slice(0, 10) ?? null,
-        };
-      })
+      .map((r) => toSeriesRow(r, slugs, names))
       .filter((s) =>
         status === undefined || status === 'ALL'
           ? true
@@ -988,6 +1027,32 @@ export class BookingReadHandler {
         lifetimeValue: data.reduce((n, s) => n + s.lifetimeValue, 0),
       },
     };
+  }
+
+  /**
+   * ONE series' board row, for the detail panel's header.
+   *
+   * THE SAME ROW AND THE SAME MAPPER the board uses. The panel published
+   * eight fields and the list published fifteen others, so a deep link to a
+   * series could not draw its own header -- no customer, no service, no
+   * staff, no pattern, no price. Building a second projection here would put
+   * those fifteen fields in two places and guarantee one of them lags
+   * (CLAUDE.md 4), so the panel asks the board for its row.
+   *
+   * Null when the series does not exist; the caller turns that into its own
+   * 404 alongside whatever else it could not load.
+   */
+  async seriesOne(seriesId: string): Promise<SeriesRowView | null> {
+    const branchId = await this.reads.seriesBranch(seriesId);
+    if (branchId === null) return null;
+
+    const [rows, slugs] = await Promise.all([
+      this.reads.seriesBoard(branchId, seriesId),
+      this.slugIndex(branchId),
+    ]);
+    const row = rows[0];
+    if (row === undefined) return null;
+    return toSeriesRow(row, slugs, await this.customerNames([row.customer_id]));
   }
 
   /**
@@ -1021,6 +1086,35 @@ export class BookingReadHandler {
   }
 
   // ------------------------------------------------------------- helpers
+
+  /**
+   * Customer names for a page of rows, resolved ONCE.
+   *
+   * The same batching `decorate` already does for the booking list, extracted
+   * so the events feed, the waitlist board and the series board can publish a
+   * name too -- none of them did, which is why the console was joining
+   * against the platform customers API per row and rendering "#127B" when
+   * that missed.
+   *
+   * A directory that cannot answer leaves every name null. Decoration never
+   * fails a read.
+   */
+  private async customerNames(
+    ids: readonly string[],
+  ): Promise<ReadonlyMap<string, string | null>> {
+    const unique = [...new Set(ids)];
+    if (unique.length === 0) return new Map();
+    try {
+      const pairs = await Promise.all(
+        unique.map(
+          async (id) => [id, (await this.customers.load(id)).name] as const,
+        ),
+      );
+      return new Map(pairs);
+    } catch {
+      return new Map();
+    }
+  }
 
   /**
    * Names and customer context, resolved once per read rather than per row.
@@ -1074,6 +1168,7 @@ export class BookingReadHandler {
     return rows.map((r) => {
       const c = contexts.get(r.customer_id);
       return toView(r, staffNames, staffSlugs, conflicts.get(r.id), {
+        name: c?.name ?? null,
         tier: c?.tier ?? 'none',
         risk: c?.risk ?? 'LOW',
         riskScore: c?.riskScore ?? 80,
@@ -1092,6 +1187,68 @@ export class BookingReadHandler {
  * split, which is the one case the front-end contract had no cell for,
  * rendered as "Lost" on the cancellations screen and in a dispute.
  */
+/**
+ * One event row, for the feed AND for the drawer.
+ *
+ * ONE MAPPER, because the two were different projections of the same row and
+ * the drawer had half the fields. See `event()`.
+ */
+function toEventView(
+  r: Awaited<ReturnType<ReadModelRepository['events']>>[number],
+  names: ReadonlyMap<string, string | null>,
+) {
+  const kind: 'NO_SHOW' | 'CANCELLED' =
+    r.to_status === 'no_show' ? 'NO_SHOW' : 'CANCELLED';
+  const day = r.trading_day.toISOString().slice(0, 10);
+  const timing = cancelTiming({
+    occurredAtMs: r.created_at.getTime(),
+    startAtMs: r.start_at.getTime(),
+  });
+
+  return {
+    id: r.id,
+    bookingId: r.booking_id,
+    code: r.code,
+    kind,
+    by: r.actor_kind === 'system' ? 'AUTO' : r.actor_kind.toUpperCase(),
+    occurredAt: r.created_at.toISOString(),
+    customer: { id: r.customer_id, name: names.get(r.customer_id) ?? null },
+    service: (r.service_names ?? []).join(', '),
+    staffId: r.staff_ids?.[0] ?? null,
+    /**
+     * WHEN THE VISIT WAS FOR. The row carried `slot.startTime` and a
+     * duration and no date at all, so the feed could not say which day a
+     * cancellation belonged to and could not derive how late it was.
+     */
+    tradingDay: day,
+    startAt: r.start_at.toISOString(),
+    slot: {
+      date: day,
+      startTime: formatMinute(r.start_minute),
+      durationMinutes: r.duration_min,
+    },
+    /** Hours between the cancellation and the start. Negative after it. */
+    hoursBeforeStart: Number(timing.hoursBeforeStart.toFixed(2)),
+    /** Inside the late window. A no-show is always past the start. */
+    lateCancel: kind === 'CANCELLED' && timing.lateCancel,
+    policyBand: timing.band.toUpperCase(),
+    reason: r.reason,
+    servicePrice: wholeAed(r.price_fils),
+    depositAmount: wholeAed(r.deposit_fils),
+    outcome: eventOutcome(r.payment_status as PaymentStatus),
+    /**
+     * The waitlist refilled this slot.
+     *
+     * A boolean, not `recoveredByCode`: an accepted waitlist entry records
+     * WHICH cancellation it took, but the booking that acceptance became is
+     * created by a separate confirm call that does not write back to the
+     * entry. Saying "recovered: true" is a fact; naming a code would be a
+     * guess.
+     */
+    recovered: r.recovered,
+  };
+}
+
 function eventOutcome(p: PaymentStatus): string {
   if (p === 'forfeited') return 'DEPOSIT_KEPT';
   if (p === 'partially_refunded') return 'PARTIALLY_REFUNDED';
@@ -1106,18 +1263,90 @@ function nowMinute(): number {
 
 export { LIVE_STATUSES };
 
-/** A series risk reason, in the words the desk uses. */
-function describeSeriesRisk(reason: RiskReason): string {
-  switch (reason) {
-    case 'needs_attention':
-      return 'an occurrence no longer fits and could not be repaired';
-    case 'confirmations_lapsing':
-      return 'confirmation requests are going unanswered';
-    case 'no_show':
-      return 'the customer did not turn up';
-    case 'skipping':
-      return 'visits are being skipped rather than kept';
-  }
+/** One series, as both the board and the detail panel publish it. */
+export type SeriesRowView = ReturnType<typeof toSeriesRow>;
+
+/**
+ * A series row to the screen's shape.
+ *
+ * MODULE LEVEL, and exported, because two screens render it: the recurring
+ * board and the detail panel's header. It used to live inline in `series()`,
+ * which is why the panel had none of it.
+ */
+function toSeriesRow(
+  r: Awaited<ReturnType<ReadModelRepository['seriesBoard']>>[number],
+  slugs: SlugIndex,
+  names: ReadonlyMap<string, string | null>,
+) {
+  const facts: SeriesFacts = {
+    status: r.status as SeriesFacts['status'],
+    needsAttentionCount: Number(r.needs_attention),
+    // Not tracked per series yet; the two that are drive the verdict.
+    consecutiveConfirmationExpiries: 0,
+    noShowCount: 0,
+    skippedCount: Number(r.skipped),
+  };
+  const health = deriveSeriesHealth(facts);
+
+  return {
+    id: r.id,
+    status: r.status.toUpperCase(),
+    health: health.health.toUpperCase(),
+    /**
+     * THREE FIELDS, ONE DERIVATION.
+     *
+     * `riskCause` (board) and `healthReasons` + `healthExplanation` (panel)
+     * were two different prose fields describing the same thing, written by
+     * two different functions. They are all `deriveSeriesHealth`'s answer
+     * now: the enum to branch on, the sentence to read, and `riskCause` kept
+     * as the sentence under its old name so nothing that reads it breaks.
+     */
+    healthReasons: health.reasons.map((x) => x.toUpperCase()),
+    healthExplanation: health.explanation,
+    riskCause: health.health === 'at_risk' ? health.explanation : null,
+    customer: { id: r.customer_id, name: names.get(r.customer_id) ?? null },
+    service: { id: slugs.toSlug(r.service_id) },
+    staff: {
+      id:
+        r.preferred_staff_id === null
+          ? null
+          : slugs.toSlug(r.preferred_staff_id),
+    },
+    pattern: {
+      kind: r.pattern.toUpperCase(),
+      interval: r.interval_weeks,
+      weekdays: r.weekdays,
+      dayOfMonth: r.day_of_month,
+      timeOfDay: formatMinute(r.start_min),
+      anchorDate: r.anchor_day.toISOString().slice(0, 10),
+    },
+    confirmRule: r.auto_confirm_rule.toUpperCase(),
+    ends: {
+      kind: r.end_kind.toUpperCase(),
+      count: r.end_count,
+      date: r.end_date?.toISOString().slice(0, 10) ?? null,
+    },
+    nextDate: r.next_day?.toISOString().slice(0, 10) ?? null,
+    pricePerVisit: wholeAed(r.baseline_price_fils),
+    lifetimeValue: wholeAed(
+      r.baseline_price_fils * Number(r.total_occurrences),
+    ),
+    occurrences: {
+      total: Number(r.total_occurrences),
+      needsAttention: Number(r.needs_attention),
+      skipped: Number(r.skipped),
+    },
+    course:
+      r.course_visits === null
+        ? null
+        : {
+            visits: r.course_visits,
+            drawn: r.course_drawn ?? 0,
+            totalNet: wholeAed(r.course_total_net_fils ?? 0),
+          },
+    materialisedThrough:
+      r.materialised_through?.toISOString().slice(0, 10) ?? null,
+  };
 }
 
 /** What conflictsFor() returns for one booking. */

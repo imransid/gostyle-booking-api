@@ -1,4 +1,4 @@
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, Delete, HttpCode, Post } from '@nestjs/common';
 import {
   ApiConflictResponse,
   ApiCreatedResponse,
@@ -31,9 +31,14 @@ import {
   GroupConfirmHandler,
   type GroupConfirmView,
 } from '@application/commands/group-confirm.handler';
-import { ApiGoneResponse, ApiNotFoundResponse } from '@nestjs/swagger';
+import {
+  ApiGoneResponse,
+  ApiNotFoundResponse,
+  ApiOkResponse,
+} from '@nestjs/swagger';
 import { IsUUID } from 'class-validator';
 import { Param } from '@nestjs/common';
+import { BranchId } from './branch.decorator';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
 import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
@@ -79,9 +84,16 @@ export class ParticipantDto {
 }
 
 export class GroupHoldDto {
-  @ApiProperty({ example: 'marina-walk' })
+  @ApiPropertyOptional({
+    description:
+      'OPTIONAL. The branch is taken from the token when the token names ' +
+      'one; send this only for a token scoped to no particular branch. ' +
+      'Sending a branch the token does not cover is 403 ' +
+      'BOOKING_BRANCH_MISMATCH rather than a write nobody can read back.',
+  })
+  @IsOptional()
   @IsString()
-  branchId!: string;
+  branchId?: string;
 
   @ApiPropertyOptional({
     example: 15,
@@ -195,9 +207,10 @@ export class GroupsController {
   hold(
     @Body() dto: GroupHoldDto,
     @CurrentActor() actor: Actor,
+    @BranchId() branchId: string,
   ): Promise<GroupHoldView> {
     return this.handler.execute({
-      branchId: dto.branchId,
+      branchId,
       organiserId: actor.id ?? 'anonymous',
       tradingDay: dto.day,
       targetMin: dto.targetMin,
@@ -217,6 +230,24 @@ export class GroupsController {
         preferredStaffId: p.preferredStaffId ?? null,
       })),
     });
+  }
+
+  @Delete('holds/:holdId')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Give a whole party\u2019s slots back',
+    description:
+      'The single-booking equivalent (DELETE /v1/holds/:id) has always ' +
+      'existed and this did not, so a six-person party abandoned at the ' +
+      'confirm step blocked six professionals and six chairs for the full ' +
+      'fifteen-minute TTL. One hold covers the party, so one delete returns ' +
+      'all of it: the reservations cascade away in the same statement. ' +
+      'IDEMPOTENT \u2014 releasing twice, or releasing a hold the sweeper has ' +
+      'already taken, answers 200 with released:false rather than 404.',
+  })
+  @ApiOkResponse({ schema: { example: { released: true } } })
+  releaseHold(@Param('holdId') holdId: string): Promise<{ released: boolean }> {
+    return this.handler.release(holdId);
   }
 
   @Post(':id/confirm')

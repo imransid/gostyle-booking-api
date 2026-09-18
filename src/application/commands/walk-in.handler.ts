@@ -8,6 +8,10 @@ import {
   BOOKING_CONTEXT,
   type BookingContextReader,
 } from '@application/ports/booking-context.port';
+import {
+  CUSTOMER_CONTEXT,
+  type CustomerContextReader,
+} from '@application/ports/customer-context.port';
 import { WalkInRepository } from '@infrastructure/persistence/walk-in.repository';
 import { HoldRepository } from '@infrastructure/persistence/hold.repository';
 import {
@@ -46,7 +50,20 @@ export interface WalkInQueueView {
   readonly rows: readonly {
     readonly id: string;
     readonly position: number;
+    /** What to print on the queue board. Never null. */
     readonly label: string;
+    /**
+     * WHO THEY ARE, when they are somebody.
+     *
+     * The row published `label: "Customer"` for every registered walk-in and
+     * carried no id at all, so a queue seated by a receptionist who had
+     * already identified the customer rendered as a row of anonymous
+     * "Customer" entries with nothing to look up. The column has held this
+     * since the entry was written.
+     */
+    readonly customerId: string | null;
+    /** Set instead of `customerId` for somebody who just walked in. */
+    readonly guestName: string | null;
     readonly serviceIds: readonly string[];
     readonly waitingMin: number;
     readonly options: readonly ReturnType<
@@ -73,6 +90,9 @@ export class WalkInHandler {
     private readonly repo: WalkInRepository,
     private readonly holds: HoldRepository,
     @Inject(BOOKING_CONTEXT) private readonly context: BookingContextReader,
+    /** Only to put a name on the board. See `view`. */
+    @Inject(CUSTOMER_CONTEXT)
+    private readonly customers: CustomerContextReader,
   ) {}
 
   async join(
@@ -198,6 +218,33 @@ export class WalkInHandler {
       (walkIn) => candidatesFor(walkIn.serviceIds),
     );
 
+    // The queue is ordered by the domain, so the identity is matched back by
+    // id rather than by position -- a reorder here would silently attach the
+    // wrong name to the wrong person.
+    const identity = new Map(rows.map((r) => [r.walkIn.id, r]));
+
+    /**
+     * A REGISTERED WALK-IN GETS THEIR NAME, not the word "Customer".
+     *
+     * `label` fell back to that string for anybody joined with a customerId
+     * rather than a guestName, so a queue of identified customers rendered
+     * as a column of identical rows. The guest-name path already worked.
+     * Null names stay "Customer", which is honest rather than blank.
+     */
+    const named = new Map<string, string>();
+    await Promise.all(
+      [...new Set(rows.map((r) => r.customerId).filter((x) => x !== null))].map(
+        async (id) => {
+          try {
+            const name = (await this.customers.load(id)).name;
+            if (name !== null) named.set(id, name);
+          } catch {
+            // Decoration. A directory that blinked must not empty the queue.
+          }
+        },
+      ),
+    );
+
     return {
       branchId,
       tradingDay,
@@ -205,7 +252,11 @@ export class WalkInHandler {
       rows: built.map((r) => ({
         id: r.walkIn.id,
         position: r.position,
-        label: r.walkIn.label,
+        label:
+          named.get(identity.get(r.walkIn.id)?.customerId ?? '') ??
+          r.walkIn.label,
+        customerId: identity.get(r.walkIn.id)?.customerId ?? null,
+        guestName: identity.get(r.walkIn.id)?.guestName ?? null,
         serviceIds: r.walkIn.serviceIds,
         waitingMin: r.waitingMin,
         options: r.options.map(toWireNearestOption),

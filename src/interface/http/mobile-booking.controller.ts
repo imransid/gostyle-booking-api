@@ -7,6 +7,7 @@ import {
   Param,
   Patch,
   Post,
+  Query,
   UsePipes,
   UseInterceptors,
 } from '@nestjs/common';
@@ -18,6 +19,7 @@ import {
   ApiOkResponse,
   ApiOperation,
   ApiProperty,
+  ApiQuery,
   ApiPropertyOptional,
   ApiTags,
   ApiUnprocessableEntityResponse,
@@ -39,6 +41,8 @@ import { MobileBookingHandler } from '@application/commands/mobile-booking.handl
 import { IdempotentInterceptor } from './idempotent.interceptor';
 import { mobileValidationPipe } from './mobile-validation.pipe';
 import type { MobilePaymentMethod } from '@domain/booking/mobile-contract';
+import { parseFilter } from '@domain/booking/booking-shelf';
+import { MobileContractError } from '@application/commands/mobile-booking.error';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
 
@@ -287,6 +291,59 @@ export class MobileBookingController {
     });
   }
 
+  /**
+   * booking-list.md §1. DECLARED BEFORE `:id`, and that is not cosmetic --
+   * Nest matches in declaration order, and a `@Get(':id')` above this one
+   * would swallow nothing here (the path is empty) but the reverse habit is
+   * what put `read-models.controller.ts` in its own file. Keep the specific
+   * route first.
+   */
+  @Get()
+  @HttpCode(200)
+  @ApiOperation({
+    summary: "The caller's own bookings, one shelf at a time",
+    description:
+      'WHOSE LIST IS NOT A PARAMETER. The customer comes from the token, ' +
+      'because an endpoint that takes a customer id is an enumeration of ' +
+      'every booking in the system behind one valid login.\n\n' +
+      '`counts` carries all three tab badges so the app does not ask three ' +
+      'times for numbers it draws at once. `recurring` is always 0 and its ' +
+      'page always empty: nothing can reach that shelf until series are ' +
+      'wired, and an empty page is a truer answer than a 422.\n\n' +
+      '`salon`, `can_cancel` and `can_reschedule` of §3 are NOT returned ' +
+      'here -- see §9. `salon_id` is, so the caller can resolve them.',
+  })
+  @ApiQuery({
+    name: 'filter',
+    required: false,
+    enum: ['upcoming', 'recurring', 'archive'],
+  })
+  @ApiQuery({ name: 'page', required: false, example: 1 })
+  @ApiQuery({ name: 'pageSize', required: false, example: 20 })
+  @ApiOkResponse({ description: 'A page of the shelf, plus all three counts.' })
+  @ApiUnprocessableEntityResponse({
+    description: 'filter was not one of the three: code `invalid_filter`.',
+  })
+  list(
+    @CurrentActor() actor: Actor,
+    @Query('filter') filter?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ): Promise<unknown> {
+    const shelf = parseFilter(filter);
+    if (shelf === null) {
+      throw MobileContractError.invalidFilter(filter ?? '');
+    }
+
+    return this.handler.list({
+      customerId: actor.id ?? 'anonymous',
+      filter: shelf,
+      page: clampInt(page, 1, 1, 10_000),
+      // §1: capped server-side at 50. A page is a quote per row.
+      pageSize: clampInt(pageSize, 20, 1, 50),
+    });
+  }
+
   @Get(':id')
   @HttpCode(200)
   @ApiOperation({
@@ -347,4 +404,23 @@ export class MobileBookingController {
       paymentReference: dto.payment_reference ?? null,
     });
   }
+}
+
+/**
+ * A query integer, clamped rather than refused.
+ *
+ * `?page=0` and `?page=abc` are client bugs that cost the customer their
+ * booking history if answered with a 422. The list has one refusal (§5) and
+ * it is `filter`, because that one changes WHICH bookings come back; a
+ * nonsense page number only changes how many.
+ */
+function clampInt(
+  raw: string | undefined,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(n)));
 }

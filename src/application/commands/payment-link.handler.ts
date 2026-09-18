@@ -28,7 +28,42 @@ export interface PaymentLinkView {
   readonly remindAt: string;
   /** Which of the two rules closed the window first. */
   readonly cappedBy: 'SIX_HOURS' | 'START_MINUS_TWO';
+  /**
+   * THE CUSTOMER-FACING URL, or null with the reason why.
+   *
+   * The response carried no `url` at all, and a console that has just told
+   * the desk "link sent" has nothing to open, copy or read out. This service
+   * does not own the checkout page, so it builds the link from
+   * `PAYMENT_LINK_BASE_URL` and the booking CODE -- the code is already the
+   * thing that proves a booking at the door.
+   *
+   * NULL, NEVER A GUESS. With no base URL configured there is no link to
+   * give, and inventing a plausible one would be a dead page handed to a
+   * customer. `linkDelivery` says which it is, so the console can show the
+   * URL or say the link is sent by the service.
+   */
+  readonly url: string | null;
+  readonly linkDelivery: 'URL' | 'SERVICE_DELIVERS';
   readonly explanation: string;
+}
+
+/**
+ * Where the customer pays. Configured, because this service does not own the
+ * checkout page and must not pretend to.
+ */
+export function paymentLinkBase(
+  raw = process.env.PAYMENT_LINK_BASE_URL,
+): string | null {
+  const trimmed = (raw ?? '').trim().replace(/\/+$/, '');
+  return trimmed === '' ? null : trimmed;
+}
+
+/** The link for one booking code, or null when no base is configured. */
+export function paymentLinkFor(
+  code: string,
+  base = paymentLinkBase(),
+): string | null {
+  return base === null ? null : `${base}/pay/${encodeURIComponent(code)}`;
 }
 
 /**
@@ -157,6 +192,9 @@ export class PaymentLinkHandler {
       expiresInSeconds: Math.round((window.expiresAtMs - nowMs) / 1000),
       remindAt: new Date(window.remindAtMs).toISOString(),
       cappedBy: window.capped === 'six_hours' ? 'SIX_HOURS' : 'START_MINUS_TWO',
+      url: paymentLinkFor(b.code),
+      linkDelivery:
+        paymentLinkFor(b.code) === null ? 'SERVICE_DELIVERS' : 'URL',
       explanation:
         window.capped === 'six_hours'
           ? 'Six hours, the longest a link is ever good for.'

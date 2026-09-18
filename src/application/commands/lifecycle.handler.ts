@@ -24,7 +24,13 @@ import type {
   CancelInitiator,
   CancellationOutcome,
 } from '@domain/booking/lifecycle';
-import { outcomeOf } from '@domain/booking/lifecycle';
+import {
+  checkInTiming,
+  dayOfWindow,
+  noShowTiming,
+  outcomeOf,
+} from '@domain/booking/lifecycle';
+import { bookingError } from '@application/contract/errors';
 
 export interface LifecycleView {
   readonly code: string;
@@ -182,6 +188,8 @@ export class LifecycleHandler {
       };
     }
 
+    await this.refuseIfTooSoon(cmd);
+
     const outcome = await this.repo.transition(input);
 
     // Each refusal gets the status code that matches what the caller should
@@ -244,5 +252,77 @@ export class LifecycleHandler {
             explanation: m.explanation,
           }),
     };
+  }
+
+  /**
+   * THE TWO DAY-OF GATES THE SERVER WAS NOT KEEPING.
+   *
+   * Both were documented, both had an error code reserved for them, and
+   * neither fired. The front end's disabled button was the only thing
+   * stopping either, and a drawer is not the only path into an endpoint.
+   *
+   *   CHECK-IN   `GET …/check-in` answered TOO_EARLY with a windowOpensAt
+   *              two days away, and `POST …/check-in` on the same booking
+   *              answered 201 CONFIRMED -> CHECKED_IN.
+   *
+   *   NO-SHOW    GS-1236 was booked for 16:45 with graceEndsAt 13:00Z, and
+   *              a no-show taken at about 10:00 branch time was accepted:
+   *              AED 12.00 forfeited and the customer's risk score moved,
+   *              from somebody who may still have been on their way.
+   *
+   * Checked BEFORE the transition, so nothing is written and no money moves.
+   * The verdict is the domain's (`checkInTiming` / `noShowTiming`); this only
+   * fetches the two facts those rules need and turns a refusal into a 409
+   * with the moment the caller should try again.
+   */
+  private async refuseIfTooSoon(cmd: LifecycleCommand): Promise<void> {
+    if (cmd.to !== 'checked_in' && cmd.to !== 'no_show') return;
+
+    const timing = await this.repo.timingFor(cmd.bookingId);
+    // Absent means the booking is gone; `transition` answers that with its
+    // own 404 a moment later, and inventing one here would duplicate it.
+    if (timing === null) return;
+
+    const customer = await this.customers.load(timing.customerId);
+    const nowMs = cmd.nowMs ?? Date.now();
+    const window = dayOfWindow(timing.startAtMs, customer.isVip);
+
+    if (cmd.to === 'checked_in') {
+      const verdict = checkInTiming({
+        nowMs,
+        startAtMs: timing.startAtMs,
+        isVip: customer.isVip,
+      });
+      if (verdict.kind === 'too_early') {
+        throw bookingError(
+          'BOOKING_CHECKIN_WINDOW',
+          `Check-in opens at ${new Date(verdict.opensAtMs).toISOString()}.`,
+          {
+            windowOpensAt: new Date(verdict.opensAtMs).toISOString(),
+            startAt: new Date(timing.startAtMs).toISOString(),
+          },
+        );
+      }
+      return;
+    }
+
+    const verdict = noShowTiming({
+      nowMs,
+      startAtMs: timing.startAtMs,
+      actor: cmd.actor,
+      isVip: customer.isVip,
+    });
+    if (verdict.kind === 'within_grace') {
+      throw bookingError(
+        'BOOKING_WITHIN_GRACE',
+        'This booking is still inside its arrival grace. A no-show taken ' +
+          'now forfeits a deposit from somebody who may still arrive.',
+        {
+          graceEndsAt: new Date(verdict.graceEndsAtMs).toISOString(),
+          autoNoShowAt: new Date(window.autoNoShowAtMs).toISOString(),
+          startAt: new Date(timing.startAtMs).toISOString(),
+        },
+      );
+    }
   }
 }

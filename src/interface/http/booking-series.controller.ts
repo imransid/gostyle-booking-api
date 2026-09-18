@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Param, Post } from '@nestjs/common';
+import { BranchId } from './branch.decorator';
 import {
   ApiNotFoundResponse,
   ApiOkResponse,
@@ -33,10 +34,16 @@ import { SERIES_HORIZON_DAYS } from '@domain/booking/recurrence';
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 export class SeriesPreviewDto {
-  @ApiPropertyOptional({ example: 'marina-walk', default: 'marina-walk' })
+  @ApiPropertyOptional({
+    description:
+      'OPTIONAL. The branch is taken from the token when the token names ' +
+      'one; send this only for a token scoped to no particular branch. ' +
+      'Sending a branch the token does not cover is 403 ' +
+      'BOOKING_BRANCH_MISMATCH rather than a write nobody can read back.',
+  })
   @IsOptional()
   @IsString()
-  branchId: string = 'marina-walk';
+  branchId?: string;
 
   @ApiProperty({ example: 'dana' })
   @IsString()
@@ -116,9 +123,12 @@ export class BookingSeriesController {
       'reason and any alternatives. Writes nothing.',
   })
   @ApiOkResponse({ description: 'Every occurrence and its verdict.' })
-  previewSeries(@Body() dto: SeriesPreviewDto): Promise<SeriesPreviewView> {
+  previewSeries(
+    @Body() dto: SeriesPreviewDto,
+    @BranchId() branchId: string,
+  ): Promise<SeriesPreviewView> {
     return this.preview.execute({
-      branchId: dto.branchId,
+      branchId,
       customerId: dto.customerId,
       serviceId: dto.serviceId,
       preferredStaffId: dto.preferredStaffId ?? null,

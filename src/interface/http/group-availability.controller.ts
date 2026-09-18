@@ -1,4 +1,5 @@
 import { Body, Controller, Post } from '@nestjs/common';
+import { BranchId } from './branch.decorator';
 import {
   ApiConflictResponse,
   ApiOkResponse,
@@ -53,10 +54,16 @@ export class GroupAvailabilityParticipantDto {
 }
 
 export class GroupAvailabilityDto {
-  @ApiPropertyOptional({ example: 'marina-walk', default: 'marina-walk' })
+  @ApiPropertyOptional({
+    description:
+      'OPTIONAL. The branch is taken from the token when the token names ' +
+      'one; send this only for a token scoped to no particular branch. ' +
+      'Sending a branch the token does not cover is 403 ' +
+      'BOOKING_BRANCH_MISMATCH rather than a write nobody can read back.',
+  })
   @IsOptional()
   @IsString()
-  branchId: string = 'marina-walk';
+  branchId?: string;
 
   @ApiProperty({ example: '2026-09-01' })
   @Matches(DAY, { message: 'day must be YYYY-MM-DD' })
@@ -115,9 +122,12 @@ export class GroupAvailabilityController {
   })
   @ApiOkResponse({ description: 'The lane plan, or the reason there is none.' })
   @ApiConflictResponse({ description: 'The branch is closed that day.' })
-  group(@Body() dto: GroupAvailabilityDto): Promise<GroupAvailabilityView> {
+  group(
+    @Body() dto: GroupAvailabilityDto,
+    @BranchId() branchId: string,
+  ): Promise<GroupAvailabilityView> {
     return this.handler.execute({
-      branchId: dto.branchId,
+      branchId,
       tradingDay: dto.day,
       targetMin: dto.targetMin,
       mode: modeFromWire(dto.mode),

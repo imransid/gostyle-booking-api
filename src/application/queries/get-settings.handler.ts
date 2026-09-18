@@ -44,6 +44,14 @@ import {
   MAX_MOVES,
   MIN_STRANDED_GAIN_MIN,
 } from '@domain/availability/compaction';
+import {
+  BRANCH_TIMEZONE,
+  BRANCH_UTC_OFFSET_MIN,
+  branchNowMinute,
+  branchToday,
+} from '@infrastructure/persistence/hold.repository';
+import type { BranchSource } from '@domain/booking/branch-scope';
+import type { ResolvedBranch } from '@infrastructure/tenancy/branch-context';
 
 /**
  * Every number the front end would otherwise hard-code.
@@ -60,6 +68,29 @@ import {
  * per-branch answer it cannot give.
  */
 export interface SettingsView {
+  /**
+   * WHICH BRANCH THIS CALLER IS ACTUALLY TALKING TO, and its clock.
+   *
+   * The front end had no legitimate way to learn either. It could not see
+   * which branch a read would resolve to -- every read echoed the demo branch
+   * while its writes went somewhere else -- and there was no timezone
+   * anywhere, so "today" had to be guessed from the browser while "now" came
+   * back branch-local. Both are facts this service already holds.
+   *
+   * `source` says which rung of the chain answered, so a client can tell
+   * "my token scopes me here" from "nobody said, so you got the default".
+   */
+  readonly branch: {
+    readonly id: string;
+    readonly source: BranchSource;
+    /** IANA. Use it to render, and to work out what "today" means here. */
+    readonly timezone: string;
+    readonly utcOffsetMinutes: number;
+    /** The branch's own calendar date, right now. */
+    readonly tradingDay: string;
+    /** Minutes past branch-local midnight, matching calendar/day. */
+    readonly nowMinute: number;
+  };
   readonly tradingWindow: {
     readonly fromMin: number;
     readonly toMin: number;
@@ -139,8 +170,16 @@ const GROUP_MAX = 8;
 
 @Injectable()
 export class GetSettingsHandler {
-  execute(): SettingsView {
+  execute(branch: ResolvedBranch): SettingsView {
     return {
+      branch: {
+        id: branch.branchId,
+        source: branch.source,
+        timezone: BRANCH_TIMEZONE,
+        utcOffsetMinutes: BRANCH_UTC_OFFSET_MIN,
+        tradingDay: branchToday(),
+        nowMinute: branchNowMinute(),
+      },
       tradingWindow: {
         fromMin: DAY_START_MIN,
         toMin: DAY_END_MIN,
@@ -210,9 +249,10 @@ export class GetSettingsHandler {
       series: { cancellationProtectionHours: CANCELLATION_PROTECTION_HOURS },
       groups: { minParticipants: GROUP_MIN, maxParticipants: GROUP_MAX },
       scope:
-        'Branch-wide defaults. Nothing here varies by branch yet: there is ' +
-        'no branch configuration table, so every branch reads the same ' +
-        'values.',
+        'Branch-wide defaults. Every value below `branch` is the same for ' +
+        'every branch: there is no branch configuration table yet. `branch` ' +
+        'itself IS resolved per request -- it is this caller\u2019s branch and ' +
+        'its clock, and it is what every read on this token is scoped to.',
     };
   }
 }

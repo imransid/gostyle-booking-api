@@ -6,6 +6,7 @@ import {
   branchRequired,
   readBranchHeader,
   resolveBranch,
+  resolveBranchForRequest,
 } from './branch-context';
 
 describe('readBranchHeader', () => {
@@ -35,31 +36,81 @@ describe('readBranchHeader', () => {
 
 describe('resolveBranch', () => {
   it('prefers the header over the body', () => {
-    expect(resolveBranch({ header: 'jbr', fromBody: 'marina-walk' })).toBe(
+    expect(resolveBranch({ header: 'jbr', fromRequest: 'marina-walk' })).toBe(
       'jbr',
     );
   });
 
   it('falls back to the body when no header was sent', () => {
-    expect(resolveBranch({ header: null, fromBody: 'jbr' })).toBe('jbr');
+    expect(resolveBranch({ header: null, fromRequest: 'jbr' })).toBe('jbr');
   });
 
   it('falls back to the default when neither is present', () => {
     expect(resolveBranch({ header: null })).toBe(DEFAULT_BRANCH_ID);
-    expect(resolveBranch({ header: null, fromBody: '' })).toBe(
+    expect(resolveBranch({ header: null, fromRequest: '' })).toBe(
       DEFAULT_BRANCH_ID,
     );
-    expect(resolveBranch({ header: null, fromBody: '  ' })).toBe(
+    expect(resolveBranch({ header: null, fromRequest: '  ' })).toBe(
       DEFAULT_BRANCH_ID,
     );
   });
 
   it('never returns an empty string', () => {
-    for (const fromBody of ['', '   ', undefined]) {
-      expect(resolveBranch({ header: null, fromBody }).length).toBeGreaterThan(
-        0,
-      );
+    for (const fromRequest of ['', '   ', undefined]) {
+      expect(
+        resolveBranch({ header: null, fromRequest }).length,
+      ).toBeGreaterThan(0);
     }
+  });
+
+  it('lets the token outrank everything, so a read with no parameter still lands here', () => {
+    expect(resolveBranch({ header: null, tokenBranchId: 'ours' })).toBe('ours');
+  });
+
+  it('refuses a request that names a branch the token does not cover', () => {
+    expect(() =>
+      resolveBranch({
+        header: null,
+        fromRequest: 'marina-walk',
+        tokenBranchId: 'ours',
+      }),
+    ).toThrowError(/scoped to branch ours/);
+  });
+});
+
+describe('resolveBranchForRequest', () => {
+  it('reads the body, the query, the header and the token off one request', () => {
+    expect(
+      resolveBranchForRequest({ headers: {}, body: { branchId: 'from-body' } })
+        .branchId,
+    ).toBe('from-body');
+    expect(
+      resolveBranchForRequest({
+        headers: {},
+        query: { branchId: 'from-query' },
+      }).branchId,
+    ).toBe('from-query');
+    expect(
+      resolveBranchForRequest({ headers: { 'x-branch-id': 'from-header' } })
+        .branchId,
+    ).toBe('from-header');
+    expect(
+      resolveBranchForRequest({
+        headers: {},
+        actor: { branchId: 'from-token' },
+      }),
+    ).toEqual({ branchId: 'from-token', source: 'token' });
+  });
+
+  it('says which rung answered, which is what /settings publishes', () => {
+    expect(resolveBranchForRequest({ headers: {} })).toEqual({
+      branchId: DEFAULT_BRANCH_ID,
+      source: 'default',
+    });
+  });
+
+  it('survives a request with no body, query, headers or actor at all', () => {
+    expect(resolveBranchForRequest({}).branchId).toBe(DEFAULT_BRANCH_ID);
   });
 });
 

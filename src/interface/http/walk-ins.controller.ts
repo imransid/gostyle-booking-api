@@ -33,15 +33,25 @@ import {
   WalkInHandler,
   type WalkInQueueView,
 } from '@application/commands/walk-in.handler';
+import { Transform } from 'class-transformer';
 import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
+import { branchNowMinute } from '@infrastructure/persistence/hold.repository';
+import { BranchId } from './branch.decorator';
 import { DeskOnly } from '../../auth/desk-only.decorator';
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 export class JoinWalkInDto {
-  @ApiProperty()
+  @ApiPropertyOptional({
+    description:
+      'OPTIONAL. The branch is taken from the token when the token names ' +
+      'one; send this only for a token scoped to no particular branch. ' +
+      'Sending a branch the token does not cover is 403 ' +
+      'BOOKING_BRANCH_MISMATCH rather than a write nobody can read back.',
+  })
+  @IsOptional()
   @IsString()
-  branchId!: string;
+  branchId?: string;
 
   @ApiProperty({ example: '2027-03-05' })
   @Matches(DAY)
@@ -71,6 +81,43 @@ export class JoinWalkInDto {
   @Min(DAY_START_MIN)
   @Max(DAY_END_MIN - 1)
   joinedMin!: number;
+}
+
+/**
+ * The queue's query, as a DTO.
+ *
+ * `GET /walk-ins` with no `branchId` reached the handler with `undefined`,
+ * folded it into a uuid and died: 500 BOOKING_STATE_INVALID, "Something went
+ * wrong", no field named. `nowMin` was worse -- a missing one became
+ * `Number(undefined)` = NaN and every candidate search silently returned
+ * nothing.
+ */
+export class WalkInQueueQuery {
+  @ApiPropertyOptional({
+    description: 'OPTIONAL. See the note on the join body.',
+  })
+  @IsOptional()
+  @IsString()
+  branchId?: string;
+
+  @ApiProperty({ example: '2027-03-05' })
+  @Matches(DAY, { message: 'tradingDay must be YYYY-MM-DD' })
+  tradingDay!: string;
+
+  @ApiPropertyOptional({
+    example: 840,
+    description:
+      'Minute of day to quote from. Defaults to the branch\u2019s own clock, ' +
+      'which is what the desk means by "now".',
+  })
+  @IsOptional()
+  @Transform(({ value }) =>
+    value === undefined || value === '' ? undefined : Number(value),
+  )
+  @IsInt()
+  @Min(0)
+  @Max(DAY_END_MIN)
+  nowMin?: number;
 }
 
 export class SeatWalkInDto {
@@ -132,13 +179,16 @@ export class WalkInsController {
   @Post()
   @ApiOperation({ summary: 'Add somebody to the queue' })
   @ApiCreatedResponse({ description: 'Their place in the queue.' })
-  async join(@Body() dto: JoinWalkInDto): Promise<{
+  async join(
+    @Body() dto: JoinWalkInDto,
+    @BranchId() branchId: string,
+  ): Promise<{
     id: string;
     position: number;
     serviceIds: readonly string[];
   }> {
     return this.handler.join({
-      branchId: dto.branchId,
+      branchId,
       tradingDay: dto.tradingDay,
       customerId: dto.customerId ?? null,
       guestName: dto.guestName ?? null,
@@ -156,11 +206,14 @@ export class WalkInsController {
   })
   @ApiOkResponse({ description: 'The queue in arrival order.' })
   async view(
-    @Query('branchId') branchId: string,
-    @Query('tradingDay') tradingDay: string,
-    @Query('nowMin') nowMin: string,
+    @BranchId() branchId: string,
+    @Query() q: WalkInQueueQuery,
   ): Promise<WalkInQueueView> {
-    return this.handler.view(branchId, tradingDay, Number(nowMin));
+    return this.handler.view(
+      branchId,
+      q.tradingDay,
+      q.nowMin ?? branchNowMinute(),
+    );
   }
 
   @Post(':id/seat')

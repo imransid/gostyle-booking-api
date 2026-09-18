@@ -22,14 +22,22 @@ import {
   type AcceptView,
   type JoinView,
 } from '@application/commands/waitlist.handler';
+import { BranchId } from './branch.decorator';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
 import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
 
 export class JoinWaitlistDto {
-  @ApiProperty({ example: 'marina-walk' })
+  @ApiPropertyOptional({
+    description:
+      'OPTIONAL. The branch is taken from the token when the token names ' +
+      'one; send this only for a token scoped to no particular branch. ' +
+      'Sending a branch the token does not cover is 403 ' +
+      'BOOKING_BRANCH_MISMATCH rather than a write nobody can read back.',
+  })
+  @IsOptional()
   @IsString()
-  branchId!: string;
+  branchId?: string;
 
   @ApiProperty({ example: 'full-colour' })
   @IsString()
@@ -104,9 +112,10 @@ export class WaitlistController {
   join(
     @Body() dto: JoinWaitlistDto,
     @CurrentActor() actor: Actor,
+    @BranchId() branchId: string,
   ): Promise<JoinView> {
     return this.handler.join({
-      branchId: dto.branchId,
+      branchId,
       // A customer joins for themselves. Staff join on behalf of someone,
       // the same rule the hold and confirm endpoints already follow.
       customerId:

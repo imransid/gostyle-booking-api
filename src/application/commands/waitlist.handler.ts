@@ -89,7 +89,9 @@ export class WaitlistHandler {
     const hold = await this.holds.execute({
       branchId: offer.branchId,
       tradingDay: offer.tradingDay,
-      serviceIds: [offer.serviceId],
+      // serviceRef, NOT serviceId: the catalogue answers to the engine's
+      // spelling and the column holds the folded uuid. See liveOffer.
+      serviceIds: [offer.serviceRef],
       startMin: offer.startMin,
       preferredStaffId: offer.staffId,
       customerId: offer.customerId,

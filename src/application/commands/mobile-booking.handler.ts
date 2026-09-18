@@ -40,6 +40,7 @@ import {
   isMobileContractError,
 } from './mobile-booking.error';
 import { isBookingError } from '@application/contract/errors';
+import type { ListFilter } from '@domain/booking/booking-shelf';
 
 /**
  * One call for the mobile app: hold, confirm, and issue the payment link.
@@ -66,6 +67,48 @@ import { isBookingError } from '@application/contract/errors';
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * What `quoteFor` actually reads off a booking.
+ *
+ * Structural, not `detail()`'s row type: the list fetches the same booking
+ * WITHOUT `statusHistory`, which no quote has ever looked at, and typing the
+ * parameter to the drawer's query would force the list to fetch an unbounded
+ * relation to satisfy the compiler.
+ */
+interface QuotableBooking {
+  readonly branchId: string;
+  readonly tradingDay: Date;
+  readonly customerId: string;
+  readonly startMinute: number;
+  readonly items: readonly { readonly serviceId: string }[];
+}
+
+/**
+ * The contract's three badges, from the repository's two shelves.
+ *
+ * ONE PLACE, because every response carries this object and a second spot
+ * that built it would be the one that forgot a key. `recurring` is 0 until
+ * series are wired -- a real count of a real, empty shelf.
+ */
+function withRecurring(counts: {
+  readonly upcoming: number;
+  readonly archive: number;
+}): { upcoming: number; recurring: number; archive: number } {
+  return { upcoming: counts.upcoming, recurring: 0, archive: counts.archive };
+}
+
+/** One branch's names, resolved once per page rather than once per row. */
+interface BranchNames {
+  readonly index: SlugIndex;
+  readonly staff: ReadonlyMap<string, { name: string; avatar: string | null }>;
+}
+
+/** What a branch looks like when platform could not be reached. */
+const EMPTY_BRANCH: BranchNames = {
+  index: new SlugIndex([]),
+  staff: new Map(),
+};
 
 export interface MobileBookingCommand {
   readonly salonId: string;
@@ -449,6 +492,250 @@ export class MobileBookingHandler {
   }
 
   /**
+   * booking-list.md §1: one shelf of the caller's own bookings.
+   *
+   * THE CUSTOMER COMES FROM THE TOKEN. There is no customerId parameter and
+   * there must never be one -- a list endpoint that takes whose list to show
+   * is an enumeration of every booking in the system behind one valid login.
+   *
+   * ROWS ARE SUMMARIES (§3), but the two figures on them are not summaries
+   * of anything: `total` and `due_amount` are the numbers the customer is
+   * about to pay, and they go through the SAME quote the drawer does. A
+   * cheaper total read off `price_fils` would be the NET figure while the
+   * drawer showed the one with VAT in it, and the customer would be looking
+   * at two prices for one haircut. The page is capped at 50 for that reason
+   * -- each row costs a quote.
+   *
+   * `salon`, `can_cancel` and `can_reschedule` are NOT here. See
+   * booking-list.md §9: a booking stores `branch_id` and nothing else, and
+   * the cancellation policy lives in platform. `salon_id` is returned so the
+   * caller can resolve all three; gostyle-customer-api does exactly that on
+   * the way out, because it reads the platform tables directly.
+   */
+  async list(input: {
+    readonly customerId: string;
+    readonly filter: ListFilter;
+    readonly page: number;
+    readonly pageSize: number;
+  }): Promise<unknown> {
+    /**
+     * NOTHING CAN LAND ON `recurring` YET, and this answers it without
+     * touching the database. The tab exists in the app; a booking only
+     * reaches it by belonging to a series, and the mobile create path
+     * refuses ROUTINE outright (`refuseUnsupported`). An empty page is the
+     * true answer, and it is a different answer from 422.
+     */
+    if (input.filter === 'recurring') {
+      return {
+        count: 0,
+        page: input.page,
+        page_size: input.pageSize,
+        counts: await this.shelfCounts(input.customerId),
+        results: [],
+      };
+    }
+
+    const { rows, count, counts } = await this.bookings.customerPage({
+      customerId: input.customerId,
+      shelf: input.filter,
+      // §2.4 measures "past" against the salon's clock. The instant is the
+      // same one either way -- branchInstant and endAt are both absolute --
+      // so a customer abroad sees the same shelf as one standing outside.
+      now: new Date(),
+      page: input.page,
+      pageSize: input.pageSize,
+    });
+
+    /**
+     * THE CATALOGUE AND ROSTER ARE LOADED ONCE PER BRANCH, not once per
+     * row. A customer's page is usually one or two salons, and loading the
+     * day for each of twenty rows separately is twenty round trips to
+     * render one screen.
+     */
+    const branches = [...new Set(rows.map((b) => b.branchId))];
+    const context = new Map(
+      await Promise.all(
+        branches.map(
+          async (branchId) =>
+            [branchId, await this.branchNames(branchId)] as const,
+        ),
+      ),
+    );
+
+    const results = await Promise.all(
+      rows.map(async (b) => {
+        const totalFils = await this.listTotalFils(b);
+        const captured = b.ledger
+          .filter((l) => l.entryType === 'captured')
+          .reduce((n, l) => n + l.amountFils, 0);
+
+        const day = b.tradingDay.toISOString().slice(0, 10);
+        const names = context.get(b.branchId) ?? EMPTY_BRANCH;
+        const stylistIds = [
+          ...new Set(
+            b.items
+              .map((i) => i.staffId)
+              .filter((x): x is string => x !== null)
+              .map((id) => names.index.toSlug(id)),
+          ),
+        ];
+
+        return {
+          id: b.id,
+          /** The slug the app sent in, never the folded uuid (CLAUDE.md 8). */
+          salon_id: names.index.toSlug(b.branchId),
+          status: toMobileStatus(b.status),
+          payment_status: toMobilePaymentStatus(b.paymentStatus),
+          booking_type: b.bookingType.toUpperCase(),
+          date: day,
+          start_time: toOffsetIso(
+            branchInstant(day, b.startMinute),
+            BRANCH_UTC_OFFSET_MIN,
+          ),
+          end_time: toOffsetIso(
+            branchInstant(day, b.startMinute + b.durationMin),
+            BRANCH_UTC_OFFSET_MIN,
+          ),
+          /** §3: `{ id, name }` only. The amounts are the drawer's job. */
+          services: b.items.map((i) => ({
+            id: names.index.toSlug(i.serviceId),
+            name: i.serviceName,
+          })),
+          stylists: stylistIds.map((id) => ({
+            id,
+            name: names.staff.get(id)?.name ?? null,
+            avatar_url: names.staff.get(id)?.avatar ?? null,
+          })),
+          total: totalFils === null ? null : filsToAed(totalFils),
+          due_amount:
+            totalFils === null
+              ? null
+              : filsToAed(Math.max(0, totalFils - captured)),
+          created_at: toOffsetIso(b.createdAt, BRANCH_UTC_OFFSET_MIN),
+        };
+      }),
+    );
+
+    return {
+      count,
+      page: input.page,
+      page_size: input.pageSize,
+      /**
+       * ALL THREE BADGES, ALWAYS. The repository knows two shelves; the app
+       * draws three chips and reads this object by key. Returning
+       * `{upcoming, archive}` here left the third one `undefined`, which
+       * renders as an empty badge rather than a zero -- caught by calling
+       * the endpoint, not by a test that mocked this body.
+       */
+      counts: withRecurring(counts),
+      results,
+    };
+  }
+
+  /**
+   * What one row on the list is worth, or null when it cannot be told.
+   *
+   * THE QUOTE IS TRIED FIRST, because it is what `GET /booking/:id` returns
+   * and the row must not disagree with the drawer.
+   *
+   * BUT A QUOTE CAN FAIL FOR AN ORDINARY REASON. It resolves every service
+   * against the live catalogue and throws `Unknown service` for one that has
+   * since been retired -- which is a NORMAL condition on the archive shelf,
+   * where bookings are months old and menus have moved on. Left to
+   * propagate, one such row rejected the whole `Promise.all` and answered
+   * 404 for the entire page: a customer's complete history disappearing
+   * because one salon renamed a haircut. Found by calling the endpoint.
+   *
+   * So it falls back to the BREAKDOWN STORED ON THE ROW, which is what the
+   * customer was shown and agreed to at booking time, and which create
+   * verified against the quote -- so the two agree wherever both exist.
+   *
+   * NULL RATHER THAN A GUESS when even that is absent. `price_fils` is the
+   * NET total with no VAT in it, and printing it as `total` would quietly
+   * understate every row by the tax. A missing price the app can render as
+   * "--" is better than a confident wrong one, and the booking still
+   * appears, which is the thing that matters.
+   */
+  private async listTotalFils(
+    b: QuotableBooking & {
+      readonly id: string;
+      readonly netFils: number | null;
+      readonly taxFils: number | null;
+      readonly discountFils: number | null;
+    },
+  ): Promise<number | null> {
+    try {
+      return (await this.quoteFor(b)).totalMinor;
+    } catch (e) {
+      const stored =
+        b.netFils === null
+          ? null
+          : b.netFils + (b.taxFils ?? 0) - (b.discountFils ?? 0);
+
+      MobileBookingHandler.log.warn(
+        `Booking ${b.id}: no quote (${
+          e instanceof Error ? e.message : String(e)
+        }); ${stored === null ? 'no stored total either' : 'using the stored breakdown'}.`,
+      );
+      return stored;
+    }
+  }
+
+  /**
+   * The badge numbers alone, for the one filter that never queries a page.
+   *
+   * Counted through the same `customerPage` the list uses rather than a
+   * second set of predicates -- the badge and the tab it opens have to
+   * agree, and two queries for one question is how they stop agreeing.
+   */
+  private async shelfCounts(
+    customerId: string,
+  ): Promise<{ upcoming: number; recurring: number; archive: number }> {
+    const { counts } = await this.bookings.customerPage({
+      customerId,
+      shelf: 'upcoming',
+      now: new Date(),
+      page: 1,
+      // Nothing reads the rows; asking for none keeps this two COUNTs.
+      pageSize: 0,
+    });
+    return withRecurring(counts);
+  }
+
+  /**
+   * Staff names and the slug index for one branch.
+   *
+   * A NAME IS DECORATION AND THE BOOKING IS REAL EITHER WAY -- the same
+   * bargain `present` makes. A platform that is down must not empty a
+   * customer's booking history; it may only leave the names off it.
+   */
+  private async branchNames(branchId: string): Promise<BranchNames> {
+    try {
+      const [roster, catalogue] = await Promise.all([
+        // Any day resolves the roster; the professionals are the branch's,
+        // not the day's, and the list spans many days.
+        this.context.loadDay(branchId, new Date().toISOString().slice(0, 10)),
+        this.context.loadCatalogue(branchId),
+      ]);
+      return {
+        index: new SlugIndex([
+          ...roster.professionals.map((p) => p.id),
+          ...catalogue.map((c) => c.id),
+          DEFAULT_BRANCH_ID,
+        ]),
+        staff: new Map(
+          roster.professionals.map((p) => [
+            p.id,
+            { name: p.name, avatar: null },
+          ]),
+        ),
+      };
+    } catch {
+      return EMPTY_BRANCH;
+    }
+  }
+
+  /**
    * §11: record what the gateway took.
    *
    * The rules are in `checkPatch`; this resolves the inputs they need and
@@ -599,7 +886,7 @@ export class MobileBookingHandler {
    * was charged, so both reads go back through the quote handler.
    */
   private async quoteFor(
-    b: NonNullable<Awaited<ReturnType<BookingRepository['detail']>>>,
+    b: QuotableBooking,
   ): Promise<Awaited<ReturnType<GetQuoteHandler['execute']>>> {
     return this.quotes.execute({
       branchId: b.branchId,

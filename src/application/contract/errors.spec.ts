@@ -17,7 +17,7 @@ describe('the error catalogue', () => {
   });
 
   it('has no status outside the four the contract lists', () => {
-    const allowed = new Set([401, 402, 403, 404, 409, 422, 503]);
+    const allowed = new Set([400, 401, 402, 403, 404, 409, 422, 503]);
     for (const code of ERROR_CODES) {
       expect(allowed.has(ERROR_STATUS[code]), `${code}`).toBe(true);
     }
@@ -49,6 +49,9 @@ describe('the error catalogue', () => {
         'BOOKING_PAYMENT_REQUIRED',
         'DEPENDENCY_UNAVAILABLE',
         'BOOKING_CURRENCY_MIXED',
+        'BOOKING_BRANCH_MISMATCH',
+        'BOOKING_VALIDATION_FAILED',
+        'AUTH_MISCONFIGURED',
       ].sort(),
     );
   });

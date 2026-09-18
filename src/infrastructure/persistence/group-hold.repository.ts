@@ -237,6 +237,59 @@ export class GroupHoldRepository {
   }
 
   /**
+   * Give a whole party's slots back.
+   *
+   * WHY THIS HAD TO EXIST. Three group routes existed and none of them was a
+   * delete, while the single-booking equivalent -- `DELETE /v1/holds/:id` --
+   * has always worked. A six-person party abandoned at the confirm step
+   * therefore blocked six professionals and six chairs for the full fifteen
+   * minutes, with nothing the desk could do about it.
+   *
+   * ONE HOLD COVERS THE PARTY (see `place`), so this is one delete: the
+   * staff and resource reservations cascade with it and capacity returns in
+   * the same statement rather than in a later sweep.
+   *
+   * The GROUP is marked cancelled in the same transaction. It is only ever
+   * the draft that is released -- a confirmed party's lanes are ordinary
+   * bookings and are cancelled one at a time through the lifecycle, which is
+   * where the money rules live.
+   *
+   * IDEMPOTENT, and never a 404. Releasing twice, or releasing a hold the
+   * sweeper already took, both answer `released: false` -- a desk that
+   * cannot tell a double-tap from a real error will retry, and a 404 makes
+   * the retry look like a bug. Same reasoning as the single hold.
+   */
+  async release(holdId: string): Promise<{ released: boolean }> {
+    return this.prisma.$transaction(async (tx) => {
+      const hold = await tx.hold.findUnique({
+        where: { id: holdId },
+        select: { id: true, feasibilityToken: true },
+      });
+      if (hold === null) return { released: false };
+
+      // `group:<id>` is written by place(). A hold without that prefix is an
+      // ordinary single hold, and releasing it here would bypass the route
+      // that owns it.
+      const groupId =
+        hold.feasibilityToken?.startsWith('group:') === true
+          ? hold.feasibilityToken.slice('group:'.length)
+          : null;
+      if (groupId === null) return { released: false };
+
+      await tx.hold.delete({ where: { id: holdId } });
+      await tx.bookingGroup.updateMany({
+        where: { id: groupId, status: 'draft' },
+        data: { status: 'cancelled' },
+      });
+
+      GroupHoldRepository.log.log(
+        `Group ${groupId} released: hold ${holdId} and its lanes are gone.`,
+      );
+      return { released: true };
+    });
+  }
+
+  /**
    * Plan a party and write nothing.
    *
    * Runs THE SAME contextFor() and THE SAME planParty() as place(), because

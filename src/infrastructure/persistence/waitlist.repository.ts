@@ -3,7 +3,10 @@ import { PrismaService } from './prisma.service';
 import { TenantContext } from '../tenancy/tenant-context';
 import { toUuid } from './hold.repository';
 import { SlugIndex } from './slug-uuid';
-import { STAFF_SLUGS } from '../fixtures/fixture-booking-context';
+import {
+  SERVICE_SLUGS,
+  STAFF_SLUGS,
+} from '../fixtures/fixture-booking-context';
 import {
   planOffer,
   decline as declineRule,
@@ -65,6 +68,21 @@ export class WaitlistRepository {
   /** booking_item.staff_id is a uuid; placeHold expects a slug. */
   private readonly staff = new SlugIndex(STAFF_SLUGS);
 
+  /**
+   * AND SO IS waitlist_entry.service_id, which is what broke Accept.
+   *
+   * The staff id was folded back and the service id was not, so the offer
+   * handed `place-hold` a uuid the catalogue has never heard of and every
+   * acceptance answered `404 One or more services do not exist` -- for an
+   * offer the backfill had just produced from `fringe-trim`, on a slot this
+   * engine had booked and cancelled itself. The Accept button could not work
+   * at all.
+   *
+   * A platform uuid passes through unchanged (SlugIndex only rewrites ids it
+   * was built from), so this is additive for the real catalogue too.
+   */
+  private readonly services = new SlugIndex(SERVICE_SLUGS);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenants: TenantContext,
@@ -101,7 +119,17 @@ export class WaitlistRepository {
           FROM waitlist_entry
          WHERE branch_id = ${branchId}::uuid
            AND trading_day = ${slot.tradingDay}::date
-           AND service_id = ${slot.serviceId}
+           -- FOLDED, AND NOT CAST. waitlist_entry.service_id is TEXT while
+           -- booking_item.service_id is UUID -- an asymmetry that is easy to
+           -- miss and that a unit test cannot see. Adding ::uuid here read
+           -- perfectly and broke every backfill with
+           -- "operator does not exist: text = uuid", logged by the listener
+           -- and swallowed, so the only symptom was an offer that never
+           -- arrived (CLAUDE.md 5, and 9).
+           --
+           -- toUuid is what join() writes, and it is identity on a uuid, so
+           -- a caller reaching here with either spelling matches.
+           AND service_id = ${toUuid(slot.serviceId)}
            AND status = 'waiting'
          ORDER BY joined_at
          FOR UPDATE SKIP LOCKED`;
@@ -272,7 +300,17 @@ export class WaitlistRepository {
     branchId: string;
     customerId: string;
     bookingCode: string;
+    /** The STORED id, for anything that queries a column with it. */
     serviceId: string;
+    /**
+     * The SAME service, spelled the way the availability engine answers to.
+     *
+     * Two spellings because two consumers: `passDown` puts `serviceId` into
+     * a WHERE against a uuid column, and `place-hold` looks `serviceRef` up
+     * in the catalogue. Accept used to hand the uuid to place-hold and got
+     * `404 One or more services do not exist` every single time.
+     */
+    serviceRef: string;
     tradingDay: string;
     startMin: number;
     durationMin: number;
@@ -302,6 +340,7 @@ export class WaitlistRepository {
       customerId: r.customer_id,
       bookingCode: r.offered_booking_code,
       serviceId: r.service_id,
+      serviceRef: this.services.toSlug(r.service_id),
       tradingDay: r.trading_day.toISOString().slice(0, 10),
       startMin: r.offered_start_min,
       durationMin: r.offered_duration_min,
@@ -320,14 +359,29 @@ export class WaitlistRepository {
   async markAccepted(entryId: string): Promise<boolean> {
     const done = await this.prisma.waitlistEntry.updateMany({
       where: { id: entryId, status: 'offered' },
-      data: {
-        status: 'accepted',
-        offeredBookingCode: null,
-        offerExpiresAt: null,
-        offeredStartMin: null,
-        offeredDurationMin: null,
-        offeredStaffId: null,
-      },
+      /**
+       * THE OFFER IS KEPT WHOLE, and it used to be cleared entirely.
+       *
+       * On a `waiting` or `offered` row the five offer columns mean "the
+       * slot currently on the table". On an `accepted` one they mean "the
+       * slot this person took" -- which is the only record anywhere that a
+       * cancellation was refilled, and clearing them destroyed the answer to
+       * "how many of last month's cancellations did we recover?" at the
+       * exact moment the answer became yes. `GET /events` reads
+       * `offered_booking_code` on accepted rows for `recovered`.
+       *
+       * ALL FIVE OR NONE. `waitlist_offer_paired` is
+       * `num_nonnulls(code, expires_at, start_min, duration_min, staff_id)
+       * IN (0, 5)`, so keeping only the code is a CHECK violation -- which
+       * is precisely what it did on the first live acceptance, 500ing the
+       * Accept button this change exists to fix. The constraint is right: a
+       * half-written offer is a row nobody can act on.
+       *
+       * Nothing reads these without also filtering on status -- the sweeper,
+       * `liveOffer` and the board all require `status = 'offered'` -- so an
+       * accepted row carrying a past `offer_expires_at` is inert.
+       */
+      data: { status: 'accepted' },
     });
     return done.count > 0;
   }

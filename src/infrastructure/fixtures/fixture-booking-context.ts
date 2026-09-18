@@ -367,6 +367,18 @@ const DIARY: readonly SeedBooking[] = [
 /** The roster's slugs, so callers can turn a stored uuid back. */
 export const STAFF_SLUGS: readonly string[] = PROFESSIONALS.map((p) => p.id);
 
+/**
+ * The catalogue's slugs, for the same reason and the same trap.
+ *
+ * `STAFF_SLUGS` existed and this did not, so every caller that needed to turn
+ * a stored `service_id` back into something the engine answers to had no
+ * index to do it with -- and the one that needed it most, the waitlist
+ * acceptance, simply did not try. It handed `place-hold` the uuid straight
+ * off the row and got `404 "One or more services do not exist"` for a service
+ * this engine had booked ninety seconds earlier. Bite six (CLAUDE.md 8).
+ */
+export const SERVICE_SLUGS: readonly string[] = SERVICES.map((s) => s.id);
+
 const BY_ANY_ID: ReadonlyMap<string, Service> = new Map(
   SERVICES.flatMap((s) => [[s.id, s] as const, [toUuid(s.id), s] as const]),
 );
