@@ -42,6 +42,7 @@ import { IdempotentInterceptor } from './idempotent.interceptor';
 import { mobileValidationPipe } from './mobile-validation.pipe';
 import type { MobilePaymentMethod } from '@domain/booking/mobile-contract';
 import { parseFilter } from '@domain/booking/booking-shelf';
+import { BookingRepository } from '@infrastructure/persistence/booking.repository';
 import { MobileContractError } from '@application/commands/mobile-booking.error';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
@@ -236,7 +237,10 @@ export class MobilePaymentDto {
 // failure and another for a handler failure.
 @UsePipes(mobileValidationPipe())
 export class MobileBookingController {
-  constructor(private readonly handler: MobileBookingHandler) {}
+  constructor(
+    private readonly handler: MobileBookingHandler,
+    private readonly bookings: BookingRepository,
+  ) {}
 
   @Post()
   @HttpCode(201)
@@ -342,6 +346,93 @@ export class MobileBookingController {
       // §1: capped server-side at 50. A page is a quote per row.
       pageSize: clampInt(pageSize, 20, 1, 50),
     });
+  }
+
+  /**
+   * The intervals given staff are already occupied for.
+   *
+   * DECLARED BEFORE `:id`, and here that matters: Nest matches in order, so
+   * `@Get(':id')` above this would swallow `/busy` as a booking id.
+   *
+   * Exists for the customer app's slot picker, which lives in
+   * gostyle-customer-api and built its grid from a `booking` table in the
+   * PLATFORM database -- one this service has never written to. It therefore
+   * offered slots that were already sold, and the customer learned so only
+   * when the booking was refused.
+   *
+   * The picker keeps its own grid (shifts, breaks, opening hours, lead time
+   * are all platform facts it holds and this service does not). It needed
+   * exactly one thing from here: who is already busy.
+   */
+  @Get('busy')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Occupied intervals for a set of staff, for a slot picker',
+    description:
+      'Bookings live in this service, so nothing else can answer this ' +
+      'truthfully. Uses BLOCKING_STATES -- the engine own answer to "does ' +
+      'this still occupy a chair" -- which includes completed and settled: ' +
+      'the visit is over but it happened, and pretending the time is free ' +
+      'would let a booking land on top of it.',
+  })
+  @ApiQuery({ name: 'branchId', required: true })
+  @ApiQuery({
+    name: 'staffIds',
+    required: true,
+    description: 'Comma separated.',
+  })
+  @ApiQuery({ name: 'from', required: true, example: '2026-09-21T00:00:00Z' })
+  @ApiQuery({ name: 'to', required: true, example: '2026-09-23T00:00:00Z' })
+  @ApiOkResponse({ description: '{ busy: [{ staff_id, start_at, end_at }] }' })
+  async busy(
+    @Query('branchId') branchId?: string,
+    @Query('staffIds') staffIds?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ): Promise<unknown> {
+    const ids = (staffIds ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const fromAt = new Date(from ?? '');
+    const toAt = new Date(to ?? '');
+
+    /**
+     * AN UNANSWERABLE QUERY RETURNS NOTHING, not an empty success.
+     *
+     * An empty `busy` list means "these people are free", and answering that
+     * to a malformed window would put the picker back to offering sold
+     * slots -- the exact bug this endpoint exists to end. Refused loudly
+     * instead.
+     */
+    if (
+      !branchId ||
+      ids.length === 0 ||
+      Number.isNaN(fromAt.getTime()) ||
+      Number.isNaN(toAt.getTime()) ||
+      toAt <= fromAt
+    ) {
+      throw MobileContractError.of(
+        'from',
+        'invalid_window',
+        'branchId, staffIds and a from/to window are all required.',
+      );
+    }
+
+    const busy = await this.bookings.busyFor({
+      branchId,
+      staffIds: ids,
+      from: fromAt,
+      to: toAt,
+    });
+
+    return {
+      busy: busy.map((b) => ({
+        staff_id: b.staffId,
+        start_at: b.startAt.toISOString(),
+        end_at: b.endAt.toISOString(),
+      })),
+    };
   }
 
   @Get(':id')

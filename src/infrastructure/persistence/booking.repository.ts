@@ -12,6 +12,7 @@ import {
   ARCHIVE_STATES,
   NEVER_LISTED_STATES,
 } from '@domain/booking/booking-shelf';
+import { BLOCKING_STATES } from '@domain/booking/lifecycle';
 
 export type PaymentRail =
   'wallet' | 'card' | 'apple_pay' | 'cash' | 'link' | 'internal';
@@ -383,6 +384,60 @@ export class BookingRepository {
    * every other view is translated and a second translation site is how the
    * two drift (CLAUDE.md 4).
    */
+  /**
+   * The intervals these staff are already occupied for, in one window.
+   *
+   * WHY THIS EXISTS. gostyle-customer-api builds the customer's slot picker
+   * from platform shifts and a `booking` table in the PLATFORM database --
+   * which this service has never written to, because bookings live here in
+   * `gostyle_booking`. So the picker computed free time against zero
+   * bookings and offered slots that were already sold; the customer picked
+   * one and the engine refused it, naming the stylist. It read as a stylist
+   * problem, a clock problem and a timezone problem in turn before anyone
+   * looked at which table was being queried.
+   *
+   * BLOCKING_STATES, imported not re-listed. It is the engine's own answer
+   * to "does this still occupy a chair", and a second copy here would be the
+   * one that goes stale the day a status is added (CLAUDE.md 4). Note it
+   * includes `completed` and `settled`: the visit is over but it happened,
+   * and pretending the time is free would let a booking land on top of it.
+   *
+   * OVERLAP, not containment: a booking that began before the window and
+   * runs into it occupies the same minutes as one starting inside it.
+   */
+  async busyFor(input: {
+    readonly branchId: string;
+    readonly staffIds: readonly string[];
+    readonly from: Date;
+    readonly to: Date;
+  }): Promise<readonly { staffId: string; startAt: Date; endAt: Date }[]> {
+    if (input.staffIds.length === 0) return [];
+
+    const rows = await this.prisma.bookingItem.findMany({
+      where: {
+        staffId: { in: input.staffIds.map((id) => toUuid(id)) },
+        booking: {
+          branchId: toUuid(input.branchId),
+          status: { in: [...BLOCKING_STATES] },
+          startAt: { lt: input.to },
+          endAt: { gt: input.from },
+        },
+      },
+      select: {
+        staffId: true,
+        booking: { select: { startAt: true, endAt: true } },
+      },
+    });
+
+    return rows
+      .filter((r): r is typeof r & { staffId: string } => r.staffId !== null)
+      .map((r) => ({
+        staffId: r.staffId,
+        startAt: r.booking.startAt,
+        endAt: r.booking.endAt,
+      }));
+  }
+
   async detail(bookingId: string) {
     return this.prisma.booking.findUnique({
       where: { id: bookingId },
