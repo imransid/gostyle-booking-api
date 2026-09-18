@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PlaceHoldHandler } from './place-hold.handler';
 import { ConfirmBookingHandler } from './confirm-booking.handler';
 import { PaymentLinkHandler } from './payment-link.handler';
+import { LifecycleRepository } from '@infrastructure/persistence/lifecycle.repository';
 import { GetQuoteHandler } from '@application/queries/get-quote.handler';
 import {
   BOOKING_CONTEXT,
@@ -179,6 +180,9 @@ export class MobileBookingHandler {
     private readonly bookings: BookingRepository,
     private readonly payments: MobilePaymentRepository,
     private readonly tenants: TenantContext,
+    // The SAME transition the PaymentLinkSweeper writes for a checkout
+    // that ran out of time -- this one just gets there sooner.
+    private readonly lifecycle: LifecycleRepository,
     @Inject(BOOKING_CONTEXT) private readonly context: BookingContextReader,
   ) {}
 
@@ -342,6 +346,14 @@ export class MobileBookingHandler {
       throw translate(e);
     }
 
+    /**
+     * WHAT WAS CREATED BEFORE THINGS WENT WRONG, so the catch can undo it.
+     *
+     * Declared out here rather than inside the try because the catch has to
+     * reach it: a booking written and then abandoned is the whole bug below.
+     */
+    let orphanId: string | null = null;
+
     try {
       const booking = await this.confirms.execute({
         holdId: hold.holdId,
@@ -398,6 +410,8 @@ export class MobileBookingHandler {
           : { idempotencyKey: `mobile:${cmd.idempotencyKey}` }),
       });
 
+      orphanId = booking.bookingId;
+
       /**
        * NO LINK FOR AN ON-ARRIVAL BOOKING. There is nothing to pay now, so
        * a payment page would be a page asking for zero, and the
@@ -427,6 +441,49 @@ export class MobileBookingHandler {
       // The hold is ours and the booking is not going to exist. Give the
       // slot back now rather than leaving it dark until the sweeper runs.
       await this.holds.release(hold.holdId).catch(() => undefined);
+
+      /**
+       * AND THE BOOKING, IF ONE WAS ALREADY WRITTEN.
+       *
+       * THE BUG THIS FIXES. `confirms.execute` creates the booking, and
+       * everything after it -- issuing the payment link, presenting the
+       * response -- could still throw. The catch released the HOLD and left
+       * the BOOKING, so the caller got an error while a `pending_payment`
+       * row silently occupied the slot. Every failed checkout consumed a
+       * chair the salon could never sell, and the next attempt at the same
+       * time was refused as "no longer available" -- about a slot that was
+       * free until we broke it. Seven of them accumulated in one afternoon
+       * of testing before anyone looked in the table.
+       *
+       * `expired` and NOT a delete: it is a releasing state, so capacity
+       * comes back immediately, and it is the same word the sweeper writes
+       * for a checkout that ran out of time -- which is exactly what this
+       * is, arrived at sooner. Deleting would take the audit trail with it
+       * and trip the foreign keys the status history holds.
+       *
+       * Its own failure is swallowed and logged, never rethrown: the caller
+       * is already receiving an error about their booking, and replacing it
+       * with one about our cleanup would lose the reason they needed.
+       */
+      if (orphanId !== null) {
+        const undone = await this.lifecycle
+          .transition({
+            bookingId: orphanId,
+            to: 'expired',
+            actor: 'system',
+            actorId: null,
+            reason: 'Creation failed after the booking was written.',
+          })
+          .catch(() => null);
+
+        MobileBookingHandler.log.warn(
+          undone === null || undone.kind !== 'transitioned'
+            ? `mobile create failed; booking ${orphanId} could NOT be ` +
+                'released and is holding a slot until the sweeper runs'
+            : `mobile create failed; booking ${orphanId} expired, slot released`,
+        );
+      }
+
       MobileBookingHandler.log.warn(
         `mobile create failed after hold ${hold.holdId}; slot released`,
       );
