@@ -41,6 +41,7 @@ import {
 } from './mobile-booking.error';
 import { isBookingError } from '@application/contract/errors';
 import type { ListFilter } from '@domain/booking/booking-shelf';
+import { storedTotalFils } from '@domain/booking/stored-money';
 
 /**
  * One call for the mobile app: hold, confirm, and issue the payment link.
@@ -96,6 +97,32 @@ function withRecurring(counts: {
   readonly archive: number;
 }): { upcoming: number; recurring: number; archive: number } {
   return { upcoming: counts.upcoming, recurring: 0, archive: counts.archive };
+}
+
+/** The money columns a booking carries when the catalogue cannot price it. */
+interface StoredMoney {
+  readonly id: string;
+  readonly netFils: number | null;
+  readonly taxFils: number | null;
+  readonly discountFils: number | null;
+  readonly depositFils: number;
+}
+
+/**
+ * A booking's figures, however they were arrived at.
+ *
+ * `priced` says WHICH: true when the live quote produced them, false when
+ * they came off the row because the catalogue could not price the booking.
+ * Callers that must not act on a stale figure check it; §8's read simply
+ * reports what it has.
+ */
+interface BookingMoney {
+  readonly subtotalFils: number | null;
+  readonly vatFils: number;
+  readonly discountFils: number;
+  readonly totalFils: number | null;
+  readonly depositFils: number;
+  readonly priced: boolean;
 }
 
 /** One branch's names, resolved once per page rather than once per row. */
@@ -383,7 +410,15 @@ export class MobileBookingHandler {
             ).expiresAt
           : null;
 
-      return this.present(cmd, booking.bookingId, expiresAt, quote);
+      // A freshly quoted booking, so the figures are the quote's own.
+      return this.present(cmd, booking.bookingId, expiresAt, {
+        subtotalFils: quote.subtotalMinor,
+        vatFils: quote.vatMinor,
+        discountFils: quote.tierDiscountMinor + quote.bundleDiscountMinor,
+        totalFils: quote.totalMinor,
+        depositFils: quote.depositMinor,
+        priced: true,
+      });
     } catch (e) {
       // The hold is ours and the booking is not going to exist. Give the
       // slot back now rather than leaving it dark until the sweeper runs.
@@ -479,15 +514,15 @@ export class MobileBookingHandler {
   }): Promise<unknown> {
     const b = await this.visibleOrNotFound(input);
 
-    const quote = await this.quoteFor(b);
-
     return this.present(
       { salonId: b.branchId, promoCode: null },
       b.id,
       // §10.3: present while the draft hold is still running, gone once the
       // booking is paid -- which is exactly when the column is cleared.
       b.linkExpiresAt === null ? null : b.linkExpiresAt.toISOString(),
-      quote,
+      // NOT quoteFor: a booking the catalogue can no longer price is still
+      // the customer's booking, and 404 is the wrong answer to "show it".
+      await this.moneyFor(b),
     );
   }
 
@@ -564,7 +599,7 @@ export class MobileBookingHandler {
 
     const results = await Promise.all(
       rows.map(async (b) => {
-        const totalFils = await this.listTotalFils(b);
+        const totalFils = (await this.moneyFor(b)).totalFils;
         const captured = b.ledger
           .filter((l) => l.entryType === 'captured')
           .reduce((n, l) => n + l.amountFils, 0);
@@ -630,55 +665,6 @@ export class MobileBookingHandler {
       counts: withRecurring(counts),
       results,
     };
-  }
-
-  /**
-   * What one row on the list is worth, or null when it cannot be told.
-   *
-   * THE QUOTE IS TRIED FIRST, because it is what `GET /booking/:id` returns
-   * and the row must not disagree with the drawer.
-   *
-   * BUT A QUOTE CAN FAIL FOR AN ORDINARY REASON. It resolves every service
-   * against the live catalogue and throws `Unknown service` for one that has
-   * since been retired -- which is a NORMAL condition on the archive shelf,
-   * where bookings are months old and menus have moved on. Left to
-   * propagate, one such row rejected the whole `Promise.all` and answered
-   * 404 for the entire page: a customer's complete history disappearing
-   * because one salon renamed a haircut. Found by calling the endpoint.
-   *
-   * So it falls back to the BREAKDOWN STORED ON THE ROW, which is what the
-   * customer was shown and agreed to at booking time, and which create
-   * verified against the quote -- so the two agree wherever both exist.
-   *
-   * NULL RATHER THAN A GUESS when even that is absent. `price_fils` is the
-   * NET total with no VAT in it, and printing it as `total` would quietly
-   * understate every row by the tax. A missing price the app can render as
-   * "--" is better than a confident wrong one, and the booking still
-   * appears, which is the thing that matters.
-   */
-  private async listTotalFils(
-    b: QuotableBooking & {
-      readonly id: string;
-      readonly netFils: number | null;
-      readonly taxFils: number | null;
-      readonly discountFils: number | null;
-    },
-  ): Promise<number | null> {
-    try {
-      return (await this.quoteFor(b)).totalMinor;
-    } catch (e) {
-      const stored =
-        b.netFils === null
-          ? null
-          : b.netFils + (b.taxFils ?? 0) - (b.discountFils ?? 0);
-
-      MobileBookingHandler.log.warn(
-        `Booking ${b.id}: no quote (${
-          e instanceof Error ? e.message : String(e)
-        }); ${stored === null ? 'no stored total either' : 'using the stored breakdown'}.`,
-      );
-      return stored;
-    }
   }
 
   /**
@@ -771,7 +757,26 @@ export class MobileBookingHandler {
       );
     }
 
-    const quote = await this.quoteFor(b);
+    const money = await this.moneyFor(b);
+
+    /**
+     * MONEY IS NEVER CHECKED AGAINST A FIGURE WE DO NOT HAVE.
+     *
+     * `moneyFor` falls back to the stored breakdown, which is what the
+     * customer agreed to, and that is a sound bar to check a payment
+     * against. But a booking with NO stored breakdown and no quote has no
+     * total at all, and accepting a payment against an unknown total would
+     * record whatever the client claimed. Refused as a field error the app
+     * can show, not as a 404 naming a service.
+     */
+    if (money.totalFils === null) {
+      throw MobileContractError.of(
+        'advance_paid_amount',
+        'amount_mismatch',
+        'This booking cannot be priced right now, so a payment cannot be ' +
+          'checked against it. Please try again shortly.',
+      );
+    }
 
     const refusal = checkPatch({
       target: input.paymentStatus,
@@ -779,9 +784,9 @@ export class MobileBookingHandler {
       advancePaidFils: advance,
       dueFils: due,
       reference: input.paymentReference,
-      totalFils: quote.totalMinor,
+      totalFils: money.totalFils,
       // The bar the ladder set for THIS booking, not a global minimum.
-      requiredDepositFils: quote.depositMinor,
+      requiredDepositFils: money.depositFils,
     });
     if (refusal !== null) {
       throw MobileContractError.of(
@@ -836,7 +841,9 @@ export class MobileBookingHandler {
       b.id,
       // Paid, so the draft window is gone (§10.3, §11.4).
       null,
-      quote,
+      // The same figures the payment was just checked against, so the
+      // response cannot report a total the check did not use.
+      money,
     );
   }
 
@@ -898,21 +905,83 @@ export class MobileBookingHandler {
     });
   }
 
+  /**
+   * What a booking is worth, from the quote if it can be had and from the
+   * booking's own columns if it cannot.
+   *
+   * THE BUG THIS EXISTS FOR. `read` and `recordPayment` both asked the quote
+   * handler to price the booking again, and that handler resolves every
+   * service against the LIVE catalogue and throws `Unknown service` for one
+   * it cannot find. So a booking that already exists, with money owed on it,
+   * answered `404 BOOKING_NOT_FOUND` to both "show me my booking" and "here
+   * is the payment" — the customer could neither see it nor pay for it, and
+   * the message named a service rather than saying the price could not be
+   * worked out.
+   *
+   * A service stops resolving for ordinary reasons: it is retired, renamed,
+   * moved between branches, or the request reached us without the tenant the
+   * catalogue lookup needs. None of those should make a booking unreadable.
+   *
+   * THE FALLBACK IS WHAT THE CUSTOMER AGREED TO. `net/tax/discount` are the
+   * breakdown stored at creation, and create verified them against the quote
+   * before writing them, so the two agree wherever both exist. The deposit
+   * comes from `deposit_fils`, which is the bar the ladder set for THIS
+   * booking — better than a fresh quote's, which could have moved since.
+   *
+   * NULL WHEN EVEN THAT IS ABSENT, never a guess. `price_fils` is the NET
+   * total with no VAT in it; reporting it as the total would understate
+   * every figure by the tax, and understating what someone owes is worse
+   * than admitting the number is unavailable.
+   */
+  private async moneyFor(b: StoredMoney & QuotableBooking): Promise<BookingMoney> {
+    try {
+      const quote = await this.quoteFor(b);
+      return {
+        subtotalFils: quote.subtotalMinor,
+        vatFils: quote.vatMinor,
+        discountFils: quote.tierDiscountMinor + quote.bundleDiscountMinor,
+        totalFils: quote.totalMinor,
+        depositFils: quote.depositMinor,
+        priced: true,
+      };
+    } catch (e) {
+      const net = b.netFils;
+      // The arithmetic lives in the domain with its own spec, not inline
+      // here: it decides what a customer is told they owe (CLAUDE.md 1, 4).
+      const total = storedTotalFils(b);
+
+      MobileBookingHandler.log.warn(
+        `Booking ${b.id}: no quote (${
+          e instanceof Error ? e.message : String(e)
+        }); ${total === null ? 'and no stored breakdown either' : 'falling back to the stored breakdown'}.`,
+      );
+
+      return {
+        subtotalFils: net,
+        vatFils: b.taxFils ?? 0,
+        discountFils: b.discountFils ?? 0,
+        totalFils: total,
+        // The row's own requirement, which is what confirm actually enforced.
+        depositFils: b.depositFils,
+        priced: false,
+      };
+    }
+  }
+
   /** §8, read back from what was actually stored. */
   async present(
     cmd: Pick<MobileBookingCommand, 'salonId' | 'promoCode'>,
     bookingId: string,
     linkExpiresAt: string | null,
     /**
-     * THE MONEY COMES FROM THE QUOTE, not the booking row.
+     * THE MONEY, however it was arrived at.
      *
-     * `booking.price_fils` is the NET total and the only money on the row;
-     * tax and discount are computed, not stored. Re-deriving them here from
-     * the price would be a second copy of the arithmetic that could disagree
-     * with what was charged, so the figures the app receives are the ones
-     * the quote produced and the confirm was checked against.
+     * Was a raw quote. It is now `moneyFor`'s shape, because a booking whose
+     * service the catalogue can no longer price must still be readable: this
+     * endpoint used to answer 404 for one, naming the service, which left a
+     * customer unable to see or pay a booking that plainly existed.
      */
-    quote: Awaited<ReturnType<GetQuoteHandler['execute']>>,
+    money: BookingMoney,
   ): Promise<unknown> {
     const b = await this.bookings.detail(bookingId);
     if (b === null) throw new NotFoundException('No such booking');
@@ -1005,10 +1074,11 @@ export class MobileBookingHandler {
         name: names.get(id)?.name ?? null,
         avatar_url: names.get(id)?.avatar ?? null,
       })),
-      amount_without_tax: filsToAed(quote.subtotalMinor),
-      tax_amount: filsToAed(quote.vatMinor),
-      discount: filsToAed(quote.tierDiscountMinor + quote.bundleDiscountMinor),
-      total: filsToAed(quote.totalMinor),
+      amount_without_tax:
+        money.subtotalFils === null ? null : filsToAed(money.subtotalFils),
+      tax_amount: filsToAed(money.vatFils),
+      discount: filsToAed(money.discountFils),
+      total: money.totalFils === null ? null : filsToAed(money.totalFils),
       promo_code: cmd.promoCode,
       /**
        * WHAT WAS ACTUALLY TAKEN, from the ledger.
@@ -1021,7 +1091,10 @@ export class MobileBookingHandler {
        * derived from.
        */
       advance_paid_amount: filsToAed(captured),
-      due_amount: filsToAed(Math.max(0, quote.totalMinor - captured)),
+      due_amount:
+        money.totalFils === null
+          ? null
+          : filsToAed(Math.max(0, money.totalFils - captured)),
       payment_status: toMobilePaymentStatus(b.paymentStatus),
       payment_status_detail: b.paymentStatus.toUpperCase(),
       payment_method: railToMethod(paidRail),
