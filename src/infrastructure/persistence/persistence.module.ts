@@ -4,6 +4,7 @@ import { TenantContext } from '../tenancy/tenant-context';
 import { BranchContext } from '../tenancy/branch-context';
 import { IdempotencyRepository } from './idempotency.repository';
 import { DeskExtrasRepository } from './desk-extras.repository';
+import { MobilePaymentRepository } from './mobile-payment.repository';
 import { ConfirmAskSweeper } from '../scheduling/confirm-ask-sweeper.service';
 import { RiskFlagSweeper } from '../scheduling/risk-flag-sweeper.service';
 import { OutboxRelay } from '../messaging/outbox-relay.service';
@@ -51,6 +52,7 @@ import { StylistRepository } from './stylist.repository';
     BranchContext,
     IdempotencyRepository,
     DeskExtrasRepository,
+    MobilePaymentRepository,
     ConfirmAskSweeper,
     RiskFlagSweeper,
     WalkInRepository,
@@ -126,6 +128,7 @@ import { StylistRepository } from './stylist.repository';
     BranchContext,
     IdempotencyRepository,
     DeskExtrasRepository,
+    MobilePaymentRepository,
     ConfirmAskSweeper,
     RiskFlagSweeper,
     WalkInRepository,

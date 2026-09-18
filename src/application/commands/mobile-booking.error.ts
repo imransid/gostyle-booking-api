@@ -33,7 +33,12 @@ export type MobileErrorCode =
   // rather than half-supporting.
   | 'products_not_supported'
   | 'routine_not_supported'
-  | 'stylist_required';
+  | 'stylist_required'
+  // §11
+  | 'already_paid'
+  | 'deposit_too_low'
+  | 'missing_payment_reference'
+  | 'booking_expired';
 
 export interface MobileFieldError {
   readonly field: string;
@@ -82,6 +87,36 @@ export class MobileContractError extends Error {
   static slotTaken(message: string): MobileContractError {
     return new MobileContractError(
       [{ field: 'start_time', code: 'slot_taken', message }],
+      409,
+    );
+  }
+
+  /**
+   * §10.1: a booking the caller may not see is 404, never 403.
+   *
+   * A 403 confirms the id exists, which is precisely what someone
+   * enumerating ids wants to learn. "No such booking" and "not yours" have
+   * to be indistinguishable from outside.
+   */
+  static notFoundBooking(): MobileContractError {
+    return new MobileContractError(
+      [{ field: 'id', code: 'not_found', message: 'No such booking.' }],
+      404,
+    );
+  }
+
+  /** §11.1: only from DRAFT. Refunds and top-ups are their own endpoints. */
+  static alreadyPaid(message: string): MobileContractError {
+    return new MobileContractError(
+      [{ field: 'payment_status', code: 'already_paid', message }],
+      409,
+    );
+  }
+
+  /** §11.7: the draft hold ran out before the gateway answered. */
+  static bookingExpired(message: string): MobileContractError {
+    return new MobileContractError(
+      [{ field: 'id', code: 'booking_expired', message }],
       409,
     );
   }

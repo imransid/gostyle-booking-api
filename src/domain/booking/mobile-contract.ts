@@ -261,3 +261,218 @@ export function stylistsLineUp(
 ): boolean {
   return stylists.length === 1 || stylists.length === services.length;
 }
+
+// ------------------------------------------------------------ §11 payment
+
+/** The methods §11 accepts. */
+export type MobilePaymentMethod =
+  'WALLET' | 'CARD' | 'GOOGLE' | 'APPLE' | 'OTHERS';
+
+/**
+ * Method to rail, both ways.
+ *
+ * `google_pay` and `other` were added to the enum for this: the §8 read has
+ * to give the method back as it was recorded, and folding GOOGLE into `card`
+ * would put the wrong one on a receipt.
+ */
+const METHOD_TO_RAIL: Readonly<Record<MobilePaymentMethod, string>> = {
+  WALLET: 'wallet',
+  CARD: 'card',
+  GOOGLE: 'google_pay',
+  APPLE: 'apple_pay',
+  OTHERS: 'other',
+};
+
+const RAIL_TO_METHOD: Readonly<Record<string, MobilePaymentMethod>> = {
+  wallet: 'WALLET',
+  card: 'CARD',
+  google_pay: 'GOOGLE',
+  apple_pay: 'APPLE',
+  other: 'OTHERS',
+  // A booking paid at a desk or moved internally has no mobile method; the
+  // app renders null rather than a word its enum does not contain.
+  cash: 'OTHERS',
+};
+
+export function methodToRail(method: MobilePaymentMethod): string {
+  return METHOD_TO_RAIL[method];
+}
+
+export function railToMethod(rail: string | null): MobilePaymentMethod | null {
+  return rail === null ? null : (RAIL_TO_METHOD[rail] ?? null);
+}
+
+/** The states §11 may move a booking into. Never back to DRAFT. */
+export type PatchTarget = 'PARTIALLY' | 'FULLY_PAID' | 'PAY_AFTER_CHECK_IN';
+
+export type PatchRefusalCode =
+  | 'invalid_payment_status'
+  | 'amount_mismatch'
+  | 'deposit_too_low'
+  | 'missing_payment_reference';
+
+export interface PatchRefusal {
+  readonly code: PatchRefusalCode;
+  readonly field: string;
+  readonly message: string;
+  readonly expected?: number;
+}
+
+export interface PatchInput {
+  readonly target: string;
+  readonly method: MobilePaymentMethod | null;
+  readonly advancePaidFils: number;
+  readonly dueFils: number | null;
+  readonly reference: string | null;
+  /** What the booking is actually worth, from the row. */
+  readonly totalFils: number;
+  /** The deposit the ladder required. 0 when none was. */
+  readonly requiredDepositFils: number;
+}
+
+/**
+ * §11's rules, in the order a caller hits them.
+ *
+ * ALL OF IT DERIVED FROM THE BOOKING, never trusted from the payload. The
+ * amount is checked against the stored total and the stored requirement, so
+ * a client that sends the right status with the wrong number is refused
+ * rather than recorded.
+ *
+ * Returns the refusal; the caller decides the HTTP status. This file does
+ * not know HTTP exists.
+ */
+export function checkPatch(input: PatchInput): PatchRefusal | null {
+  if (
+    input.target !== 'PARTIALLY' &&
+    input.target !== 'FULLY_PAID' &&
+    input.target !== 'PAY_AFTER_CHECK_IN'
+  ) {
+    return {
+      code: 'invalid_payment_status',
+      field: 'payment_status',
+      message:
+        'payment_status must be PARTIALLY, FULLY_PAID or PAY_AFTER_CHECK_IN. ' +
+        'A booking never goes back to DRAFT.',
+    };
+  }
+
+  // Nothing to pay now, by arrangement. Money must not have moved.
+  if (input.target === 'PAY_AFTER_CHECK_IN') {
+    if (input.advancePaidFils !== 0) {
+      return {
+        code: 'amount_mismatch',
+        field: 'advance_paid_amount',
+        message: 'PAY_AFTER_CHECK_IN means nothing was taken now.',
+        expected: 0,
+      };
+    }
+    return null;
+  }
+
+  // §11.2: a method is required whenever money moved.
+  if (input.method === null) {
+    return {
+      code: 'missing_payment_reference',
+      field: 'payment_method',
+      message: 'payment_method is required unless PAY_AFTER_CHECK_IN.',
+    };
+  }
+
+  if (input.advancePaidFils <= 0) {
+    return {
+      code: 'amount_mismatch',
+      field: 'advance_paid_amount',
+      message: 'Money moved, so advance_paid_amount must be more than zero.',
+    };
+  }
+
+  /**
+   * MORE THAN THE BOOKING IS WORTH -- beyond the rounding tolerance.
+   *
+   * A bare `>` refused a payment one fil over the total, which is exactly
+   * the drift `amountsAgree` exists to absorb: the client rounds per line
+   * and the server once at the end, so a correct gateway can land a fil
+   * high on a percentage split. Refusing that would bounce a real payment.
+   */
+  if (
+    input.advancePaidFils > input.totalFils &&
+    !amountsAgree(input.totalFils, input.advancePaidFils)
+  ) {
+    return {
+      code: 'amount_mismatch',
+      field: 'advance_paid_amount',
+      message: 'More was taken than this booking is worth.',
+      expected: filsToAed(input.totalFils),
+    };
+  }
+
+  if (
+    input.target === 'FULLY_PAID' &&
+    !amountsAgree(input.totalFils, input.advancePaidFils)
+  ) {
+    return {
+      code: 'amount_mismatch',
+      field: 'advance_paid_amount',
+      message: 'FULLY_PAID means the whole total was taken.',
+      expected: filsToAed(input.totalFils),
+    };
+  }
+
+  /**
+   * A DEPOSIT HAS TO CLEAR THE BAR THE LADDER SET.
+   *
+   * Only for PARTIALLY: a full payment satisfies any deposit rule by
+   * definition, and checking it there would refuse a customer for paying
+   * too much.
+   */
+  if (
+    input.target === 'PARTIALLY' &&
+    input.requiredDepositFils > 0 &&
+    input.advancePaidFils < input.requiredDepositFils
+  ) {
+    return {
+      code: 'deposit_too_low',
+      field: 'advance_paid_amount',
+      message: 'That is less than the deposit this booking requires.',
+      expected: filsToAed(input.requiredDepositFils),
+    };
+  }
+
+  // §11.2: due_amount is derived, and verified when sent.
+  if (
+    input.dueFils !== null &&
+    !amountsAgree(input.totalFils - input.advancePaidFils, input.dueFils)
+  ) {
+    return {
+      code: 'amount_mismatch',
+      field: 'due_amount',
+      message: 'due_amount is total minus advance_paid_amount.',
+      expected: filsToAed(input.totalFils - input.advancePaidFils),
+    };
+  }
+
+  // §11.3: the gateway's own id, whenever money moved.
+  if (input.reference === null || input.reference.trim() === '') {
+    return {
+      code: 'missing_payment_reference',
+      field: 'payment_reference',
+      message: 'payment_reference is required whenever money moved.',
+    };
+  }
+
+  return null;
+}
+
+/** What the booking's payment_status becomes. */
+export function paymentStatusAfterPatch(
+  target: PatchTarget,
+): 'deposit_paid' | 'fully_paid' | 'none_required' {
+  switch (target) {
+    case 'PARTIALLY':
+      return 'deposit_paid';
+    case 'FULLY_PAID':
+      return 'fully_paid';
+    case 'PAY_AFTER_CHECK_IN':
+      return 'none_required';
+  }
+}

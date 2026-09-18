@@ -3,6 +3,9 @@ import {
   Controller,
   Headers,
   HttpCode,
+  Get,
+  Param,
+  Patch,
   Post,
   UsePipes,
   UseInterceptors,
@@ -10,6 +13,9 @@ import {
 import {
   ApiCreatedResponse,
   ApiHeader,
+  ApiConflictResponse,
+  ApiNotFoundResponse,
+  ApiOkResponse,
   ApiOperation,
   ApiProperty,
   ApiPropertyOptional,
@@ -32,6 +38,7 @@ import {
 import { MobileBookingHandler } from '@application/commands/mobile-booking.handler';
 import { IdempotentInterceptor } from './idempotent.interceptor';
 import { mobileValidationPipe } from './mobile-validation.pipe';
+import type { MobilePaymentMethod } from '@domain/booking/mobile-contract';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
 
@@ -154,6 +161,51 @@ export class MobileBookingDto {
   booking_type!: string;
 }
 
+export class MobilePaymentDto {
+  @ApiProperty({
+    enum: ['PARTIALLY', 'FULLY_PAID', 'PAY_AFTER_CHECK_IN'],
+    description: 'Never back to DRAFT (§11.1).',
+  })
+  @IsString()
+  payment_status!: string;
+
+  @ApiPropertyOptional({
+    enum: ['WALLET', 'CARD', 'GOOGLE', 'APPLE', 'OTHERS'],
+    description: 'Required unless PAY_AFTER_CHECK_IN.',
+  })
+  @IsOptional()
+  @IsIn(['WALLET', 'CARD', 'GOOGLE', 'APPLE', 'OTHERS'])
+  payment_method?: MobilePaymentMethod;
+
+  @ApiProperty({
+    example: 54.07,
+    description: 'What the gateway actually took.',
+  })
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  advance_paid_amount!: number;
+
+  @ApiPropertyOptional({
+    example: 162.18,
+    description: 'Derived as total - advance_paid_amount; verified when sent.',
+  })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  due_amount?: number;
+
+  @ApiPropertyOptional({
+    example: 'pi_3Qk2xLJ8n',
+    description:
+      'The gateway\u2019s own id. Required whenever money moved, and UNIQUE: ' +
+      'the same reference twice returns the same booking rather than ' +
+      'recording a second payment (§11.3).',
+  })
+  @IsOptional()
+  @IsString()
+  payment_reference?: string;
+}
+
 /**
  * The mobile app's one-call create.
  *
@@ -232,6 +284,67 @@ export class MobileBookingController {
       // From the verified token, never the body (§1).
       customerId: actor.id ?? 'anonymous',
       idempotencyKey,
+    });
+  }
+
+  @Get(':id')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Read one booking',
+    description:
+      'The §8 shape, whatever state the booking is in, so the confirmation ' +
+      'screen, the pass and the history all read the same object. A booking ' +
+      'the caller may not see is 404, NEVER 403 — a 403 confirms the id ' +
+      'exists, which is what an enumerator is trying to learn.',
+  })
+  @ApiOkResponse({ description: 'The booking, in the §8 shape.' })
+  @ApiNotFoundResponse({
+    description: 'No such booking, or not the caller\u2019s.',
+  })
+  read(
+    @Param('id') id: string,
+    @CurrentActor() actor: Actor,
+  ): Promise<unknown> {
+    return this.handler.read({
+      bookingId: id,
+      actorId: actor.id ?? 'anonymous',
+      actorKind: actor.kind,
+      // Null means every branch, which is what a company owner carries.
+      actorBranchId: actor.branchId,
+    });
+  }
+
+  @Patch(':id')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Record the payment',
+    description:
+      'Called once the gateway answers. Writes the ledger entry, moves the ' +
+      'payment state and CLEARS the draft hold window in one transaction — ' +
+      'a payment recorded without clearing it leaves the sweeper free to ' +
+      'expire a booking that has been paid for. Only from DRAFT; anything ' +
+      'else is 409 already_paid. The same payment_reference twice returns ' +
+      'the same booking rather than recording a second payment.',
+  })
+  @ApiOkResponse({ description: 'Recorded. The full booking, §8 shape.' })
+  @ApiConflictResponse({
+    description: 'Already paid, or the draft hold expired.',
+  })
+  pay(
+    @Param('id') id: string,
+    @Body() dto: MobilePaymentDto,
+    @CurrentActor() actor: Actor,
+  ): Promise<unknown> {
+    return this.handler.recordPayment({
+      bookingId: id,
+      actorId: actor.id ?? 'anonymous',
+      actorKind: actor.kind,
+      actorBranchId: actor.branchId,
+      paymentStatus: dto.payment_status,
+      paymentMethod: dto.payment_method ?? null,
+      advancePaidAmount: dto.advance_paid_amount,
+      dueAmount: dto.due_amount ?? null,
+      paymentReference: dto.payment_reference ?? null,
     });
   }
 }

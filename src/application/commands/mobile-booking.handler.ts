@@ -11,11 +11,19 @@ import { BookingRepository } from '@infrastructure/persistence/booking.repositor
 import {
   BRANCH_UTC_OFFSET_MIN,
   branchInstant,
+  toUuid,
 } from '@infrastructure/persistence/hold.repository';
+import { MobilePaymentRepository } from '@infrastructure/persistence/mobile-payment.repository';
 import { SlugIndex } from '@infrastructure/persistence/slug-uuid';
+import { DEFAULT_BRANCH_ID } from '@infrastructure/tenancy/branch-context';
 import {
   aedToFils,
   amountsAgree,
+  checkPatch,
+  methodToRail,
+  paymentStatusAfterPatch,
+  type MobilePaymentMethod,
+  type PatchTarget,
   dateAgreesWithStart,
   filsToAed,
   refuseUnsupported,
@@ -24,6 +32,7 @@ import {
   toMobilePaymentStatus,
   toMobileStatus,
   toOffsetIso,
+  railToMethod,
 } from '@domain/booking/mobile-contract';
 import {
   MobileContractError,
@@ -53,6 +62,9 @@ import { isBookingError } from '@application/contract/errors';
  * sweeper notices fifteen minutes later. That is a real slot the salon
  * cannot sell, caused by our error rather than the customer's.
  */
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface MobileBookingCommand {
   readonly salonId: string;
@@ -91,6 +103,7 @@ export class MobileBookingHandler {
     private readonly links: PaymentLinkHandler,
     private readonly quotes: GetQuoteHandler,
     private readonly bookings: BookingRepository,
+    private readonly payments: MobilePaymentRepository,
     @Inject(BOOKING_CONTEXT) private readonly context: BookingContextReader,
   ) {}
 
@@ -335,6 +348,187 @@ export class MobileBookingHandler {
     }
   }
 
+  /**
+   * §10: read one booking.
+   *
+   * 404, NEVER 403, for a booking the caller may not see. §10.1 is explicit
+   * and the reason is worth keeping: a 403 confirms that a booking id
+   * exists, which is exactly what someone enumerating ids is trying to
+   * learn. "No" and "not yours" have to be indistinguishable from outside.
+   */
+  async read(input: {
+    readonly bookingId: string;
+    readonly actorId: string;
+    readonly actorKind: string;
+    readonly actorBranchId: string | null;
+  }): Promise<unknown> {
+    const b = await this.visibleOrNotFound(input);
+
+    const quote = await this.quoteFor(b);
+
+    return this.present(
+      { salonId: b.branchId, promoCode: null },
+      b.id,
+      // §10.3: present while the draft hold is still running, gone once the
+      // booking is paid -- which is exactly when the column is cleared.
+      b.linkExpiresAt === null ? null : b.linkExpiresAt.toISOString(),
+      quote,
+    );
+  }
+
+  /**
+   * §11: record what the gateway took.
+   *
+   * The rules are in `checkPatch`; this resolves the inputs they need and
+   * turns the outcome into the contract's words.
+   */
+  async recordPayment(input: {
+    readonly bookingId: string;
+    readonly actorId: string;
+    readonly actorKind: string;
+    readonly actorBranchId: string | null;
+    readonly paymentStatus: string;
+    readonly paymentMethod: MobilePaymentMethod | null;
+    readonly advancePaidAmount: number;
+    readonly dueAmount: number | null;
+    readonly paymentReference: string | null;
+  }): Promise<unknown> {
+    const b = await this.visibleOrNotFound(input);
+
+    const advance = aedToFils(input.advancePaidAmount);
+    if (advance === null) {
+      throw MobileContractError.of(
+        'advance_paid_amount',
+        'amount_mismatch',
+        'Amounts are decimal with at most two places.',
+      );
+    }
+    const due = input.dueAmount === null ? null : aedToFils(input.dueAmount);
+    if (input.dueAmount !== null && due === null) {
+      throw MobileContractError.of(
+        'due_amount',
+        'amount_mismatch',
+        'Amounts are decimal with at most two places.',
+      );
+    }
+
+    const quote = await this.quoteFor(b);
+
+    const refusal = checkPatch({
+      target: input.paymentStatus,
+      method: input.paymentMethod,
+      advancePaidFils: advance,
+      dueFils: due,
+      reference: input.paymentReference,
+      totalFils: quote.totalMinor,
+      // The bar the ladder set for THIS booking, not a global minimum.
+      requiredDepositFils: quote.depositMinor,
+    });
+    if (refusal !== null) {
+      throw MobileContractError.of(
+        refusal.field,
+        refusal.code,
+        refusal.message,
+        refusal.expected,
+      );
+    }
+
+    const target = input.paymentStatus as PatchTarget;
+    const outcome = await this.payments.record({
+      bookingId: b.id,
+      customerId: input.actorId,
+      amountFils: advance,
+      rail: (input.paymentMethod === null
+        ? 'internal'
+        : methodToRail(input.paymentMethod)) as never,
+      reference: input.paymentReference,
+      paymentStatus: paymentStatusAfterPatch(target),
+    });
+
+    switch (outcome.kind) {
+      case 'not_found':
+        throw MobileContractError.notFoundBooking();
+      case 'already_paid':
+        throw MobileContractError.alreadyPaid(
+          `This booking is already ${outcome.paymentStatus}. Refunds and ` +
+            'top-ups are their own endpoints.',
+        );
+      case 'expired':
+        throw MobileContractError.bookingExpired(
+          'The draft hold expired before the payment was recorded.',
+        );
+      case 'replayed':
+      case 'recorded':
+        break;
+    }
+
+    return this.present(
+      { salonId: b.branchId, promoCode: null },
+      b.id,
+      // Paid, so the draft window is gone (§10.3, §11.4).
+      null,
+      quote,
+    );
+  }
+
+  /**
+   * §10.1: the customer who owns it, or staff of the salon it belongs to.
+   *
+   * EVERYTHING ELSE IS 404, INCLUDING "not yours". A 403 confirms the id
+   * exists, which is exactly what someone walking the id space is trying to
+   * learn -- so "no such booking" and "not yours" have to be
+   * indistinguishable from outside.
+   *
+   * A malformed id is 404 for the same reason, and because the alternative
+   * is a 500 from the uuid cast.
+   *
+   * THE BRANCH IS CHECKED, not just the actor kind. The first version let
+   * ANY staff token read ANY booking, which is a different salon's diary.
+   * A null branchId on the token means all branches -- that is what a
+   * company owner carries, and it is deliberate.
+   */
+  private async visibleOrNotFound(input: {
+    readonly bookingId: string;
+    readonly actorId: string;
+    readonly actorKind: string;
+    readonly actorBranchId: string | null;
+  }): Promise<NonNullable<Awaited<ReturnType<BookingRepository['detail']>>>> {
+    const b = UUID_RE.test(input.bookingId)
+      ? await this.bookings.detail(input.bookingId)
+      : null;
+    if (b === null) throw MobileContractError.notFoundBooking();
+
+    const visible =
+      input.actorKind === 'customer'
+        ? b.customerId === toUuid(input.actorId)
+        : input.actorBranchId === null ||
+          b.branchId === toUuid(input.actorBranchId);
+
+    if (!visible) throw MobileContractError.notFoundBooking();
+    return b;
+  }
+
+  /**
+   * The money a booking is worth, recomputed.
+   *
+   * The row stores a NET price and nothing else; tax, discount and the
+   * deposit requirement are computed. Re-deriving them from the price here
+   * would be a second copy of the arithmetic that could disagree with what
+   * was charged, so both reads go back through the quote handler.
+   */
+  private async quoteFor(
+    b: NonNullable<Awaited<ReturnType<BookingRepository['detail']>>>,
+  ): Promise<Awaited<ReturnType<GetQuoteHandler['execute']>>> {
+    return this.quotes.execute({
+      branchId: b.branchId,
+      tradingDay: b.tradingDay.toISOString().slice(0, 10),
+      serviceIds: b.items.map((i) => i.serviceId),
+      customerId: b.customerId,
+      channel: 'online',
+      startMin: b.startMinute,
+    });
+  }
+
   /** §8, read back from what was actually stored. */
   async present(
     cmd: Pick<MobileBookingCommand, 'salonId' | 'promoCode'>,
@@ -357,6 +551,17 @@ export class MobileBookingHandler {
     const day = b.tradingDay.toISOString().slice(0, 10);
     const endMin = b.startMinute + b.durationMin;
 
+    /**
+     * The captures, and the rail the last one came in on.
+     *
+     * `captured` only -- a refund or a forfeit is money leaving again, and
+     * `advance_paid_amount` is what the customer HANDED OVER. The two are
+     * different questions and the ledger keeps both.
+     */
+    const captures = b.ledger.filter((l) => l.entryType === 'captured');
+    const captured = captures.reduce((n, l) => n + l.amountFils, 0);
+    const paidRail = captures[captures.length - 1]?.rail ?? null;
+
     // The roster speaks slugs and the columns hold the folded uuid, so every
     // id going back out is spelled the way the app sent it in (CLAUDE.md 8).
     let names = new Map<string, { name: string; avatar: string | null }>();
@@ -369,9 +574,23 @@ export class MobileBookingHandler {
       // Staff AND services: the app sent "haircut-finish" and must get
       // "haircut-finish" back, not the folded uuid the column holds
       // (CLAUDE.md 8).
+      /**
+       * THE SALON IS IN HERE TOO.
+       *
+       * `booking.branch_id` holds toUuid('marina-walk'), and the read was
+       * publishing that hash while `services[].id` and `stylists[].id` came
+       * back as slugs -- three ids on one payload, two spellings, which is
+       * the trap CLAUDE.md 8 is about.
+       *
+       * DEFAULT_BRANCH_ID is the only branch that exists (see
+       * get-settings.handler: there is no branch table yet). SlugIndex
+       * passes through anything it does not recognise, so this resolves the
+       * one real salon today and is harmless the day there are more.
+       */
       index = new SlugIndex([
         ...ctx.professionals.map((p) => p.id),
         ...catalogue.map((c) => c.id),
+        DEFAULT_BRANCH_ID,
       ]);
       names = new Map(
         ctx.professionals.map((p) => [p.id, { name: p.name, avatar: null }]),
@@ -391,7 +610,7 @@ export class MobileBookingHandler {
 
     return {
       id: b.id,
-      salon_id: cmd.salonId,
+      salon_id: index.toSlug(cmd.salonId),
       status: toMobileStatus(b.status),
       /**
        * OUR OWN WORD, ALONGSIDE. `BOOKED` covers both states that mean
@@ -422,11 +641,21 @@ export class MobileBookingHandler {
       discount: filsToAed(quote.tierDiscountMinor + quote.bundleDiscountMinor),
       total: filsToAed(quote.totalMinor),
       promo_code: cmd.promoCode,
-      advance_paid_amount: 0,
-      due_amount: filsToAed(quote.totalMinor),
+      /**
+       * WHAT WAS ACTUALLY TAKEN, from the ledger.
+       *
+       * These were hardcoded to 0 / total / null, which is right on create
+       * and wrong on every read after a payment: §11 responds in the §8
+       * shape, so a booking the customer had just paid AED 54.07 for came
+       * back saying nothing was paid and the full amount was due. The
+       * ledger is the only record of what moved, so it is what these are
+       * derived from.
+       */
+      advance_paid_amount: filsToAed(captured),
+      due_amount: filsToAed(Math.max(0, quote.totalMinor - captured)),
       payment_status: toMobilePaymentStatus(b.paymentStatus),
       payment_status_detail: b.paymentStatus.toUpperCase(),
-      payment_method: null,
+      payment_method: railToMethod(paidRail),
       /** §6: the server issues it, and it is the booking's own code. */
       pass_qr_code: b.code,
       /** §10.3: present while the draft hold is running, gone once paid. */

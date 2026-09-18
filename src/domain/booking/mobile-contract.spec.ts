@@ -9,6 +9,10 @@ import {
   stylistsLineUp,
   toBranchMoment,
   toOffsetIso,
+  methodToRail,
+  railToMethod,
+  checkPatch,
+  paymentStatusAfterPatch,
   toMobilePaymentStatus,
   toMobileStatus,
 } from './mobile-contract';
@@ -271,5 +275,219 @@ describe('toOffsetIso', () => {
     expect(toOffsetIso(new Date('2026-09-20T16:00:00Z'), 330)).toBe(
       '2026-09-20T21:30:00+05:30',
     );
+  });
+});
+
+describe('payment method <-> rail', () => {
+  it('round-trips every method the contract lists', () => {
+    for (const m of ['WALLET', 'CARD', 'GOOGLE', 'APPLE', 'OTHERS'] as const) {
+      expect(railToMethod(methodToRail(m)), m).toBe(m);
+    }
+  });
+
+  it('keeps GOOGLE distinct from CARD', () => {
+    // The reason the enum was widened. Folding GOOGLE into card returns the
+    // wrong method on the §8 read and in a dispute.
+    expect(methodToRail('GOOGLE')).toBe('google_pay');
+    expect(methodToRail('CARD')).toBe('card');
+    expect(railToMethod('google_pay')).toBe('GOOGLE');
+  });
+
+  it('gives null for a rail the app has no word for', () => {
+    expect(railToMethod('link')).toBeNull();
+    expect(railToMethod('internal')).toBeNull();
+    expect(railToMethod(null)).toBeNull();
+  });
+});
+
+describe('checkPatch', () => {
+  const base = {
+    target: 'PARTIALLY' as const,
+    method: 'CARD' as const,
+    advancePaidFils: 5000,
+    dueFils: null,
+    reference: 'pi_3Qk2xLJ8n',
+    totalFils: 16800,
+    requiredDepositFils: 0,
+  };
+
+  it('accepts a well-formed deposit', () => {
+    expect(checkPatch(base)).toBeNull();
+  });
+
+  it('accepts a full payment', () => {
+    expect(
+      checkPatch({ ...base, target: 'FULLY_PAID', advancePaidFils: 16800 }),
+    ).toBeNull();
+  });
+
+  it('refuses a move back to DRAFT', () => {
+    expect(checkPatch({ ...base, target: 'DRAFT' })?.code).toBe(
+      'invalid_payment_status',
+    );
+  });
+
+  it('refuses an unknown status rather than ignoring it', () => {
+    expect(checkPatch({ ...base, target: 'FAILED' })?.code).toBe(
+      'invalid_payment_status',
+    );
+  });
+
+  describe('PAY_AFTER_CHECK_IN', () => {
+    const later = {
+      ...base,
+      target: 'PAY_AFTER_CHECK_IN' as const,
+      advancePaidFils: 0,
+      method: null,
+      reference: null,
+    };
+
+    it('needs no method and no reference', () => {
+      expect(checkPatch(later)).toBeNull();
+    });
+
+    it('refuses money that moved anyway', () => {
+      const r = checkPatch({ ...later, advancePaidFils: 100 });
+      expect(r?.code).toBe('amount_mismatch');
+      expect(r?.expected).toBe(0);
+    });
+  });
+
+  it('requires a method whenever money moved', () => {
+    expect(checkPatch({ ...base, method: null })?.code).toBe(
+      'missing_payment_reference',
+    );
+  });
+
+  it('requires a reference whenever money moved', () => {
+    expect(checkPatch({ ...base, reference: null })?.code).toBe(
+      'missing_payment_reference',
+    );
+    expect(checkPatch({ ...base, reference: '   ' })?.code).toBe(
+      'missing_payment_reference',
+    );
+  });
+
+  it('refuses taking more than the booking is worth', () => {
+    const r = checkPatch({ ...base, advancePaidFils: 20000 });
+    expect(r?.code).toBe('amount_mismatch');
+    expect(r?.expected).toBe(168);
+  });
+
+  it('refuses zero or negative money on a paid status', () => {
+    expect(checkPatch({ ...base, advancePaidFils: 0 })?.code).toBe(
+      'amount_mismatch',
+    );
+    expect(checkPatch({ ...base, advancePaidFils: -1 })?.code).toBe(
+      'amount_mismatch',
+    );
+  });
+
+  it('refuses FULLY_PAID that does not cover the total', () => {
+    const r = checkPatch({
+      ...base,
+      target: 'FULLY_PAID',
+      advancePaidFils: 5000,
+    });
+    expect(r?.code).toBe('amount_mismatch');
+    expect(r?.expected).toBe(168);
+  });
+
+  it('allows FULLY_PAID a fil either way', () => {
+    expect(
+      checkPatch({ ...base, target: 'FULLY_PAID', advancePaidFils: 16801 }),
+    ).toBeNull();
+  });
+
+  describe('the deposit bar', () => {
+    const withRule = { ...base, requiredDepositFils: 8400 };
+
+    it('refuses a deposit below what the ladder required', () => {
+      const r = checkPatch({ ...withRule, advancePaidFils: 5000 });
+      expect(r?.code).toBe('deposit_too_low');
+      expect(r?.expected).toBe(84);
+    });
+
+    it('accepts one that clears it', () => {
+      expect(checkPatch({ ...withRule, advancePaidFils: 8400 })).toBeNull();
+    });
+
+    it('does NOT apply the bar to a full payment', () => {
+      // Paying everything satisfies any deposit rule. Checking it here
+      // would refuse a customer for paying too much.
+      expect(
+        checkPatch({
+          ...withRule,
+          target: 'FULLY_PAID',
+          advancePaidFils: 16800,
+        }),
+      ).toBeNull();
+    });
+  });
+
+  describe('due_amount, when sent', () => {
+    it('accepts the derived figure', () => {
+      expect(checkPatch({ ...base, dueFils: 16800 - 5000 })).toBeNull();
+    });
+
+    it('refuses one that disagrees, and says the right number', () => {
+      const r = checkPatch({ ...base, dueFils: 1 });
+      expect(r?.code).toBe('amount_mismatch');
+      expect(r?.field).toBe('due_amount');
+      expect(r?.expected).toBe(118);
+    });
+
+    it('is optional', () => {
+      expect(checkPatch({ ...base, dueFils: null })).toBeNull();
+    });
+  });
+});
+
+describe('paymentStatusAfterPatch', () => {
+  it('maps the three targets onto stored states', () => {
+    expect(paymentStatusAfterPatch('PARTIALLY')).toBe('deposit_paid');
+    expect(paymentStatusAfterPatch('FULLY_PAID')).toBe('fully_paid');
+    expect(paymentStatusAfterPatch('PAY_AFTER_CHECK_IN')).toBe('none_required');
+  });
+
+  it('round-trips back to the app’s word', () => {
+    for (const t of [
+      'PARTIALLY',
+      'FULLY_PAID',
+      'PAY_AFTER_CHECK_IN',
+    ] as const) {
+      expect(toMobilePaymentStatus(paymentStatusAfterPatch(t))).toBe(t);
+    }
+  });
+});
+
+describe('checkPatch reports every figure in decimal AED', () => {
+  /**
+   * The bug this pins: `expected` was returning fils on two branches and
+   * AED on the others, so the app would have shown "expected 16800" as a
+   * price on exactly the two refusals a customer is most likely to see.
+   */
+  const base = {
+    target: 'PARTIALLY' as const,
+    method: 'CARD' as const,
+    advancePaidFils: 5000,
+    dueFils: null,
+    reference: 'pi_x',
+    totalFils: 16800,
+    requiredDepositFils: 0,
+  };
+
+  it.each([
+    ['over the total', { advancePaidFils: 99_999 }],
+    ['FULLY_PAID short', { target: 'FULLY_PAID' as const, advancePaidFils: 1 }],
+    ['deposit too low', { requiredDepositFils: 8400, advancePaidFils: 100 }],
+    ['due wrong', { dueFils: 1 }],
+  ])('%s reports AED, never fils', (_label, patch) => {
+    const r = checkPatch({ ...base, ...patch });
+    expect(r).not.toBeNull();
+    // Every figure this contract publishes is decimal AED with at most two
+    // places; a fils value would be two orders of magnitude out.
+    expect(r!.expected).toBeLessThan(1000);
+    expect(aedToFils(r!.expected!)).not.toBeNull();
   });
 });

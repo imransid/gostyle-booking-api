@@ -414,6 +414,12 @@ enum PaymentRail {
   link
   internal
 
+  /// Added for the mobile contract's payment_method (booking-create.md §11),
+  /// which lists GOOGLE and OTHERS. Folding them into `card` would return the
+  /// wrong method on the §8 read and in a dispute.
+  google_pay
+  other
+
   @@map("payment_rail")
 }
 
