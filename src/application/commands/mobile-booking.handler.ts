@@ -518,15 +518,19 @@ export class MobileBookingHandler {
   }): Promise<unknown> {
     const b = await this.visibleOrNotFound(input);
 
-    return this.present(
-      { salonId: b.branchId, promoCode: null },
-      b.id,
-      // §10.3: present while the draft hold is still running, gone once the
-      // booking is paid -- which is exactly when the column is cleared.
-      b.linkExpiresAt === null ? null : b.linkExpiresAt.toISOString(),
-      // NOT quoteFor: a booking the catalogue can no longer price is still
-      // the customer's booking, and 404 is the wrong answer to "show it".
-      await this.moneyFor(b),
+    const money = await this.moneyFor(b);
+
+    // Scoped too: `present` resolves the staff and service names, and both
+    // of those lookups are tenant-scoped exactly as the catalogue is.
+    return this.inBookingTenant(b, () =>
+      this.present(
+        { salonId: b.branchId, promoCode: null },
+        b.id,
+        // §10.3: present while the draft hold is still running, gone once
+        // the booking is paid -- exactly when the column is cleared.
+        b.linkExpiresAt === null ? null : b.linkExpiresAt.toISOString(),
+        money,
+      ),
     );
   }
 
@@ -591,12 +595,28 @@ export class MobileBookingHandler {
      * day for each of twenty rows separately is twenty round trips to
      * render one screen.
      */
-    const branches = [...new Set(rows.map((b) => b.branchId))];
+    /**
+     * THE ROSTER IS TENANT-SCOPED TOO, and this is where that was missed.
+     * `moneyFor` was scoped to the booking's tenant and the names were not,
+     * so a list came back fully priced with every stylist called `null` --
+     * the roster lookup found nothing without a tenant, exactly as the
+     * catalogue did. Each branch is resolved under the tenant of a booking
+     * at that branch.
+     */
+    const byBranch = new Map<string, string | null>();
+    for (const b of rows) {
+      if (!byBranch.has(b.branchId)) byBranch.set(b.branchId, b.tenantId);
+    }
     const context = new Map(
       await Promise.all(
-        branches.map(
-          async (branchId) =>
-            [branchId, await this.branchNames(branchId)] as const,
+        [...byBranch].map(
+          async ([branchId, tenantId]) =>
+            [
+              branchId,
+              await this.inBookingTenant({ tenantId }, () =>
+                this.branchNames(branchId),
+              ),
+            ] as const,
         ),
       ),
     );
@@ -840,14 +860,16 @@ export class MobileBookingHandler {
         break;
     }
 
-    return this.present(
-      { salonId: b.branchId, promoCode: null },
-      b.id,
-      // Paid, so the draft window is gone (§10.3, §11.4).
-      null,
-      // The same figures the payment was just checked against, so the
-      // response cannot report a total the check did not use.
-      money,
+    return this.inBookingTenant(b, () =>
+      this.present(
+        { salonId: b.branchId, promoCode: null },
+        b.id,
+        // Paid, so the draft window is gone (§10.3, §11.4).
+        null,
+        // The same figures the payment was just checked against, so the
+        // response cannot report a total the check did not use.
+        money,
+      ),
     );
   }
 
