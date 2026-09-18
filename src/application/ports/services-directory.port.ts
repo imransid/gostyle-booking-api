@@ -12,7 +12,15 @@ export interface CatalogueService {
 }
 
 export interface ServicesDirectoryReader {
-  /** Every service a branch offers, for the customer-facing menu. */
+  /**
+   * Every service a branch offers.
+   *
+   * THROWS rather than answering [] when it could not ask. An empty array
+   * means the directory answered and the branch offers nothing; a
+   * transport failure is a DEPENDENCY_UNAVAILABLE naming the dependency.
+   * Callers must not read an empty result as an outage, or an outage as an
+   * empty result -- this answer prices bookings.
+   */
   listServices(
     tenantId: string,
     branchId: string,

@@ -6,6 +6,7 @@ import { SERVICES_DIRECTORY } from '@application/ports/services-directory.port';
 import { GrpcServicesDirectory } from './grpc-services-directory';
 import { SERVICES_DIRECTORY_CLIENT } from './services-grpc.constants';
 import { platformGrpcAddress } from './staff-grpc.constants';
+import { platformChannelOptions } from './channel-options';
 
 /**
  * Wires the services directory port to its gRPC adapter.
@@ -24,6 +25,10 @@ import { platformGrpcAddress } from './staff-grpc.constants';
           package: 'gostyle.services.v1',
           protoPath: join(process.cwd(), 'proto/services.proto'),
           url: platformGrpcAddress(),
+          // Clients are made at boot and held forever, so an idle
+          // connection dropped by a NAT or a load balancer is only
+          // discovered by a real request failing. See channel-options.ts.
+          channelOptions: platformChannelOptions(),
           loader: {
             // keepCase: true is NOT optional. Platform sets it, so fields
             // arrive as service_id. Without it here, proto-loader renames

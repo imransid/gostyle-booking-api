@@ -189,15 +189,21 @@ export class PlatformServiceCatalogue {
 
     if (found.length < wanted.length && catalogue.length === 0) {
       /**
-       * An empty catalogue is AMBIGUOUS and worth saying so. The gRPC
-       * adapter swallows its own errors and returns [] -- deliberately, so
-       * one dead panel does not take down a screen -- which means "platform
-       * is down" and "this branch sells nothing" arrive identically here.
+       * An empty catalogue now means EMPTY.
+       *
+       * It used to be ambiguous: the adapter swallowed its own errors and
+       * returned [], so "platform is down" and "this branch sells nothing"
+       * arrived here identically, and a customer was told `unknown_service`
+       * either way. The adapter refuses a transport failure now, so
+       * reaching this line means platform answered and had nothing to say.
+       *
+       * Still worth a warning -- a branch that sells nothing is usually a
+       * misconfigured branch id, not a real one.
        */
       PlatformServiceCatalogue.log.warn(
-        `Platform returned an EMPTY catalogue for branch ${branchId}. ` +
-          'That is either a branch with no services or an unreachable ' +
-          'platform; the services adapter logs which.',
+        `Platform answered with an EMPTY catalogue for branch ${branchId}. ` +
+          'The call succeeded, so this branch genuinely offers no services ' +
+          '-- most often a branch id that does not exist upstream.',
       );
     }
 
