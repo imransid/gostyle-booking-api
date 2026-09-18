@@ -43,6 +43,7 @@ import {
 import { PrismaService } from '@infrastructure/persistence/prisma.service';
 import { branchInstant } from '@infrastructure/persistence/hold.repository';
 import { Money } from '@domain/shared/money';
+import { priceOfService } from '@domain/booking/service-resolution';
 import { formatMinute } from '@domain/availability/grid';
 import { resolveSelection } from '@domain/booking/package';
 import { PACKAGES } from '@infrastructure/fixtures/fixture-booking-context';
@@ -161,7 +162,10 @@ export class ConfirmBookingHandler {
       serviceName: s.name,
       resourceType: s.resourceType,
       requiredSkill: s.skill,
-      priceFils: priceOf(s.id),
+      // THE AED 0.00 FIX. priceOf() returns zero for an id it does not know,
+      // and every platform uuid is such an id -- so this row, which is what
+      // the customer is charged, would have been written as zero.
+      priceFils: priceOfService(s, priceOf),
       durationMin: s.durationMin,
       staffId: reservation.staffId,
     }));

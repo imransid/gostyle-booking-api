@@ -5,6 +5,8 @@ import { BranchContext } from '../tenancy/branch-context';
 import { IdempotencyRepository } from './idempotency.repository';
 import { DeskExtrasRepository } from './desk-extras.repository';
 import { MobilePaymentRepository } from './mobile-payment.repository';
+import { PlatformServiceCatalogue } from './platform-service-catalogue';
+import { ServicesGrpcModule } from '../grpc/services-grpc.module';
 import { ConfirmAskSweeper } from '../scheduling/confirm-ask-sweeper.service';
 import { RiskFlagSweeper } from '../scheduling/risk-flag-sweeper.service';
 import { OutboxRelay } from '../messaging/outbox-relay.service';
@@ -47,12 +49,20 @@ import { StylistRepository } from './stylist.repository';
  */
 @Global()
 @Module({
+  /**
+   * PlatformServiceCatalogue injects SERVICES_DIRECTORY, which is provided
+   * and exported by ServicesGrpcModule. Without this import Nest cannot
+   * resolve it and the whole app fails at boot -- which tsc does not catch,
+   * because a Nest token is not a type.
+   */
+  imports: [ServicesGrpcModule],
   providers: [
     TenantContext,
     BranchContext,
     IdempotencyRepository,
     DeskExtrasRepository,
     MobilePaymentRepository,
+    PlatformServiceCatalogue,
     ConfirmAskSweeper,
     RiskFlagSweeper,
     WalkInRepository,
@@ -129,6 +139,7 @@ import { StylistRepository } from './stylist.repository';
     IdempotencyRepository,
     DeskExtrasRepository,
     MobilePaymentRepository,
+    PlatformServiceCatalogue,
     ConfirmAskSweeper,
     RiskFlagSweeper,
     WalkInRepository,

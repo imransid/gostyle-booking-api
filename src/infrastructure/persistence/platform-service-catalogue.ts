@@ -1,0 +1,242 @@
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  SERVICES_DIRECTORY,
+  type CatalogueService,
+  type ServicesDirectoryReader,
+} from '@application/ports/services-directory.port';
+import { TenantContext } from '../tenancy/tenant-context';
+import { bookingError } from '@application/contract/errors';
+import type { Service } from '@domain/availability/feasible';
+import {
+  looksLikePlatformId,
+  oneCurrency,
+} from '@domain/booking/service-resolution';
+
+/**
+ * Stage 1 of the slug-to-UUID migration: services from platform, slugs still
+ * accepted.
+ *
+ * WHAT THIS IS FOR. `BookingContextReader.loadServices` has always answered
+ * from a hard-coded fixture of thirteen slugs. The mobile app now sends real
+ * platform uuids, which resolve to nothing, so every booking is refused.
+ * This resolves a uuid from platform and leaves everything else on the
+ * fixture, so both work at once and we can see who is still sending slugs
+ * before stage 2 removes them.
+ *
+ * OFF BY DEFAULT. `SERVICES_FROM_PLATFORM=true` turns it on. With the flag
+ * off nothing changes at all: the fixture answers, exactly as before.
+ *
+ * WHAT IT DOES NOT TOUCH. Skills, shifts and chairs stay on the fixture.
+ * Those need data platform does not expose yet (see
+ * docs/api/PLATFORM-ASKS-BOOKING-CONTEXT.md), and swapping one of them
+ * halfway would be worse than not swapping it.
+ */
+
+export const SERVICES_FROM_PLATFORM = (): boolean =>
+  (process.env.SERVICES_FROM_PLATFORM ?? '').trim().toLowerCase() === 'true';
+
+/**
+ * Platform services carry no usable skill yet, so eligibility cannot be
+ * checked for them. Acknowledging that is a SECOND, explicit flag.
+ *
+ * WHY NOT JUST DEFAULT IT. A service with an empty skill and a required
+ * level of zero passes `eligible()` for every professional -- the engine
+ * reads it as "no skill required" and offers a trainee for a balayage. That
+ * is the single unsafe direction in this whole migration, and it would
+ * arrive silently the moment the first flag went on.
+ *
+ * So: platform resolution requires BOTH flags, and every booking it touches
+ * says so in the log. The flag comes off when the two skill vocabularies are
+ * reconciled (ask A2).
+ */
+export const SKILLS_UNVERIFIED = (): boolean =>
+  (process.env.SKILLS_UNVERIFIED ?? '').trim().toLowerCase() === 'true';
+
+/** Which catalogue answered for each id. Measured, so stage 2 is informed. */
+export interface ResolutionTally {
+  readonly platform: readonly string[];
+  readonly fixture: readonly string[];
+  readonly unresolved: readonly string[];
+}
+
+@Injectable()
+export class PlatformServiceCatalogue {
+  private static readonly log = new Logger(PlatformServiceCatalogue.name);
+
+  constructor(
+    @Inject(SERVICES_DIRECTORY)
+    private readonly directory: ServicesDirectoryReader,
+    private readonly tenants: TenantContext,
+  ) {}
+
+  /** Nothing to do unless both flags are on. */
+  enabled(): boolean {
+    return SERVICES_FROM_PLATFORM();
+  }
+
+  /**
+   * Resolve the ids that look like platform uuids.
+   *
+   * Returns only what platform knew. The caller fills the rest from the
+   * fixture, which is what keeps slugs working.
+   */
+  async resolve(
+    branchId: string,
+    serviceIds: readonly string[],
+  ): Promise<Service[]> {
+    const wanted = serviceIds.filter(looksLikePlatformId);
+    if (wanted.length === 0) return [];
+
+    const tenantId = this.tenants.current();
+    if (tenantId === null) {
+      /**
+       * NO TENANT, NO LOOKUP. ListServices is tenant-scoped, and guessing
+       * one would either fail or -- worse -- succeed against somebody
+       * else's catalogue. Rule 2: this removes availability rather than
+       * inventing it.
+       */
+      PlatformServiceCatalogue.log.warn(
+        `Cannot resolve ${wanted.length} platform service(s): no X-Tenant-Id ` +
+          'on this request, and ListServices is tenant-scoped.',
+      );
+      return [];
+    }
+
+    // list-by-branch is all platform offers today (ask B4), so the whole
+    // catalogue comes back and we pick from it.
+    const catalogue = await this.directory.listServices(tenantId, branchId);
+    const byId = new Map(catalogue.map((c) => [c.id.toLowerCase(), c]));
+
+    const found: Service[] = [];
+    for (const id of wanted) {
+      const row = byId.get(id.toLowerCase());
+      if (row !== undefined) found.push(toEngineService(row));
+    }
+
+    if (found.length < wanted.length && catalogue.length === 0) {
+      /**
+       * An empty catalogue is AMBIGUOUS and worth saying so. The gRPC
+       * adapter swallows its own errors and returns [] -- deliberately, so
+       * one dead panel does not take down a screen -- which means "platform
+       * is down" and "this branch sells nothing" arrive identically here.
+       */
+      PlatformServiceCatalogue.log.warn(
+        `Platform returned an EMPTY catalogue for branch ${branchId}. ` +
+          'That is either a branch with no services or an unreachable ' +
+          'platform; the services adapter logs which.',
+      );
+    }
+
+    return found;
+  }
+
+  /**
+   * Say where each service came from, and refuse a basket we cannot price.
+   *
+   * Called once per resolution with everything that was found, from both
+   * catalogues.
+   */
+  report(
+    branchId: string,
+    asked: readonly string[],
+    resolved: readonly Service[],
+  ): ResolutionTally {
+    const byId = new Map(resolved.map((s) => [s.id, s]));
+
+    const platform: string[] = [];
+    const fixture: string[] = [];
+    const unresolved: string[] = [];
+
+    for (const id of asked) {
+      const s = byId.get(id);
+      if (s === undefined) unresolved.push(id);
+      else if (s.priceFils !== undefined) platform.push(id);
+      else fixture.push(id);
+    }
+
+    /**
+     * THE MEASUREMENT STAGE 2 NEEDS.
+     *
+     * Stage 2 removes slug support. Before doing that we need to know who is
+     * still sending them, and the only way to know is to count. One line per
+     * resolution, at INFO, naming both sides.
+     */
+    PlatformServiceCatalogue.log.log(
+      `resolved branch=${branchId} ` +
+        `platform=[${platform.join(',')}] ` +
+        `fixture=[${fixture.join(',')}] ` +
+        `unresolved=[${unresolved.join(',')}]`,
+    );
+
+    if (platform.length > 0 && !SKILLS_UNVERIFIED()) {
+      /**
+       * Refused rather than silently skill-free. See SKILLS_UNVERIFIED.
+       */
+      throw bookingError(
+        'BOOKING_SKILL_MISSING',
+        'Platform services carry no skill yet, so nobody can be shown to be ' +
+          'qualified for them. Set SKILLS_UNVERIFIED=true to book anyway, ' +
+          'which treats every professional as qualified and logs it.',
+        { services: platform, flag: 'SKILLS_UNVERIFIED' },
+      );
+    }
+
+    if (platform.length > 0) {
+      PlatformServiceCatalogue.log.warn(
+        `SKILLS_UNVERIFIED: eligibility NOT checked for [${platform.join(',')}] ` +
+          '-- every professional is treated as qualified.',
+      );
+    }
+
+    // ONE CURRENCY PER BASKET. Production has BDT and AED services at the
+    // same branch, and price_fils is one integer with no currency beside it.
+    const verdict = oneCurrency(resolved);
+    if (verdict.kind === 'mixed') {
+      throw bookingError(
+        'BOOKING_CURRENCY_MIXED',
+        `This basket mixes ${verdict.currencies.join(' and ')}. Prices in ` +
+          'different currencies cannot be added, and there is no rate to ' +
+          'convert them with.',
+        { currencies: verdict.currencies },
+      );
+    }
+
+    return { platform, fixture, unresolved };
+  }
+}
+
+/**
+ * A platform service, as the engine needs it.
+ *
+ * FOUR OF ELEVEN FIELDS ARE REAL. The rest are stubs, and each one is a
+ * named ask in docs/api/PLATFORM-ASKS-BOOKING-CONTEXT.md. They are set to
+ * the value that OVER-reserves rather than under-reserves, so a wrong guess
+ * costs the salon capacity rather than costing a customer their slot:
+ *
+ *   skill / requiredLevel   '' and 0 -- no requirement, gated behind
+ *                           SKILLS_UNVERIFIED because it is the one stub
+ *                           that is unsafe rather than merely wasteful (A1/A2)
+ *   resourceType            'styling' -- one shared pool. Wrong, and the
+ *                           least-bad wrong: a single pool over-counts
+ *                           contention rather than overbooking a chair (B1)
+ *   claims                  no buffers -- back-to-back with no turnaround (B2)
+ *   processing              absent -- the professional is held for the whole
+ *                           service instead of released mid-development,
+ *                           which costs sellable hours and sells nothing
+ *                           twice (B2)
+ *   deposit                 absent -- rung 3 of the ladder stays silent (B3)
+ */
+function toEngineService(row: CatalogueService): Service {
+  return {
+    id: row.id,
+    name: row.name,
+    durationMin: row.durationMinutes,
+    priceFils: row.priceMinor,
+    currency: row.currency,
+
+    skill: '',
+    requiredLevel: 0,
+    resourceType: 'styling',
+    claims: { preMin: 0, postMin: 0 },
+  };
+}

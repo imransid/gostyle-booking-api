@@ -30,6 +30,7 @@ import {
 import { birthState } from '@domain/booking/auto-confirm';
 import { requirementFor, DEFAULT_BRANCH } from '@domain/booking/customer';
 import { priceOf } from './confirm-booking.handler';
+import { priceOfService } from '@domain/booking/service-resolution';
 
 /**
  * How many times one occurrence may be refused at the write before it is
@@ -335,7 +336,7 @@ export class MaterialiseSeriesHandler {
     const customer = await this.customers.load(series.customerId);
     const priceFils = series.grandfathered
       ? series.baselinePriceFils
-      : priceOf(service.id);
+      : priceOfService(service, priceOf);
 
     const requirement = requirementFor({
       totalFils: priceFils,

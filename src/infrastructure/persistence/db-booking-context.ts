@@ -9,14 +9,18 @@ import type { ChairOccupation } from '@domain/availability/capacity';
 import { FixtureBookingContext } from '../fixtures/fixture-booking-context';
 import { PrismaService } from './prisma.service';
 import { toUuid } from './hold.repository';
+import { PlatformServiceCatalogue } from './platform-service-catalogue';
 
 /**
  * The real adapter, for the tables this service owns.
  *
- * Catalogue, roster and chair registry still come from the fixture, because
- * those live in other services and the gRPC clients do not exist yet. What
- * changes here is the DIARY: staff and chair reservations are now read from
- * Postgres, so a held slot stops being offered.
+ * The DIARY is Postgres: staff and chair reservations are read from it, so a
+ * held slot stops being offered.
+ *
+ * SERVICES are now platform-first behind a flag (stage 1 of the slug-to-uuid
+ * migration). The ROSTER and the CHAIR REGISTRY are still the fixture,
+ * because platform does not expose skills, shifts or chairs yet -- see
+ * docs/api/PLATFORM-ASKS-BOOKING-CONTEXT.md.
  *
  * Before this, "a held slot is not sellable" was true only at the database.
  * The engine kept offering a taken slot and the exclusion constraint refused
@@ -27,13 +31,48 @@ export class DbBookingContext implements BookingContextReader {
   constructor(
     private readonly fixture: FixtureBookingContext,
     private readonly prisma: PrismaService,
+    private readonly platform: PlatformServiceCatalogue,
   ) {}
 
-  loadServices(
+  /**
+   * Stage 1: platform first for a uuid, fixture for a slug.
+   *
+   * With SERVICES_FROM_PLATFORM off this is exactly what it always was --
+   * the fixture, and nothing else runs. With it on, a real platform id
+   * resolves over gRPC and a slug still resolves from the fixture, so both
+   * kinds of caller work while we measure who is still sending which.
+   *
+   * The ORDER matters and is not arbitrary: platform ids are checked first
+   * because a uuid can never be a fixture slug, so there is no case where
+   * one shadows the other.
+   */
+  async loadServices(
     branchId: string,
     serviceIds: readonly string[],
   ): Promise<Service[]> {
-    return this.fixture.loadServices(branchId, serviceIds);
+    if (!this.platform.enabled()) {
+      return this.fixture.loadServices(branchId, serviceIds);
+    }
+
+    const fromPlatform = await this.platform.resolve(branchId, serviceIds);
+    const claimed = new Set(fromPlatform.map((s) => s.id.toLowerCase()));
+
+    const rest = serviceIds.filter((id) => !claimed.has(id.toLowerCase()));
+    const fromFixture = await this.fixture.loadServices(branchId, rest);
+
+    // Back into the order the caller asked for. The chain is laid out in
+    // basket order and a reshuffle here would silently reorder the visit.
+    const byId = new Map(
+      [...fromPlatform, ...fromFixture].map((s) => [s.id.toLowerCase(), s]),
+    );
+    const resolved = serviceIds
+      .map((id) => byId.get(id.toLowerCase()))
+      .filter((s): s is Service => s !== undefined);
+
+    // Logs the split, and refuses a basket we cannot price or staff.
+    this.platform.report(branchId, serviceIds, resolved);
+
+    return resolved;
   }
 
   loadCatalogue(branchId: string): Promise<Service[]> {

@@ -20,6 +20,7 @@ import { Money } from '@domain/shared/money';
 import { resolveSelection } from '@domain/booking/package';
 import { PACKAGES } from '@infrastructure/fixtures/fixture-booking-context';
 import { priceOf } from '@application/commands/confirm-booking.handler';
+import { priceOfService } from '@domain/booking/service-resolution';
 import {
   shout,
   toWireQuoteLine,
@@ -159,7 +160,10 @@ export class GetQuoteHandler {
 
     const customer = await this.customers.load(q.customerId);
 
-    const serviceFils = services.reduce((n, s) => n + priceOf(s.id), 0);
+    const serviceFils = services.reduce(
+      (n, s) => n + priceOfService(s, priceOf),
+      0,
+    );
     const first = services[0];
 
     // Computed on the PRE-DISCOUNT total, and passed to quote() as a

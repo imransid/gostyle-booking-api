@@ -47,6 +47,7 @@ describe('the error catalogue', () => {
         'UNAUTHENTICATED',
         'BOOKING_PAYMENT_REQUIRED',
         'DEPENDENCY_UNAVAILABLE',
+        'BOOKING_CURRENCY_MIXED',
       ].sort(),
     );
   });

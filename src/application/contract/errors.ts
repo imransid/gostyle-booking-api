@@ -69,6 +69,16 @@ export const ERROR_CODES = [
    * have offered the customer a different stylist.
    */
   'DEPENDENCY_UNAVAILABLE',
+  /**
+   * A basket priced in more than one currency.
+   *
+   * Production has services at the SAME branch in different currencies --
+   * Keratin in BDT, NO Kampos in AED -- and `price_fils` is one integer with
+   * no currency beside it. Summing them would quote a number that means
+   * nothing. Refused rather than converted: we have no rate and no mandate
+   * to pick a moment to apply one.
+   */
+  'BOOKING_CURRENCY_MIXED',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -103,6 +113,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   UNAUTHENTICATED: 401,
   BOOKING_PAYMENT_REQUIRED: 402,
   DEPENDENCY_UNAVAILABLE: 503,
+  BOOKING_CURRENCY_MIXED: 422,
 };
 
 /** What the client receives. `details` is absent rather than null when empty. */

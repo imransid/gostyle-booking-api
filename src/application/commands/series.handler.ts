@@ -42,6 +42,7 @@ import {
   hashRequestBody,
 } from '@infrastructure/persistence/idempotency.repository';
 import { priceOf } from './confirm-booking.handler';
+import { priceOfService } from '@domain/booking/service-resolution';
 import type { BookingStatus } from '@domain/booking/lifecycle';
 
 export interface CreateSeriesCommand {
@@ -181,7 +182,7 @@ export class CreateSeriesHandler {
       preferredStaffId: cmd.preferredStaffId,
       // The SAME price source the confirm path uses. A series that priced
       // itself would drift from the catalogue the moment either moved.
-      baselinePriceFils: priceOf(service.id),
+      baselinePriceFils: priceOfService(service, priceOf),
       course: cmd.course,
       occurrences: expansion.occurrences,
       horizonEnd: expansion.horizonEnd,
