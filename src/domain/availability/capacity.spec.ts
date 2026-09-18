@@ -387,3 +387,31 @@ describe('an existing booking releases its chair during the band', () => {
     expect(popcount(split) - popcount(naive)).toBe(7);
   });
 });
+
+describe('the day origin is read, never copied', () => {
+  it('a chair occupation ends where DAY_START_MIN says it does', () => {
+    /**
+     * THE BUG THIS PINS. `capacityFreeMask` computed an occupation's END
+     * slot with a literal 600 while its START came from `toSlot`, which
+     * reads DAY_START_MIN. Two copies of the day's origin, agreeing only
+     * because the constant happened to equal the literal.
+     *
+     * Invisible today and fatal the moment the trading day moves: every
+     * occupation's end landed at the wrong slot, so chairs read as free
+     * while someone was sitting in them. Found by widening the day and
+     * watching capacity tests fail in ways that had nothing to do with the
+     * change.
+     *
+     * Asserted through toSlot/toMin rather than against numbers, so this
+     * keeps holding whatever the origin becomes.
+     */
+    const startMin = toMin(10);
+    const endMin = toMin(20);
+    const m = capacityFreeMask(BROW, [occ('brow', startMin, endMin)]);
+
+    expect(bitAt(m, 10)).toBe(false);
+    expect(bitAt(m, 19)).toBe(false);
+    // The end is exclusive: the slot the visit finishes on is free again.
+    expect(bitAt(m, 20)).toBe(true);
+  });
+});

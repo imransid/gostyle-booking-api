@@ -1,5 +1,5 @@
 import { Mask, ALL, NONE, runsAtLeast } from './mask';
-import { SLOTS, SLOT_MIN, toSlot } from './grid';
+import { DAY_START_MIN, SLOTS, SLOT_MIN, toSlot } from './grid';
 
 /**
  * A physical unit of capacity: a styling chair, a colour station, a nail
@@ -75,7 +75,15 @@ export function usageTimeline(
     const endWithTurnover = o.endMin + resource.changeoverMin;
 
     const from = Math.max(0, toSlot(o.startMin));
-    const to = Math.min(SLOTS, Math.ceil((endWithTurnover - 600) / SLOT_MIN));
+    // DAY_START_MIN, not a literal 600. This was a second copy of the day's
+    // origin and it worked only while the constant happened to equal it --
+    // the exact drift CLAUDE.md 4 is about. Widening the trading day moved
+    // the constant and left this line pointing at the old midnight, so every
+    // occupation landed 24 slots late.
+    const to = Math.min(
+      SLOTS,
+      Math.ceil((endWithTurnover - DAY_START_MIN) / SLOT_MIN),
+    );
     if (to <= from) continue;
 
     diff[from] = (diff[from] ?? 0) + 1;
