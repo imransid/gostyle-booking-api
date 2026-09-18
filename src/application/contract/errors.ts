@@ -30,6 +30,23 @@ export const ERROR_CODES = [
   'BOOKING_SLOT_TAKEN',
   'BOOKING_CAPACITY_BLOCKED',
   'BOOKING_STAFF_UNAVAILABLE',
+  /**
+   * A STYLIST THIS BRANCH HAS NEVER HEARD OF, which is not the same fact as
+   * BOOKING_STAFF_UNAVAILABLE and had been answering as it.
+   *
+   * The engine excludes an unknown id the only way it can -- every real
+   * professional fails the "is this the one asked for" test, the pool comes
+   * back empty, and an empty pool has one sentence: "16:00 is no longer
+   * available. Offers have refreshed." So a caller naming a stylist from a
+   * roster the engine does not share was told, in a perfectly calm voice,
+   * that a free slot was taken. Refreshing the offers returned the same slot,
+   * and clients retried into it.
+   *
+   * 422, not 409: nothing raced, and there is no later moment at which this
+   * request would succeed. The id is wrong, and `details.roster` says what
+   * the right ones look like.
+   */
+  'BOOKING_STAFF_UNKNOWN',
   'BOOKING_SKILL_MISSING',
   'BOOKING_GATE_BLOCKED',
   'BOOKING_CHECKIN_WINDOW',
@@ -99,6 +116,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   BOOKING_SLOT_TAKEN: 409,
   BOOKING_CAPACITY_BLOCKED: 409,
   BOOKING_STAFF_UNAVAILABLE: 409,
+  BOOKING_STAFF_UNKNOWN: 422,
   BOOKING_SKILL_MISSING: 409,
   BOOKING_GATE_BLOCKED: 409,
   BOOKING_CHECKIN_WINDOW: 409,

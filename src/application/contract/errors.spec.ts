@@ -23,7 +23,7 @@ describe('the error catalogue', () => {
     }
   });
 
-  it('carries the seventeen contract codes, plus the two we needed', () => {
+  it('carries the seventeen contract codes, plus the ones we needed', () => {
     // Spelled out rather than counted, so a rename is caught as a rename.
     expect([...ERROR_CODES].sort()).toEqual(
       [
@@ -40,6 +40,7 @@ describe('the error catalogue', () => {
         'BOOKING_SKILL_MISSING',
         'BOOKING_SLOT_TAKEN',
         'BOOKING_STAFF_UNAVAILABLE',
+        'BOOKING_STAFF_UNKNOWN',
         'BOOKING_STATE_INVALID',
         'BOOKING_WITHIN_GRACE',
         'FORBIDDEN_ROLE',

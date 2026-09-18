@@ -103,6 +103,12 @@ thing skills exist to prevent, so guessing is worse than refusing.
 
 ### Then expose it
 
+This is now the LAST thing standing between the engine and a real roster. The roster itself
+resolves from platform (see A3); every stylist it resolves arrives with **no skills at all**, so
+they can take a platform service — whose own `skill_id` is blank, which is why that pairing sits
+behind `SKILLS_UNVERIFIED` — and are refused by name for anything from the fixture. Nobody
+booked through that path has been *shown* to be qualified for what they are booked for.
+
 Once the vocabulary is one thing, the engine needs it over gRPC — per stylist, which skills they
 hold and at what level:
 
@@ -126,7 +132,19 @@ level as unenforced and say so, rather than inventing a grading nobody entered.
 
 ## A3. Expose shifts over gRPC
 
-**Blocking for the roster swap, not for services.**
+**No longer blocking the roster swap. Still blocking a roster we can trust.**
+
+> Updated. The roster now resolves from `ListStylists` behind
+> `STAFF_FROM_PLATFORM`, using the `opening_time`, `closing_time` and `offday`
+> already on the `Stylist` message. That was enough to unblock the mobile app,
+> which could not book with a named stylist at all: it picks one from
+> `ListStylists` and sends the `staff_profile_id` back, and the engine's roster
+> was six hard-coded slugs, so every such booking was refused.
+>
+> **Those three fields are empty in practice today.** Every stylist who sends
+> none of them is offered across the branch's whole trading window, 10:00 to
+> 22:00, which sells hours nobody published. The engine logs one warning per
+> load naming exactly who that is. What follows is still the ask.
 
 The engine needs each stylist's **published working window for a given day**, and any approved
 time off inside it. You hold this in `shift` and `shift_roster`.

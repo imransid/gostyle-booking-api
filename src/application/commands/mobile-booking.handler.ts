@@ -779,7 +779,20 @@ function translate(e: unknown): unknown {
         'stylist_missing_skill',
         message,
       );
+    /**
+     * BUSY AND UNKNOWN BOTH LAND ON `stylist_unavailable`, and only the
+     * MESSAGE separates them.
+     *
+     * §9's code list is closed, and an unknown code is worse for the app than
+     * a slightly broad one: it falls through whatever switch the app wrote
+     * and renders nothing at all. The FIELD is right in both cases -- the
+     * customer's next move is to pick a different stylist -- and the sentence
+     * now says which of the two happened rather than blaming the time. The
+     * engine's own `BOOKING_STAFF_UNKNOWN` stays precise for the desk and for
+     * anything reading `code` off our own envelope.
+     */
     case 'BOOKING_STAFF_UNAVAILABLE':
+    case 'BOOKING_STAFF_UNKNOWN':
       return MobileContractError.of('stylists', 'stylist_unavailable', message);
     default:
       return e;
