@@ -9,7 +9,7 @@
  *
  * Dates are 'YYYY-MM-DD' trading-day strings, the same currency the waitlist
  * and every repository already speak. All arithmetic is UTC: the branch is
- * UTC+4 with no DST, so a trading day is a calendar day and nothing drifts.
+ * UTC+6 with no DST, so a trading day is a calendar day and nothing drifts.
  */
 
 /** A trading day, 'YYYY-MM-DD'. */

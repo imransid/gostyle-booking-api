@@ -41,7 +41,7 @@ export class AvailabilityQueryDto {
   @ApiProperty({
     example: '2026-08-24',
     description:
-      'Trading day, YYYY-MM-DD, in the branch timezone (Asia/Dubai).',
+      'Trading day, YYYY-MM-DD, in the branch timezone (Asia/Dhaka).',
   })
   @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'day must be YYYY-MM-DD' })
   day!: string;
