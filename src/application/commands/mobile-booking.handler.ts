@@ -175,10 +175,38 @@ export class MobileBookingHandler {
     const known = await this.context.loadServices(cmd.salonId, serviceIds);
     if (known.length !== serviceIds.length) {
       const found = new Set(known.map((s) => s.id));
+      const missing = serviceIds.filter((i) => !found.has(i));
+
+      /**
+       * SAY WHICH CATALOGUE SAID NO.
+       *
+       * This was reported as "ListServices returns that service, so why is
+       * the booking API refusing it" -- and the answer is that this path
+       * never calls ListServices. BOOKING_CONTEXT resolves services from the
+       * FIXTURE (DbBookingContext.loadServices delegates straight to it),
+       * while the gRPC services directory is wired only to
+       * GET /v1/services-directory/services. Two catalogues, and the one
+       * that refuses is invisible from outside.
+       *
+       * Logging what was asked for against what the resolver actually holds
+       * turns a day of comparing grpcurl output into one line.
+       */
+      const catalogue = await this.context
+        .loadCatalogue(cmd.salonId)
+        .catch(() => [] as { id: string }[]);
+      MobileBookingHandler.log.warn(
+        `unknown_service at salon ${cmd.salonId}: asked for ` +
+          `[${serviceIds.join(', ')}]; BOOKING_CONTEXT knows ` +
+          `${catalogue.length} service(s) [${catalogue
+            .map((c) => c.id)
+            .join(', ')}]. This resolver is NOT the gRPC services ` +
+          'directory -- ListServices is not consulted on this path.',
+      );
+
       throw MobileContractError.of(
         'services',
         'unknown_service',
-        `Not sold at this salon: ${serviceIds.filter((i) => !found.has(i)).join(', ')}.`,
+        `Not sold at this salon: ${missing.join(', ')}.`,
       );
     }
 
