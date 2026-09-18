@@ -57,9 +57,12 @@ Rules:
    lists never double-count.
 2. **A routine appears under `recurring`, not `upcoming`**, even though its next
    session is in the future. One row per routine, not one per session.
-3. **`DRAFT` payments are not bookings yet.** A checkout still inside its hold
-   window (`booking-create.md` §4) appears in none of the three lists, and an
-   expired one is simply gone — not archived.
+3. **A LIVE `DRAFT` is listed; an abandoned one is not.** Changed from the
+   original rule, which hid both. Hiding a live one meant a customer who
+   started paying and closed the app found nothing at all — with a slot held
+   against them and no way back to it, while §6.3 exists precisely so an
+   interrupted checkout can be resumed. A checkout whose window ran out is
+   `expired` and stays hidden: that one is litter, not history.
 4. **"Past" is measured against the salon's clock**, not the caller's, so a
    booking abroad does not jump to `archive` early.
 5. **A cancelled booking moves to `archive` immediately**, whatever its

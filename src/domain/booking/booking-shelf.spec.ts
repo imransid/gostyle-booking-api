@@ -117,11 +117,26 @@ describe('isListable', () => {
     paymentStatus: Parameters<typeof isListable>[0]['paymentStatus'],
   ) => isListable({ status, paymentStatus });
 
-  it('hides a DRAFT checkout from all three shelves', () => {
-    // §2.3 both halves: inside its window it is not a booking yet, and
-    // expired it is gone rather than archived. `unpaid` is the app's DRAFT.
-    expect(listable('pending_payment', 'unpaid')).toBe(false);
+  it('SHOWS a live DRAFT checkout, so it can be resumed', () => {
+    // CHANGED FROM §2.3. Hiding it meant a customer who started paying and
+    // closed the app found nothing at all -- with a slot held against them
+    // and no way to reach it. The booking is theirs and §6.3 exists so they
+    // can get back to it.
+    expect(listable('pending_payment', 'unpaid')).toBe(true);
+  });
+
+  it('still hides an ABANDONED checkout', () => {
+    // The other half of §2.3 stands. A window that ran out is litter, not
+    // history: listing it fills a customer's past with bookings they never
+    // made and cannot act on.
     expect(listable('expired', 'unpaid')).toBe(false);
+  });
+
+  it('keeps a cancelled or expired booking that money moved against', () => {
+    // Only the UNPAID expired one is litter. A booking someone actually
+    // paid for and then lost is history, and belongs in the archive.
+    expect(listable('expired', 'fully_paid')).toBe(true);
+    expect(listable('cancelled', 'deposit_paid')).toBe(true);
   });
 
   it('shows a PAY_AFTER_CHECK_IN booking, which is settled by arrangement', () => {

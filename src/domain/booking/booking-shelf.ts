@@ -87,29 +87,36 @@ export function parseFilter(raw: string | undefined | null): ListFilter | null {
 }
 
 /**
- * §2.3: a DRAFT payment is not a booking yet.
+ * Whether a booking belongs on any shelf at all.
  *
- * A checkout still inside its hold window appears on none of the three
- * shelves, and an expired one is simply GONE -- not archived. Both halves
- * matter: showing the first would put a booking in "upcoming" that the
- * customer has not paid for and may never, and archiving the second would
- * fill a customer's history with abandoned checkouts they never made.
+ * A LIVE DRAFT IS SHOWN. booking-list.md §2.3 said a checkout inside its
+ * hold window appears on none of the three shelves, and this enforced that
+ * -- but it meant a customer who started paying, closed the app and came
+ * back found nothing at all, with a slot held against them and no way to
+ * reach it. The booking exists, it is theirs, and the whole point of §6.3
+ * ("DRAFT bookings are readable, so an interrupted checkout can be
+ * resumed") is that they can get back to it. Hiding it from the only screen
+ * that lists bookings made that impossible.
  *
- * `unpaid` IS the app's `DRAFT` -- see `toMobilePaymentStatus`, which is the
- * only mapping between the two vocabularies. Checking the payment state
- * rather than the hold window is deliberate: the window is cleared by the
- * §11 patch at the same moment the payment state moves, so the payment
- * state answers the question without a clock in it.
+ * `unpaid` IS the app's `DRAFT` -- see `toMobilePaymentStatus`, the one
+ * mapping between the two vocabularies.
  *
- * `none_required` is NOT excluded. A PAY_AFTER_CHECK_IN booking is settled
- * by arrangement, not unfinished: the salon is holding a chair for it and
- * the customer must see it under "upcoming".
+ * AN ABANDONED ONE IS STILL GONE, and that half of §2.3 stands. A checkout
+ * whose window ran out is `expired`, and listing it would fill a customer's
+ * history with bookings they never made and cannot act on. The live one is
+ * a task; the dead one is litter.
+ *
+ * `none_required` is likewise shown: a PAY_AFTER_CHECK_IN booking is settled
+ * by arrangement, not unfinished.
  */
 export function isListable(input: {
   readonly status: BookingStatus;
   readonly paymentStatus: PaymentStatus;
 }): boolean {
-  if (input.paymentStatus === 'unpaid') return false;
+  // An abandoned checkout: unpaid AND already run out. Not history, litter.
+  if (input.paymentStatus === 'unpaid' && input.status === 'expired') {
+    return false;
+  }
   // Never real bookings: a `draft` row is a shell and a `held` one is a
   // reservation that has not been confirmed into anything.
   return input.status !== 'draft' && input.status !== 'held';

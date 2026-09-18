@@ -427,9 +427,11 @@ export class BookingRepository {
     const customerId = toUuid(input.customerId);
     const listable = {
       customerId,
-      // §2.3, via domain/booking/booking-shelf.isListable.
-      paymentStatus: { not: 'unpaid' as const },
       status: { notIn: [...NEVER_LISTED_STATES] },
+      // The one exclusion left, and it mirrors `isListable`: an ABANDONED
+      // checkout -- unpaid and already run out -- is litter, not history. A
+      // LIVE draft is listed, so an interrupted checkout can be found again.
+      NOT: { paymentStatus: 'unpaid' as const, status: 'expired' as const },
     };
 
     const upcoming = {
