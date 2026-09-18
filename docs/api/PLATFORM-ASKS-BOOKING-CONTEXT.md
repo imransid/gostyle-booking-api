@@ -17,14 +17,17 @@ services and six stylists with slug ids like `haircut-finish` and `maya`. `ListS
 never calls them. So a real service id resolves to nothing, and the booking is refused.
 
 Swapping the fixture for gRPC is the fix. **Most of what the engine needs is not in the protos
-yet**, and a third of it is data you already hold and simply do not expose.
+yet.** Some of it is data you already hold and do not expose. One piece — skills — turns out to
+be two incompatible vocabularies that have to be reconciled before either side is usable.
 
 ---
 
 ## 2. Two very different kinds of ask
 
-**Part A** is three items you already have in your database. They need populating or exposing,
-not designing. They unblock us soonest and we have sequenced our work behind them.
+**Part A** is three items about data you already hold. Two are genuinely quick — one is a
+platform-api code change, one is exposing tables that already exist. The third (A2) looked quick
+when this document was first written and is not: it is a data reconciliation with a UI change
+behind it. We have sequenced our work behind these.
 
 **Part B** is four items that need new modelling — a decision about shape before any code.
 
@@ -32,36 +35,76 @@ not designing. They unblock us soonest and we have sequenced our work behind the
 
 # Part A — data you already hold
 
-## A1. Populate `skill_id` and `min_skill_level` on services
+## A1. Populate `skill_id` in `services.proto` — a code change, not data entry
 
-**Blocking. This is the single most important item in this document.**
+**Small, and it unblocks half the problem.**
 
-`services.proto` carries `skill_id` and `min_skill_level`. Both are **empty in production**, and
-the proto says empty means unknown.
+> Corrected after this document was first written. The original said "the columns exist; the
+> rows are empty". That was wrong, and wrong in your favour: **the service side is already
+> done.**
 
-Those two fields decide **who is allowed to perform a service**. With them empty the booking
-engine has two choices, and both are bad:
+All **70 rows** in `service_stage` carry a `skill_id`, referencing `catalog_skill` — 8 clean,
+coded rows:
 
-| If unknown means | Then |
-| ---------------- | ---- |
-| "no skill required" | Every stylist is eligible for everything. A trainee is offered for a balayage. |
-| "cannot verify" | Nobody is eligible. Availability returns empty. A total outage. |
+```
+HAIRCUT   HAIR_COLOR   HAIR_STYLING   NAILS
+SKINCARE  MASSAGE      MAKEUP         WAXING
+```
 
-Our own rule is that missing data must *remove* availability, never add it — which points at the
-second. That ships a dead booking engine, so we will not do it silently. Our interim plan is in
-§5, and it is deliberately ugly so that nobody forgets it is temporary.
+`services.proto` declares `skill_id` and `min_skill_level`, and simply **is not populating them
+from `service_stage`**. Nothing needs modelling and no data needs entering; the mapping in
+platform-api needs to read a column it already has.
 
-**Ask:** populate `skill_id` and `min_skill_level` for every service in every branch. The columns
-exist; the rows are empty.
+**Ask:** populate `skill_id` (and `min_skill_level`, if `service_stage` carries a level) in the
+`ListServices` response.
 
-## A2. Expose `staff_profile.skills` over gRPC
+## A2. Reconcile the two skill vocabularies — the real blocker
 
-**Blocking.**
+**This is the item that gates the booking engine, and it is bigger than a data fix.**
 
-`staff.proto` returns identity and branch. The engine needs, per stylist, **which skills they
-hold and at what level** — it is the other half of A1 and neither works alone.
+Staff skills do not reference `catalog_skill`. `staff_skill_assignment` points at a **different
+table**, `skill`: **23 free-text rows**, with duplicates —
 
-You already store this in `staff_profile.skills`.
+```
+"Makeup" × 3      "Hair Cutting" × 2      "Skincare" × 2      …
+```
+
+A join between `staff_skill_assignment` and `catalog_skill` returns **0 rows**. The two
+vocabularies do not overlap at all — not partially, not approximately. There is no mapping to
+fall back on.
+
+So the shape of the problem is not "some columns are empty". It is:
+
+**Services will soon say** `requires HAIR_COLOR at level 2`.
+**Staff say** they know `"Hair Colouring"`, typed by hand, possibly three times.
+**Nothing matches anything**, and the booking engine's only honest answer is that no stylist is
+eligible for any service.
+
+### What has to happen
+
+1. **Decide `catalog_skill` is the single vocabulary.** It is already coded, already clean, and
+   already referenced by all 70 services. The other table is the one that moves.
+2. **Map the 23 free-text rows onto the 8 coded ones.** A person has to do this; several will
+   collapse (`"Makeup" × 3` → one `MAKEUP`) and some may have no home, which is itself worth
+   knowing.
+3. **Re-point `staff_skill_assignment`** at `catalog_skill`, deduplicating as it goes — a
+   stylist with `"Makeup"` recorded three times should end with one `MAKEUP` assignment, not
+   three.
+4. **Fix the UI that allows free-text skill entry.** Without this, step 2 is temporary: the
+   duplicates come back the first week somebody types `"Make-up"` instead of picking from a
+   list. **A dedupe with the intake left open is a dedupe you do again next quarter.**
+
+### Why we cannot work around it
+
+We considered matching on the skill *name* instead of the id. We are not going to: `"Hair
+Cutting"` and `HAIRCUT` are the same skill to a human and not to a string comparison, and the
+failure mode of a fuzzy match is putting an unqualified stylist on a colour. That is exactly the
+thing skills exist to prevent, so guessing is worse than refusing.
+
+### Then expose it
+
+Once the vocabulary is one thing, the engine needs it over gRPC — per stylist, which skills they
+hold and at what level:
 
 ```proto
 message Stylist {
@@ -70,13 +113,16 @@ message Stylist {
 }
 
 message StaffSkill {
-  string skill_id     = 1;
-  int32  level        = 2;   // matched against service.min_skill_level
+  string skill_id = 1;   // a catalog_skill code: HAIRCUT, HAIR_COLOR, ...
+  int32  level    = 2;   // matched against service.min_skill_level
 }
 ```
 
 **What we do with it:** a stylist is eligible for a basket only if they hold *every* skill it
 needs at or above each level. Partial coverage is not coverage.
+
+If `skill` carries no level today, send `1` for every assignment and tell us — we will treat
+level as unenforced and say so, rather than inventing a grading nobody entered.
 
 ## A3. Expose shifts over gRPC
 
@@ -282,32 +328,53 @@ A hybrid, and we will say so out loud rather than let it look finished:
 | Services | **platform gRPC** |
 | Prices | **platform gRPC** (`price_minor`) — fixes the AED 0.00 bug |
 | Stylist identity | platform gRPC |
-| Stylist **skills** | fixture, until A2 |
+| Stylist **skills** | **every stylist treated as holding every skill**, behind `SKILLS_UNVERIFIED`, until A2 |
 | **Shifts** | fixture, until A3 |
 | **Chairs** | fixture, until B1 |
 | Buffers / processing | absent — buffers 0, no band, until B2 |
 | Deposit rule | absent — rung 3 silent, until B3 |
 
 Every one of those stubs is *safe* in the sense that it over-reserves or under-charges rather
-than overbooking a chair — **except the skill question in A1**, which is unsafe in one direction
-and an outage in the other.
+than overbooking a chair — **except skills (A2)**, which is unsafe in one direction and an
+outage in the other.
 
-Our interim plan for A1: treat an unknown skill as *"no skill required"*, but **only** while an
-explicit `SKILLS_UNVERIFIED` flag is set, with a warning logged on every booking it affects. A
-deliberate, visible, noisy temporary state — not a default that outlives the memory of why it was
-chosen.
+**The interim, and why it is shaped the way it is.** Once A1 lands, services will carry a real
+coded requirement and staff will still carry free text that matches nothing. Matching honestly
+at that point returns *no eligible stylist for any service* — a total outage. So we will treat
+every stylist as holding every skill, behind an explicit `SKILLS_UNVERIFIED` flag, with a
+warning logged on every booking it affects.
+
+Note what that means: **A1 alone makes the situation worse, not better**, because it replaces an
+unknown with a requirement nothing can satisfy. A1 is still worth doing first — it is small, and
+it is a precondition — but the flag has to be in place before it ships, and the flag only comes
+off when A2 does.
+
+A deliberate, visible, noisy temporary state, not a default that outlives the memory of why it
+was chosen.
 
 ---
 
 # 5. What we need back
 
-**To start:** A1 populated, and a yes/no on the `SKILLS_UNVERIFIED` interim.
+**This week:** A1 — populate `skill_id` from `service_stage` in the `ListServices` response.
+It is a code change against data that is already correct, and it is the one item we can build
+on immediately. Pair it with a yes/no on the `SKILLS_UNVERIFIED` flag, which has to ship at the
+same time or A1 makes things worse.
 
-**Soon after:** A2 and A3, which unblock the roster and remove two of the four stubs.
+**The one that actually decides the timeline:** A2. Three questions, and we would rather have
+rough answers now than precise ones later:
+
+1. Is `catalog_skill` agreed as the single vocabulary?
+2. Who owns mapping the 23 free-text rows onto the 8 coded ones, and roughly when?
+3. **Is the free-text skill UI yours to change?** If it is not, say so now — the dedupe is
+   pointless without it and we should plan for the duplicates being permanent.
+
+**Soon after:** A3, which unblocks the roster and removes the shift stub.
 
 **To scope properly:** whether B1–B4 are a quarter's work or a week's, so we can sequence around
 them. B1 and B2 are what stand between us and a correct diary; B3 is money; B4 is performance.
 
 **A decision together:** stage 3 of the migration — backfill or translation table.
 
-Happy to walk through any of this. The one item that changes what we build next week is **A1**.
+Happy to walk through any of this. The item that unblocks us next week is **A1**; the item that
+decides the quarter is **A2**.
