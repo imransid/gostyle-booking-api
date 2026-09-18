@@ -17,7 +17,10 @@ import { DAILY_BOOKING_CAP, formatMinute } from '@domain/availability/grid';
 import { Money } from '@domain/shared/money';
 // The SAME price table the single confirm uses. One catalogue, one answer.
 import { priceOf } from './confirm-booking.handler';
-import { priceOfService } from '@domain/booking/service-resolution';
+import {
+  priceOfService,
+  sourceOfAll,
+} from '@domain/booking/service-resolution';
 
 export interface GroupConfirmCommand {
   readonly groupId: string;
@@ -92,6 +95,8 @@ export class GroupConfirmHandler {
           durationMin: services.reduce((n, s) => n + s.durationMin, 0),
           resourceType: services[services.length - 1]!.resourceType,
           preferredStaffId: p.preferredStaffId,
+          // One row, several services: mixed where they disagree.
+          source: sourceOfAll(services),
         };
       }),
     );

@@ -48,6 +48,25 @@ datasource db {
 
 // ============================================================ enums
 
+/// Where a stored price came from. See BookingItem.source.
+///
+/// `mixed` belongs to a group booking, where several services collapse into
+/// one row -- see sourceOfAll in domain/booking/service-resolution.///
+/// `mixed` IS NOT REACHABLE TODAY, and that is a fact about the group path
+/// rather than about this column. group-confirm.handler resolves services
+/// against a hardcoded 'marina-walk', ignoring the branchId the caller
+/// sent, so a platform uuid in a group basket comes back unresolved and the
+/// booking is refused before it reaches a row. It becomes reachable the day
+/// that handler takes the real branch. Modelled now because the row it
+/// describes -- several services, one price -- already exists.
+enum CatalogueSource {
+  platform
+  fixture
+  mixed
+
+  @@map("catalogue_source")
+}
+
 enum BookingStatus {
   draft
   held
@@ -244,6 +263,21 @@ model BookingItem {
   priceFils   Int @map("price_fils")
   durationMin Int @map("duration_min") @db.SmallInt
   position    Int @db.SmallInt
+
+  /// WHICH CATALOGUE PRICED THIS LINE.
+  ///
+  /// Written because of GS-1222, where the question "was this priced from
+  /// platform or the fixture?" could only be answered by reading two
+  /// catalogues and re-deriving the number. The price is frozen above; this
+  /// says where the frozen number came from. During the slug-to-uuid
+  /// migration those are two different catalogues that can disagree.
+  ///
+  /// NULLABLE ON PURPOSE, and it stays that way. NULL means the row was
+  /// written before provenance was recorded -- which is most of them.
+  /// Backfilling those as `fixture` would be a good guess presented as a
+  /// record, and a column you cannot trust for old rows is worse than one
+  /// that admits which rows it covers.
+  source CatalogueSource?
 
   /// STAYS NOT NULL, and this is the one place the FE doc cannot be met by a
   /// schema change.

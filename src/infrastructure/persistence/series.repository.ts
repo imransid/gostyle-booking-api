@@ -14,6 +14,7 @@ import type {
 } from '@domain/booking/recurrence';
 import type { BookingStatus } from '@domain/booking/lifecycle';
 import type { RepairOffer } from '@domain/availability/series-ladder';
+import { ItemSource } from '@domain/booking/service-resolution';
 
 /**
  * The series, and the occurrences it wants.
@@ -95,6 +96,14 @@ export interface MaterialiseInput {
   readonly paymentStatus: 'none_required' | 'unpaid';
   readonly claimPreMin: number;
   readonly claimPostMin: number;
+  /**
+   * Which catalogue priced this line. See BookingItem.source.
+   *
+   * Carried rather than re-derived: the handler already holds the resolved
+   * service, and persistence asking a second time could get a different
+   * answer than the one that produced this price.
+   */
+  readonly source: ItemSource;
 }
 
 export type MaterialiseOutcome =
@@ -507,6 +516,7 @@ export class SeriesRepository {
             durationMin: input.durationMin,
             position: 0,
             staffId: toUuid(input.staffId),
+            source: input.source,
           },
           select: { id: true },
         });

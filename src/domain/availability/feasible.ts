@@ -67,6 +67,16 @@ export interface Service {
   readonly priceFils?: number;
 
   /**
+   * Which catalogue resolved this service.
+   *
+   * The engine never reads it. It rides along so persistence can record the
+   * provenance of what it charged, which is the question a wrong price is
+   * investigated with (see sourceOf in domain/booking/service-resolution.ts).
+   * Absent means the fixture.
+   */
+  readonly source?: 'platform' | 'fixture';
+
+  /**
    * The currency `priceFils` is in.
    *
    * Absent means the house currency. It is here because production has

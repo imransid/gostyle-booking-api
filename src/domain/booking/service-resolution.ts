@@ -19,6 +19,57 @@ const UUID_RE =
 export type ServiceSource = 'platform' | 'fixture';
 
 /**
+ * Which catalogue a resolved service came from.
+ *
+ * RECORDED, NOT INFERRED. This started life as `priceFils !== undefined`,
+ * which happened to be true only for platform services -- and a heuristic
+ * that happens to be true is one that stops being true without telling you.
+ * A platform service with no price is now refused, and the fixture may one
+ * day carry prices, at which point the inference would have quietly
+ * inverted.
+ *
+ * It matters because it is the question nobody could answer about GS-1222:
+ * "was this priced from platform or the fixture, and when?" Reconstructing
+ * it took reading two catalogues and a stub. A column answers it.
+ */
+export function sourceOf(service: {
+  readonly source?: ServiceSource;
+}): ServiceSource {
+  return service.source ?? 'fixture';
+}
+
+/**
+ * What a STORED LINE's provenance can be.
+ *
+ * `mixed` exists because of group bookings. A participant's several services
+ * collapse into ONE booking_item row -- one service_id (the first), one
+ * price (the sum) -- and those services can come from different catalogues.
+ * Writing `platform` there would be true of part of the price and false of
+ * the rest, which is worse than saying nothing, because it reads as a fact.
+ *
+ * VERIFIED UNREACHABLE TODAY. group-confirm.handler resolves against a
+ * hardcoded 'marina-walk' rather than the branch the caller asked for, so a
+ * platform service in a group basket is refused as unknown long before it
+ * could be priced. The rule is written and tested anyway: the alternative is
+ * discovering it is missing on the day that hardcode is removed.
+ */
+export type ItemSource = ServiceSource | 'mixed';
+
+/**
+ * The provenance of a line priced from several services.
+ *
+ * Empty is `fixture`, not `mixed`: nothing was resolved from platform, and
+ * `mixed` should mean "two catalogues", never "no catalogue".
+ */
+export function sourceOfAll(
+  services: readonly { readonly source?: ServiceSource }[],
+): ItemSource {
+  const seen = new Set(services.map(sourceOf));
+  if (seen.size > 1) return 'mixed';
+  return seen.size === 1 ? [...seen][0]! : 'fixture';
+}
+
+/**
  * A real platform id, or one of our slugs?
  *
  * This is the whole routing rule for stage 1, and it is deliberately dumb: a

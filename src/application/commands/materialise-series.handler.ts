@@ -13,6 +13,7 @@ import {
   staffAvailableAt,
   DESK_CHANNEL,
   WHOLE_DAY,
+  type Service,
 } from '@domain/availability/feasible';
 import { toSlots } from '@domain/availability/mask';
 import { toMin, DAILY_BOOKING_CAP } from '@domain/availability/grid';
@@ -30,7 +31,7 @@ import {
 import { birthState } from '@domain/booking/auto-confirm';
 import { requirementFor, DEFAULT_BRANCH } from '@domain/booking/customer';
 import { priceOf } from './confirm-booking.handler';
-import { priceOfService } from '@domain/booking/service-resolution';
+import { priceOfService, sourceOf } from '@domain/booking/service-resolution';
 
 /**
  * How many times one occurrence may be refused at the write before it is
@@ -170,14 +171,16 @@ export class MaterialiseSeriesHandler {
     | { kind: 'closed'; reason: string }
     | {
         kind: 'ok';
-        service: {
-          id: string;
-          name: string;
-          resourceType: string;
-          skill: string;
-          depositPercent?: number | null;
-          depositFixedFils?: number | null;
-        };
+        /**
+         * The RESOLVED service, not a hand-copied subset of it.
+         *
+         * This was six named fields, which is rule 4's "two copies and one
+         * lags" in miniature: it had already fallen behind `priceFils`, so
+         * the AED 0.00 fix typechecked here only because the value it needs
+         * is optional -- the property was being read off an object the
+         * compiler had been told did not have it.
+         */
+        service: Service;
         result: {
           durationMin: number;
           claims: { preMin: number; postMin: number };
@@ -293,14 +296,8 @@ export class MaterialiseSeriesHandler {
     },
     candidates: readonly RepairCandidate[],
     daysAhead: number,
-    service: {
-      id: string;
-      name: string;
-      resourceType: string;
-      skill: string;
-      depositPercent?: number | null;
-      depositFixedFils?: number | null;
-    },
+    // The same resolved service candidatesFor returned. See the note there.
+    service: Service,
     result: {
       durationMin: number;
       claims: { preMin: number; postMin: number };
@@ -373,6 +370,7 @@ export class MaterialiseSeriesHandler {
       resourceType: service.resourceType,
       requiredSkill: service.skill,
       priceFils,
+      source: sourceOf(service),
       // Nothing is banked here. Materialisation creates the booking; money
       // arrives later on the payment link, or never at all where the rule
       // waived it. A deposit written now would be money nobody has paid.

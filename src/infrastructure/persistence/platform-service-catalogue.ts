@@ -10,6 +10,7 @@ import type { Service } from '@domain/availability/feasible';
 import {
   looksLikePlatformId,
   oneCurrency,
+  sourceOf,
 } from '@domain/booking/service-resolution';
 
 /**
@@ -223,7 +224,10 @@ export class PlatformServiceCatalogue {
     for (const id of asked) {
       const s = byId.get(id);
       if (s === undefined) unresolved.push(id);
-      else if (s.priceFils !== undefined) platform.push(id);
+      // Was `s.priceFils !== undefined`, which was only ever right by
+      // coincidence -- the fixture happens to carry no prices. sourceOf
+      // reads what the resolver recorded.
+      else if (sourceOf(s) === 'platform') platform.push(id);
       else fixture.push(id);
     }
 
@@ -306,6 +310,10 @@ function toEngineService(row: CatalogueService): Service {
     durationMin: row.durationMinutes,
     priceFils: row.priceMinor,
     currency: row.currency,
+
+    // Stamped at the only place that knows. Everything downstream carries
+    // this rather than guessing from the shape of the row.
+    source: 'platform',
 
     skill: '',
     requiredLevel: 0,

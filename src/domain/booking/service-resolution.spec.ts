@@ -4,6 +4,8 @@ import {
   looksLikePlatformId,
   oneCurrency,
   priceOfService,
+  sourceOf,
+  sourceOfAll,
   totalOf,
 } from './service-resolution';
 import type { Service } from '../availability/feasible';
@@ -144,5 +146,52 @@ describe('totalOf', () => {
 
   it('sums nothing to nothing', () => {
     expect(totalOf({ kind: 'ok', currency: 'AED' }, []).fils).toBe(0);
+  });
+});
+
+describe('sourceOf', () => {
+  it('reports what the resolver recorded', () => {
+    expect(sourceOf({ source: 'platform' })).toBe('platform');
+    expect(sourceOf({ source: 'fixture' })).toBe('fixture');
+  });
+
+  it('treats an unrecorded source as the fixture', () => {
+    // The fixture predates provenance and sets nothing.
+    expect(sourceOf({})).toBe('fixture');
+  });
+
+  it('does NOT infer from the price', () => {
+    // It used to be `priceFils !== undefined`, which was true only by
+    // accident of the fixture having no prices. A platform service is
+    // platform whatever it costs.
+    expect(sourceOf({ source: 'platform' })).toBe('platform');
+    expect(sourceOf({})).toBe('fixture');
+  });
+});
+
+describe('sourceOfAll', () => {
+  const platform = { source: 'platform' as const };
+  const fixture = {};
+
+  it('is the shared source when every service agrees', () => {
+    expect(sourceOfAll([platform, platform])).toBe('platform');
+    expect(sourceOfAll([fixture, fixture])).toBe('fixture');
+  });
+
+  it('is mixed when a single line was priced from both catalogues', () => {
+    // A group participant booking one platform service and one slug. The
+    // row carries one price covering both, so neither label is true of it.
+    expect(sourceOfAll([platform, fixture])).toBe('mixed');
+    expect(sourceOfAll([fixture, platform])).toBe('mixed');
+  });
+
+  it('calls an empty line fixture, never mixed', () => {
+    // mixed must mean "two catalogues", not "no catalogue" -- otherwise a
+    // row with nothing on it reads as the interesting case.
+    expect(sourceOfAll([])).toBe('fixture');
+  });
+
+  it('is unaffected by how many services share one source', () => {
+    expect(sourceOfAll([platform, platform, platform])).toBe('platform');
   });
 });

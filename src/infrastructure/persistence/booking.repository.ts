@@ -7,6 +7,7 @@ import { PrismaService } from './prisma.service';
 import { TenantContext } from '../tenancy/tenant-context';
 import { isExclusionViolation, isUniqueViolationOn } from './pg-errors';
 import { toUuid } from './hold.repository';
+import { ItemSource } from '@domain/booking/service-resolution';
 
 export type PaymentRail =
   'wallet' | 'card' | 'apple_pay' | 'cash' | 'link' | 'internal';
@@ -27,6 +28,14 @@ export interface ConfirmItem {
   readonly priceFils: number;
   readonly durationMin: number;
   readonly staffId: string;
+  /**
+   * Which catalogue priced this line. See BookingItem.source.
+   *
+   * Carried rather than re-derived: the handler already holds the resolved
+   * service, and persistence asking a second time could get a different
+   * answer than the one that produced this price.
+   */
+  readonly source: ItemSource;
 }
 
 export interface ConfirmBookingInput {
@@ -191,6 +200,7 @@ export class BookingRepository {
                 durationMin: item.durationMin,
                 position,
                 staffId: toUuid(item.staffId),
+                source: item.source,
               },
               select: { id: true },
             }),

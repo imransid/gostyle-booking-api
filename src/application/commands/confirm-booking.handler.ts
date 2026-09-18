@@ -43,7 +43,7 @@ import {
 import { PrismaService } from '@infrastructure/persistence/prisma.service';
 import { branchInstant } from '@infrastructure/persistence/hold.repository';
 import { Money } from '@domain/shared/money';
-import { priceOfService } from '@domain/booking/service-resolution';
+import { priceOfService, sourceOf } from '@domain/booking/service-resolution';
 import { formatMinute } from '@domain/availability/grid';
 import { resolveSelection } from '@domain/booking/package';
 import { PACKAGES } from '@infrastructure/fixtures/fixture-booking-context';
@@ -168,6 +168,8 @@ export class ConfirmBookingHandler {
       priceFils: priceOfService(s, priceOf),
       durationMin: s.durationMin,
       staffId: reservation.staffId,
+      // Recorded beside the price it explains, from the same object.
+      source: sourceOf(s),
     }));
 
     const total = Money.sum(items.map((i) => Money.fils(i.priceFils)));
