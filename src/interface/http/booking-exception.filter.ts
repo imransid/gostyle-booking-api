@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { isMobileContractError } from '@application/commands/mobile-booking.error';
 import {
   inferCode,
   isBookingError,
@@ -49,6 +50,17 @@ export class BookingExceptionFilter implements ExceptionFilter {
 
   catch(exception: unknown, host: ArgumentsHost): void {
     const res = host.switchToHttp().getResponse<Response>();
+
+    /**
+     * The mobile contract has its own envelope (booking-create.md §9) and
+     * gets to keep it. Its `errors[]` carry a per-field code and the
+     * server's correct figure, which is what lets the app show the customer
+     * what changed instead of a dead "prices moved".
+     */
+    if (isMobileContractError(exception)) {
+      res.status(exception.status).json(exception.toBody());
+      return;
+    }
 
     if (isBookingError(exception)) {
       res.status(exception.status).json(exception.toBody());
