@@ -18,7 +18,7 @@ import { MaterialiseSeriesHandler } from '@application/commands/materialise-seri
 export const MATERIALISE_CRON = '0 2 * * *';
 
 /** Asia/Dubai is UTC+4 all year, matching the rest of the service. */
-const BRANCH_TIMEZONE = 'Asia/Dubai';
+const BRANCH_TIMEZONE = 'Asia/Dhaka';
 
 /**
  * How many series one run will touch.
