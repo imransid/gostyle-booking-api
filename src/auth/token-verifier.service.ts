@@ -9,8 +9,9 @@ import { AuthService, type Identity } from './auth.service';
 import { Actor, rolesToKind } from './actor';
 import { consumerGrpcAddress } from './auth.constants';
 import {
+  consumerAuthStatusName,
   describeConsumerAuthFailure,
-  isConsumerAuthUnreachable,
+  isConsumerAuthTheirFault,
 } from './consumer-auth-failure';
 import type { ErrorCode } from '@application/contract/errors';
 
@@ -131,17 +132,25 @@ export class TokenVerifier {
     try {
       identity = await this.consumerAuth.verifyToken(token);
     } catch (e) {
-      // Only the codes that mean the answer never arrived. A 503 over a real
-      // bug -- a proto skew, a malformed request -- is the same lie pointing
-      // the other way, and tells the operator to wait for a recovery that is
-      // not coming. Those rethrow, keep their stack and stay a 500.
-      if (!isConsumerAuthUnreachable(e)) throw e;
+      /**
+       * ANYTHING THE DEPENDENCY IS ANSWERABLE FOR IS A 503.
+       *
+       * This was `isConsumerAuthUnreachable` alone, so an UNKNOWN -- the
+       * dependency accepting the call and THEN failing -- fell through as a
+       * raw error and became a bare 500 "Something went wrong". Production
+       * hit exactly that: the consumer API's own Postgres connection dropped
+       * mid-call, and this service reported itself broken for it.
+       *
+       * A proto skew or a malformed request still rethrows and stays a 500,
+       * because those genuinely are ours.
+       */
+      if (!isConsumerAuthTheirFault(e)) throw e;
 
       // ERROR on the FIRST failure, with the address, because the whole point
       // of the 503 is that someone can find the box. The status code says
       // "a dependency"; this line says which one and where.
       TokenVerifier.log.error(
-        `Consumer API unreachable at ${consumerGrpcAddress()} -- ` +
+        `Consumer auth FAILED at ${consumerGrpcAddress()} -- ` +
           `${describeConsumerAuthFailure(e)}`,
       );
       /**
@@ -161,6 +170,9 @@ export class TokenVerifier {
         details: {
           dependency: 'consumer-auth',
           address: consumerGrpcAddress(),
+          // Tells a blip from a structural fault: UNAVAILABLE means nothing
+          // answered, UNKNOWN means it answered and then broke.
+          grpcStatus: consumerAuthStatusName(e),
         },
       });
     }
