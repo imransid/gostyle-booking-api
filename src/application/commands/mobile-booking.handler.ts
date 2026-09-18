@@ -376,11 +376,22 @@ export class MobileBookingHandler {
          * only status = 'pending_payment' AND link_expires_at IS NOT NULL,
          * and this booking fails both).
          *
-         * IT DOES NOT BYPASS THE DEPOSIT LADDER. Omitting payment tenders
-         * zero, and confirm refuses with 402 when the ladder asked for
-         * more. A customer cannot waive a required deposit by asking for
-         * this status; only a service that requires nothing can use it.
+         * IT NOW DEFERS THE DEPOSIT RATHER THAN BEING REFUSED BY IT.
+         *
+         * This said the opposite: omitting payment tendered zero and confirm
+         * refused with 402, so only a service requiring nothing could use
+         * this status. In practice every service requires something, so
+         * PAY_AFTER_CHECK_IN was unusable -- it answered "AED 70.00 is
+         * required before this booking can be confirmed" to a customer who
+         * had just said they would pay at the salon.
+         *
+         * The ladder still runs and the requirement is still stored on the
+         * row, so the desk can ask for it on arrival. What it no longer does
+         * is refuse the booking. What that gives up is written down in
+         * confirm-booking.handler: a waived deposit means a no-show costs
+         * the customer nothing.
          */
+        depositDeferred: intent.kind === 'on_arrival',
         ...(intent.kind === 'link'
           ? {
               payment: {

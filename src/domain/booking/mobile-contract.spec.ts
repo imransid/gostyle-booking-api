@@ -538,3 +538,50 @@ describe('createIntentOf', () => {
     expect(toMobilePaymentStatus('none_required')).toBe('PAY_AFTER_CHECK_IN');
   });
 });
+
+describe('PAY_AFTER_CHECK_IN, and what it now means', () => {
+  it('is still one of the two arrangements a create may ask for', () => {
+    expect(createIntentOf('PAY_AFTER_CHECK_IN')).toEqual({
+      kind: 'on_arrival',
+    });
+    expect(createIntentOf('DRAFT')).toEqual({ kind: 'link' });
+  });
+
+  it('is still refused money at creation', () => {
+    /**
+     * WHAT DID NOT CHANGE. The deposit is now DEFERRED for this
+     * arrangement -- confirm no longer answers 402 when nothing is tendered
+     * -- but "pay at the salon" still means nothing was taken NOW. A payload
+     * claiming money moved is still a mismatch, because the two statements
+     * cannot both be true.
+     */
+    const refusal = checkPatch({
+      target: 'PAY_AFTER_CHECK_IN',
+      method: null,
+      advancePaidFils: 5000,
+      dueFils: null,
+      reference: null,
+      totalFils: 36750,
+      requiredDepositFils: 7000,
+    });
+    expect(refusal?.code).toBe('amount_mismatch');
+    expect(refusal?.expected).toBe(0);
+  });
+
+  it('takes nothing now, whatever deposit the ladder asked for', () => {
+    // The ladder still RUNS and the figure is still stored for the desk to
+    // ask for on arrival. It just no longer refuses the booking, which is
+    // what made this status unusable: every service required something.
+    expect(
+      checkPatch({
+        target: 'PAY_AFTER_CHECK_IN',
+        method: null,
+        advancePaidFils: 0,
+        dueFils: null,
+        reference: null,
+        totalFils: 36750,
+        requiredDepositFils: 7000,
+      }),
+    ).toBeNull();
+  });
+});
