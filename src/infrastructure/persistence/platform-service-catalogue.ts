@@ -105,12 +105,85 @@ export class PlatformServiceCatalogue {
     // list-by-branch is all platform offers today (ask B4), so the whole
     // catalogue comes back and we pick from it.
     const catalogue = await this.directory.listServices(tenantId, branchId);
+
+    /**
+     * ONE ROW PER SERVICE, OR WE DO NOT KNOW THE PRICE.
+     *
+     * `service_stage` holds several rows per service, and if ListServices
+     * ever returns one row per STAGE then a Map keyed on service_id keeps
+     * whichever arrived last -- silently pricing a whole visit at one
+     * stage's cost. That is indistinguishable from a correct answer at every
+     * layer above this one, and it ends up in booking_item.price_fils.
+     *
+     * Detected rather than assumed away, because the alternative is charging
+     * the wrong number and finding out from a customer.
+     */
+    const seen = new Map<string, number>();
+    for (const c of catalogue) {
+      const key = c.id.toLowerCase();
+      seen.set(key, (seen.get(key) ?? 0) + 1);
+    }
+    const duplicated = [...seen].filter(([, n]) => n > 1).map(([id]) => id);
+    if (duplicated.length > 0) {
+      PlatformServiceCatalogue.log.error(
+        `ListServices returned MULTIPLE rows for [${duplicated.join(',')}] at ` +
+          `branch ${branchId}. A price read from one of them is a guess; ` +
+          'refusing rather than charging it.',
+      );
+      throw bookingError(
+        'BOOKING_STATE_INVALID',
+        'The service catalogue returned more than one row for a service, so ' +
+          'its price is ambiguous.',
+        { services: duplicated },
+      );
+    }
+
     const byId = new Map(catalogue.map((c) => [c.id.toLowerCase(), c]));
 
     const found: Service[] = [];
     for (const id of wanted) {
       const row = byId.get(id.toLowerCase());
-      if (row !== undefined) found.push(toEngineService(row));
+      if (row === undefined) continue;
+
+      /**
+       * WHAT THE WIRE ACTUALLY SAID, for every service we are about to
+       * charge for.
+       *
+       * A booking was written at price_fils=1200 while ListServices reported
+       * price_minor=12000 for the same id -- a factor of ten, with no
+       * arithmetic anywhere between the two (the value passes untouched from
+       * `price_minor` through `priceMinor`, `priceFils`, `serviceFils` and
+       * `subtotalNetFils`). So the number must arrive wrong, and the only
+       * way to tell is to print it at the boundary where it lands.
+       *
+       * Logged at INFO with the neighbouring fields, because a proto skew
+       * garbles everything AFTER the shifted field: if the name and duration
+       * are right and only the price is wrong, it is not skew.
+       */
+      PlatformServiceCatalogue.log.log(
+        `wire service=${row.id} name="${row.name}" ` +
+          `price_minor=${row.priceMinor} (${typeof row.priceMinor}) ` +
+          `currency=${row.currency} duration=${row.durationMinutes}`,
+      );
+
+      if (!Number.isInteger(row.priceMinor) || row.priceMinor <= 0) {
+        /**
+         * A price that is not a positive whole minor unit is not a price.
+         * Zero is the AED 0.00 bug in another form, and a fraction means the
+         * field is not what the proto says it is.
+         */
+        PlatformServiceCatalogue.log.error(
+          `Refusing ${row.id}: price_minor=${JSON.stringify(row.priceMinor)} ` +
+            'is not a positive whole minor unit.',
+        );
+        throw bookingError(
+          'BOOKING_STATE_INVALID',
+          'That service has no usable price in the catalogue.',
+          { service: row.id, priceMinor: row.priceMinor },
+        );
+      }
+
+      found.push(toEngineService(row));
     }
 
     if (found.length < wanted.length && catalogue.length === 0) {
