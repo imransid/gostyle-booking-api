@@ -483,14 +483,33 @@ export function checkPatch(input: PatchInput): PatchRefusal | null {
     };
   }
 
-  // §11.3: the gateway's own id, whenever money moved.
-  if (input.reference === null || input.reference.trim() === '') {
-    return {
-      code: 'missing_payment_reference',
-      field: 'payment_reference',
-      message: 'payment_reference is required whenever money moved.',
-    };
-  }
+  /**
+   * §11.3 IS RELAXED WHILE PAYMENT IS SIMULATED.
+   *
+   * The rule: a gateway reference is required whenever money moved, and it
+   * is what makes a payment recordable only once -- the same reference twice
+   * returns the same booking instead of banking a second charge. There is no
+   * gateway yet, so demanding one meant inventing a fake id to get past a
+   * guard that protects against a real gateway's retries.
+   *
+   * WHAT THIS COSTS, so nobody has to rediscover it: with no reference, two
+   * identical patches are two payments. `Idempotency-Key` still catches an
+   * app that retries (gostyle-customer-api derives one from the body), but
+   * nothing catches a genuine duplicate callback. That is acceptable while
+   * every payment is a test and unacceptable the day one is not.
+   *
+   * RESTORE THIS WITH THE GATEWAY. Uncomment, and keep the `paymentReference`
+   * plumbing either side of it -- it is all still wired, and a reference that
+   * IS sent is still stored and still enforced unique, so nothing has to be
+   * rebuilt.
+   */
+  // if (input.reference === null || input.reference.trim() === '') {
+  //   return {
+  //     code: 'missing_payment_reference',
+  //     field: 'payment_reference',
+  //     message: 'payment_reference is required whenever money moved.',
+  //   };
+  // }
 
   return null;
 }

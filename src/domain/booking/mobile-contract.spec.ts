@@ -360,13 +360,25 @@ describe('checkPatch', () => {
     );
   });
 
-  it('requires a reference whenever money moved', () => {
-    expect(checkPatch({ ...base, reference: null })?.code).toBe(
-      'missing_payment_reference',
-    );
-    expect(checkPatch({ ...base, reference: '   ' })?.code).toBe(
-      'missing_payment_reference',
-    );
+  /**
+   * RELAXED WHILE PAYMENT IS SIMULATED. §11.3 requires a gateway reference
+   * whenever money moved, and that is what makes a payment recordable only
+   * once. There is no gateway yet, so the rule only forced callers to invent
+   * a fake id to satisfy a guard against a real gateway's retries.
+   *
+   * The test is inverted rather than deleted, so the day the check comes
+   * back this fails and says where to look. The cost is written down in
+   * `checkPatch`: with no reference, two identical patches are two payments.
+   */
+  it('accepts a payment with no reference, for now', () => {
+    expect(checkPatch({ ...base, reference: null })).toBeNull();
+    expect(checkPatch({ ...base, reference: '   ' })).toBeNull();
+  });
+
+  it('still takes a reference when one is sent', () => {
+    // The plumbing stays wired: a reference that IS sent is stored and
+    // still enforced unique, so restoring the rule rebuilds nothing.
+    expect(checkPatch({ ...base, reference: 'pi_3Qk2xLJ8n' })).toBeNull();
   });
 
   it('refuses taking more than the booking is worth', () => {
