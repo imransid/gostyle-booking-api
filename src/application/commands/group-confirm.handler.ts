@@ -19,8 +19,11 @@ import { Money } from '@domain/shared/money';
 import { priceOf } from './confirm-booking.handler';
 import {
   priceOfService,
+  skillsRequired,
   sourceOfAll,
 } from '@domain/booking/service-resolution';
+import { SlugIndex } from '@infrastructure/persistence/slug-uuid';
+import { DEFAULT_BRANCH_ID } from '@infrastructure/tenancy/branch-context';
 
 export interface GroupConfirmCommand {
   readonly groupId: string;
@@ -47,6 +50,12 @@ export interface GroupConfirmView {
 
 @Injectable()
 export class GroupConfirmHandler {
+  /**
+   * Every branch slug that exists. Anything else in the column is a real
+   * platform uuid and passes through untouched.
+   */
+  private static readonly branches = new SlugIndex([DEFAULT_BRANCH_ID]);
+
   constructor(
     private readonly repo: GroupConfirmRepository,
     private readonly prisma: PrismaService,
@@ -66,11 +75,31 @@ export class GroupConfirmHandler {
       );
     }
 
-    // The branch column is a uuid and the catalogue speaks slugs, so the
-    // trading day is the only thing read back from the row. The branch comes
-    // from the caller, as it does everywhere else.
     const tradingDay = group.tradingDay.toISOString().slice(0, 10);
-    const day = await this.context.loadDay('marina-walk', tradingDay);
+
+    /**
+     * THE BRANCH COMES FROM THE GROUP, not from a literal.
+     *
+     * This read 'marina-walk' in three places, under a comment claiming the
+     * branch "comes from the caller, as it does everywhere else". It did
+     * not: GroupConfirmDto carries no branch, so there was nothing to come
+     * from. Hold honoured cmd.branchId all the way down and confirm then
+     * discarded it, which is the worse half of the bug -- a party held at
+     * another branch was confirmed against marina-walk's roster, diary and
+     * chairs, and its bookings were written there.
+     *
+     * The reason for the literal was real: booking_group.branch_id is a
+     * uuid and the fixture catalogue speaks slugs, so the stored value
+     * looked one-way. It is not. toUuid passes a genuine uuid through
+     * unchanged and folds a slug deterministically, so SlugIndex inverts
+     * it -- a folded slug comes back as its slug, and a platform branch id
+     * comes back as itself (slug-uuid.spec.ts pins both).
+     *
+     * That is rule 8: use SlugIndex, never another local conversion.
+     */
+    const branchId = GroupConfirmHandler.branches.toSlug(group.branchId);
+
+    const day = await this.context.loadDay(branchId, tradingDay);
 
     const resourceCounts: Record<string, number> = {};
     for (const r of day.resources) {
@@ -80,7 +109,7 @@ export class GroupConfirmHandler {
     const items = await Promise.all(
       cmd.participants.map(async (p, i) => {
         const services = await this.context.loadServices(
-          'marina-walk',
+          branchId,
           p.serviceIds,
         );
         return {
@@ -91,7 +120,7 @@ export class GroupConfirmHandler {
             (n, s) => n + priceOfService(s, priceOf),
             0,
           ),
-          skills: [...new Set(services.map((s) => s.skill))],
+          skills: skillsRequired(services),
           durationMin: services.reduce((n, s) => n + s.durationMin, 0),
           resourceType: services[services.length - 1]!.resourceType,
           preferredStaffId: p.preferredStaffId,
@@ -104,7 +133,7 @@ export class GroupConfirmHandler {
     const outcome = await this.repo.confirm({
       groupId: cmd.groupId,
       holdId: cmd.holdId,
-      branchId: 'marina-walk',
+      branchId,
       tradingDay,
       items,
       roster: {

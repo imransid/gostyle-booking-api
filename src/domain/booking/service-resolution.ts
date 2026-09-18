@@ -166,3 +166,33 @@ export function totalOf(
   }
   return Money.sum(amounts.map((a) => Money.fils(a)));
 }
+
+/**
+ * The distinct skills a chain of services actually requires.
+ *
+ * DROPS THE EMPTY SKILL, and that is the whole point of the function.
+ *
+ * A platform service arrives with `skill: ''` -- services.proto does not
+ * carry skill_id yet (ask A1), so `toEngineService` stubs it. The single
+ * booking engine is unharmed: `eligible` compares LEVELS, and
+ * `(p.skills.get('') ?? 0) < 0` is false, so an unknown skill excludes
+ * nobody.
+ *
+ * The party planner compares NAMES -- `p.skills.every(s => pro.skills
+ * .includes(s))` -- and no professional lists an empty string, so the same
+ * stub emptied every pool and the group refused every platform service at
+ * every time of day with "nobody available covers this".
+ *
+ * An empty skill is not a requirement nobody meets. It is the ABSENCE of a
+ * requirement, and the two must not read the same. Treating it as
+ * unconstrained is also exactly what SKILLS_UNVERIFIED already promises
+ * ("every professional is treated as qualified"), and without that flag the
+ * catalogue refuses the basket long before this is reached -- so this never
+ * silently books an unqualified professional that the flag had not already
+ * consented to.
+ */
+export function skillsRequired(
+  services: readonly { readonly skill: string }[],
+): string[] {
+  return [...new Set(services.map((s) => s.skill).filter((s) => s !== ''))];
+}

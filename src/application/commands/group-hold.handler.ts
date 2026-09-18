@@ -16,6 +16,7 @@ import {
 import { DAILY_BOOKING_CAP, formatMinute } from '@domain/availability/grid';
 import { HOLD_TTL_MS } from '@domain/booking/hold';
 import type { GroupMode } from '@domain/availability/party';
+import { skillsRequired } from '@domain/booking/service-resolution';
 
 export interface GroupHoldCommand {
   readonly branchId: string;
@@ -103,7 +104,7 @@ export class GroupHoldHandler {
           );
         }
         const durationMin = services.reduce((n, s) => n + s.durationMin, 0);
-        const skills = [...new Set(services.map((s) => s.skill))];
+        const skills = skillsRequired(services);
 
         return {
           participant: {

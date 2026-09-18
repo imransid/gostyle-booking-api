@@ -4,6 +4,7 @@ import {
   looksLikePlatformId,
   oneCurrency,
   priceOfService,
+  skillsRequired,
   sourceOf,
   sourceOfAll,
   totalOf,
@@ -193,5 +194,26 @@ describe('sourceOfAll', () => {
 
   it('is unaffected by how many services share one source', () => {
     expect(sourceOfAll([platform, platform, platform])).toBe('platform');
+  });
+});
+
+describe('skillsRequired', () => {
+  it('lists each required skill once', () => {
+    expect(
+      skillsRequired([{ skill: 'colour' }, { skill: 'cut' }, { skill: 'cut' }]),
+    ).toEqual(['colour', 'cut']);
+  });
+
+  it('drops the empty skill a platform stub carries', () => {
+    // party.ts matches skills by NAME. An empty string is in no
+    // professional's list, so leaving it in empties every pool and the
+    // group is refused at every time of day.
+    expect(skillsRequired([{ skill: '' }, { skill: 'cut' }])).toEqual(['cut']);
+  });
+
+  it('asks for nothing when nothing is known', () => {
+    // Not "a requirement nobody meets" -- no requirement at all.
+    expect(skillsRequired([{ skill: '' }])).toEqual([]);
+    expect(skillsRequired([])).toEqual([]);
   });
 });
