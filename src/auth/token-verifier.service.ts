@@ -12,6 +12,7 @@ import {
   describeConsumerAuthFailure,
   isConsumerAuthUnreachable,
 } from './consumer-auth-failure';
+import type { ErrorCode } from '@application/contract/errors';
 
 /** Claims a staff token carries. Issued by gostyle-api (NestJS). */
 interface StaffClaims {
@@ -143,9 +144,25 @@ export class TokenVerifier {
         `Consumer API unreachable at ${consumerGrpcAddress()} -- ` +
           `${describeConsumerAuthFailure(e)}`,
       );
-      throw new ServiceUnavailableException(
-        'Customer authentication is unavailable',
-      );
+      /**
+       * THE CODE IS DECLARED, not left to be inferred.
+       *
+       * The edge filter falls back to matching the prose when a throw site
+       * names no code, and this message contains the word "unavailable" --
+       * which the matcher read as a stylist being unavailable and answered
+       * BOOKING_STAFF_UNAVAILABLE with a 503. Saying which code this is
+       * removes the guess entirely; the status-based rule in inferCode is
+       * now the backstop rather than the mechanism.
+       */
+      throw new ServiceUnavailableException({
+        statusCode: 503,
+        code: 'DEPENDENCY_UNAVAILABLE' satisfies ErrorCode,
+        message: 'Customer authentication is unavailable',
+        details: {
+          dependency: 'consumer-auth',
+          address: consumerGrpcAddress(),
+        },
+      });
     }
 
     if (identity === null) {
