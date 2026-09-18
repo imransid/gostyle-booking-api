@@ -51,6 +51,15 @@ export interface ConfirmBookingInput {
   readonly items: readonly ConfirmItem[];
   readonly priceFils: number;
   readonly depositFils: number;
+  /**
+   * The §2 breakdown, from the verified quote. Optional so the desk paths
+   * that have no such breakdown keep compiling and keep writing NULLs --
+   * which is what they did before, and is honest for them.
+   */
+  readonly netFils?: number | null;
+  readonly taxFils?: number | null;
+  readonly discountFils?: number | null;
+  readonly promoCode?: string | null;
   /** "Service rule 50% (Full color and gloss)". Answers "why was I charged this". */
   readonly requirementSource: string | null;
   readonly payment: PaymentRecord | null;
@@ -182,6 +191,29 @@ export class BookingRepository {
             durationMin: totalDuration,
             priceFils: input.priceFils,
             depositFils: input.depositFils,
+            /**
+             * THE BREAKDOWN, WRITTEN AT LAST.
+             *
+             * These four columns were added for the FE contract and then
+             * never filled by anything, so every booking carried NULLs. That
+             * only showed up when a booking could not be re-quoted -- a
+             * retired service, or a read that arrives without a tenant --
+             * and there was nothing on the row to fall back to, so a booking
+             * that existed could be neither read nor paid for.
+             *
+             * `price_fils` alone cannot stand in: it is the NET total with
+             * no VAT in it, and reporting it as the total understates every
+             * booking by the tax.
+             *
+             * Taken from the VERIFIED quote, never from the client's claim.
+             * §3 already compared the two and refused a mismatch, so by the
+             * time this runs they agree -- and the server's figure is the
+             * one that was actually charged.
+             */
+            netFils: input.netFils ?? null,
+            taxFils: input.taxFils ?? null,
+            discountFils: input.discountFils ?? null,
+            promoCode: input.promoCode ?? null,
             requirementSource: input.requirementSource,
             linkExpiresAt: input.linkExpiresAt,
             channel: input.channel,

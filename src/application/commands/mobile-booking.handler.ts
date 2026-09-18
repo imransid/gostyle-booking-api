@@ -14,6 +14,7 @@ import {
   toUuid,
 } from '@infrastructure/persistence/hold.repository';
 import { MobilePaymentRepository } from '@infrastructure/persistence/mobile-payment.repository';
+import { TenantContext } from '@infrastructure/tenancy/tenant-context';
 import { SlugIndex } from '@infrastructure/persistence/slug-uuid';
 import { DEFAULT_BRANCH_ID } from '@infrastructure/tenancy/branch-context';
 import {
@@ -102,6 +103,8 @@ function withRecurring(counts: {
 /** The money columns a booking carries when the catalogue cannot price it. */
 interface StoredMoney {
   readonly id: string;
+  /** The tenant the booking was written under. Scopes its own catalogue. */
+  readonly tenantId: string | null;
   readonly netFils: number | null;
   readonly taxFils: number | null;
   readonly discountFils: number | null;
@@ -175,6 +178,7 @@ export class MobileBookingHandler {
     private readonly quotes: GetQuoteHandler,
     private readonly bookings: BookingRepository,
     private readonly payments: MobilePaymentRepository,
+    private readonly tenants: TenantContext,
     @Inject(BOOKING_CONTEXT) private readonly context: BookingContextReader,
   ) {}
 
@@ -933,9 +937,11 @@ export class MobileBookingHandler {
    * every figure by the tax, and understating what someone owes is worse
    * than admitting the number is unavailable.
    */
-  private async moneyFor(b: StoredMoney & QuotableBooking): Promise<BookingMoney> {
+  private async moneyFor(
+    b: StoredMoney & QuotableBooking,
+  ): Promise<BookingMoney> {
     try {
-      const quote = await this.quoteFor(b);
+      const quote = await this.inBookingTenant(b, () => this.quoteFor(b));
       return {
         subtotalFils: quote.subtotalMinor,
         vatFils: quote.vatMinor,
@@ -966,6 +972,32 @@ export class MobileBookingHandler {
         priced: false,
       };
     }
+  }
+
+  /**
+   * Run something with the BOOKING's tenant in scope, not the request's.
+   *
+   * WHY A READ SHOULD NOT NEED A HEADER. The service catalogue is
+   * tenant-scoped, and `TenantContext` is filled from `X-Tenant-Id` on the
+   * way in. On a create that is fine — the caller names the salon, so the
+   * tenant can be derived from it. On `GET /booking/:id` and `PATCH` the
+   * caller holds only a booking id, and there is no way to know a tenant
+   * from one. Without the header the catalogue lookup found nothing and
+   * every service looked retired, so a booking that existed answered
+   * `404 Unknown service` to both reading and paying.
+   *
+   * The booking itself records the tenant it was written under, which is a
+   * better answer than a header the caller had to guess. Used only when the
+   * request carried none: a header that IS present belongs to a caller who
+   * knows their own tenancy, and overriding it here would let this method
+   * decide whose catalogue a booking is priced against.
+   */
+  private inBookingTenant<T>(
+    b: { readonly tenantId: string | null },
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    if (this.tenants.current() !== null || b.tenantId === null) return fn();
+    return this.tenants.run(b.tenantId, fn);
   }
 
   /** §8, read back from what was actually stored. */

@@ -18,21 +18,24 @@ import { storedTotalFils } from './stored-money';
 describe('storedTotalFils', () => {
   it('rebuilds the total the customer agreed to', () => {
     // 350.00 + 17.50 tax, no discount -> 367.50, in fils.
-    expect(storedTotalFils({ netFils: 35000, taxFils: 1750, discountFils: 0 }))
-      .toBe(36750);
+    expect(
+      storedTotalFils({ netFils: 35000, taxFils: 1750, discountFils: 0 }),
+    ).toBe(36750);
   });
 
   it('takes the discount off', () => {
-    expect(storedTotalFils({ netFils: 35000, taxFils: 1750, discountFils: 2000 }))
-      .toBe(34750);
+    expect(
+      storedTotalFils({ netFils: 35000, taxFils: 1750, discountFils: 2000 }),
+    ).toBe(34750);
   });
 
   it('treats missing tax and discount as zero, not as missing', () => {
     // These two columns are nullable for rows written before the breakdown
     // existed. A null there means "none", and only a null NET means the
     // breakdown is absent altogether.
-    expect(storedTotalFils({ netFils: 35000, taxFils: null, discountFils: null }))
-      .toBe(35000);
+    expect(
+      storedTotalFils({ netFils: 35000, taxFils: null, discountFils: null }),
+    ).toBe(35000);
   });
 
   it('is null when there is no stored breakdown at all', () => {
@@ -43,7 +46,8 @@ describe('storedTotalFils', () => {
      * saying the number is unavailable. A payment is refused outright in
      * this case rather than checked against a number we do not have.
      */
-    expect(storedTotalFils({ netFils: null, taxFils: 1750, discountFils: 0 }))
-      .toBeNull();
+    expect(
+      storedTotalFils({ netFils: null, taxFils: 1750, discountFils: 0 }),
+    ).toBeNull();
   });
 });

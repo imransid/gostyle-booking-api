@@ -266,6 +266,16 @@ export class ConfirmBookingHandler {
       items,
       priceFils: total.fils,
       depositFils: deposit.fils,
+      /**
+       * THE BREAKDOWN, STORED. `priced` was computed here and then thrown
+       * away, so every booking carried NULLs in the four columns the FE
+       * contract added for it -- and a booking that could not be re-quoted
+       * later had nothing to be priced from. These are the SERVER's figures,
+       * not the client's claim.
+       */
+      netFils: priced.subtotalNetFils,
+      taxFils: priced.vatFils,
+      discountFils: priced.tierDiscountFils + priced.bundleDiscountFils,
       requirementSource:
         requirement.kind === 'none' ? null : requirement.source,
       payment:
