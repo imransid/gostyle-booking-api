@@ -43,6 +43,8 @@ import { WalkInRepository } from './walk-in.repository';
 import { WalkInGapListener } from '../messaging/walk-in-gap-listener';
 import { WalkInSeatedListener } from '../messaging/walk-in-seated-listener';
 import { StylistRepository } from './stylist.repository';
+import { PlatformProductCatalogue } from './platform-product-catalogue';
+import { ProductsGrpcModule } from '../grpc/products-grpc.module';
 
 /**
  * Global on purpose. One connection pool per process, shared by every module
@@ -59,7 +61,7 @@ import { StylistRepository } from './stylist.repository';
    *
    * PlatformStaffRoster and StaffGrpcModule are the same pair for the roster.
    */
-  imports: [ServicesGrpcModule, StaffGrpcModule],
+  imports: [ServicesGrpcModule, StaffGrpcModule, ProductsGrpcModule],
   providers: [
     TenantContext,
     BranchContext,
@@ -137,6 +139,7 @@ import { StylistRepository } from './stylist.repository';
     DbBookingContext,
     FixtureBookingContext,
     StylistRepository,
+    PlatformProductCatalogue,
   ],
   exports: [
     TenantContext,
@@ -174,6 +177,7 @@ import { StylistRepository } from './stylist.repository';
     DbBookingContext,
     FixtureBookingContext,
     StylistRepository,
+    PlatformProductCatalogue,
   ],
 })
 export class PersistenceModule {}
