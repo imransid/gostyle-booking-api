@@ -41,6 +41,7 @@ const CODE_BY_FIELD: Readonly<Record<string, MobileErrorCode>> = {
   total: 'amount_mismatch',
   advance_paid_amount: 'amount_mismatch',
   due_amount: 'amount_mismatch',
+  products: 'unknown_product',
 };
 
 export function mobileValidationPipe(): ValidationPipe {

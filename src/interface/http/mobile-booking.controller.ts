@@ -30,14 +30,17 @@ import {
   IsArray,
   IsIn,
   IsISO8601,
+  IsInt,
   IsNumber,
   IsOptional,
   IsString,
   Matches,
+  Max,
   Min,
   ValidateNested,
 } from 'class-validator';
 import { MobileBookingHandler } from '@application/commands/mobile-booking.handler';
+import { MAX_PRODUCT_QUANTITY } from '@domain/booking/mobile-products';
 import { IdempotentInterceptor } from './idempotent.interceptor';
 import { mobileValidationPipe } from './mobile-validation.pipe';
 import type { MobilePaymentMethod } from '@domain/booking/mobile-contract';
@@ -64,6 +67,22 @@ export class MobileLineDto {
   amount!: number;
 }
 
+/** A product line: a line plus a quantity. `id` is the VARIANT id. */
+export class MobileProductLineDto extends MobileLineDto {
+  @ApiPropertyOptional({
+    example: 1,
+    default: 1,
+    minimum: 1,
+    maximum: MAX_PRODUCT_QUANTITY,
+    description: 'Whole units. Omitted means 1. `amount` is the UNIT price.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(MAX_PRODUCT_QUANTITY)
+  quantity?: number;
+}
+
 export class MobileBookingDto {
   @ApiProperty({ example: 'marina-walk' })
   @IsString()
@@ -77,17 +96,18 @@ export class MobileBookingDto {
   services!: MobileLineDto[];
 
   @ApiPropertyOptional({
-    type: [MobileLineDto],
+    type: [MobileProductLineDto],
     description:
-      'REFUSED with 422 products_not_supported when non-empty. There is no ' +
-      'product catalogue to price a line against, and a product silently ' +
-      'dropped from a basket is money the salon does not take.',
+      'Refused with 422 products_not_supported unless PRODUCTS_FROM_PLATFORM ' +
+      'is on. With it on, each line is checked against the platform ' +
+      'catalogue: unknown_product, amount_mismatch, currency_mismatch, ' +
+      'out_of_stock.',
   })
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => MobileLineDto)
-  products?: MobileLineDto[];
+  @Type(() => MobileProductLineDto)
+  products?: MobileProductLineDto[];
 
   @ApiProperty({
     type: [String],
