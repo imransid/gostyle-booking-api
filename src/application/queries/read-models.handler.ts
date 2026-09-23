@@ -1231,30 +1231,64 @@ export class BookingReadHandler {
   ): Promise<BookingView[]> {
     if (rows.length === 0) return [];
 
-    const day = rows[0]!.trading_day.toISOString().slice(0, 10);
+    /**
+     * THE ROSTER IS PER DAY, AND SO IS THIS.
+     *
+     * This took the date off the FIRST row and loaded one day's roster. The
+     * day grid only ever holds one day, so it looked right; the week grid
+     * holds seven, and everyone was matched against Monday. A stylist off on
+     * Monday lost their name all week -- and worse, the slug lookup missed
+     * too, so their `staff.id` came back as the folded hash while the day
+     * grid published "maya". Two endpoints spelling one stylist two ways is
+     * the trap in CLAUDE.md 8, and a staff filter built on it misses them
+     * silently.
+     *
+     * One load per DISTINCT day, in parallel. A week is seven; a day is one,
+     * exactly as before.
+     */
+    const days = [
+      ...new Set(rows.map((r) => r.trading_day.toISOString().slice(0, 10))),
+    ];
     const staffNames = new Map<string, string>();
     const staffSlugs = new Map<string, string>();
-    try {
-      const ctx = await this.context.loadDay(branchId, day);
-      // THE SLUG/UUID BOUNDARY (CLAUDE.md 8). The roster speaks slugs
-      // ("maya"); booking_item.staff_id holds toUuid("maya"). Keying the
-      // name map by the slug meant every lookup missed and every booking
-      // rendered with a null professional -- silently, because a missing
-      // name is not an error. SlugIndex answers to both spellings.
-      const index = new SlugIndex(ctx.professionals.map((p) => p.id));
-      for (const p of ctx.professionals) staffNames.set(p.id, p.name);
-      for (const r of rows) {
-        for (const raw of r.staff_ids ?? []) {
-          const slug = index.toSlug(raw);
-          const name = staffNames.get(slug);
-          if (name !== undefined) staffNames.set(raw, name);
-          if (slug !== raw) staffSlugs.set(raw, slug);
-        }
+
+    /**
+     * ONE DAY'S FAILURE COSTS ONE DAY'S NAMES.
+     *
+     * A single try around all seven loads would have let a Tuesday blip
+     * blank the names for the whole week -- silently, since a null name is
+     * not an error. Each day is caught on its own, so Tuesday loses its
+     * stylists and the other six keep theirs.
+     */
+    const rosters = await Promise.all(
+      days.map((d) =>
+        this.context
+          .loadDay(branchId, d)
+          .then((c) => c.professionals)
+          .catch(() => {
+            // A name is decoration. Rule 2 -- missing data removes capacity,
+            // never adds it -- is about AVAILABILITY; refusing to render the
+            // diary because the roster service blinked would help nobody.
+            return [];
+          }),
+      ),
+    );
+
+    // THE SLUG/UUID BOUNDARY (CLAUDE.md 8). The roster speaks slugs
+    // ("maya"); booking_item.staff_id holds toUuid("maya"). Keying the
+    // name map by the slug meant every lookup missed and every booking
+    // rendered with a null professional -- silently, because a missing
+    // name is not an error. SlugIndex answers to both spellings.
+    const everyone = rosters.flat();
+    const index = new SlugIndex(everyone.map((p) => p.id));
+    for (const p of everyone) staffNames.set(p.id, p.name);
+    for (const r of rows) {
+      for (const raw of r.staff_ids ?? []) {
+        const slug = index.toSlug(raw);
+        const name = staffNames.get(slug);
+        if (name !== undefined) staffNames.set(raw, name);
+        if (slug !== raw) staffSlugs.set(raw, slug);
       }
-    } catch {
-      // A name is decoration. Rule 2 -- missing data removes capacity, never
-      // adds it -- is about AVAILABILITY; refusing to render the diary
-      // because the roster service blinked would help nobody.
     }
 
     const ids = [...new Set(rows.map((r) => r.customer_id))];
