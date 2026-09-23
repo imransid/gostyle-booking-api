@@ -39,8 +39,12 @@ import {
 } from '@domain/booking/read-models';
 import {
   LIVE_STATUSES,
+  CALENDAR_CHIPS,
+  CHIP_STATUSES,
+  isCalendarChip,
   isListFilter,
   statusesFor,
+  statusesForChips,
   toDepositOutcome,
   toScreenPayment,
   toScreenStatus,
@@ -468,15 +472,60 @@ export class BookingReadHandler {
     date: string,
     filters: { staffId?: string | undefined; status?: string | undefined },
   ): Promise<unknown> {
-    const [rows, ctx] = await Promise.all([
-      this.reads.list({
-        branchId,
-        fromDay: date,
-        toDay: addDays(date, 1),
-        ...(filters.staffId === undefined ? {} : { staffId: filters.staffId }),
-      }),
+    /**
+     * THE CHIPS, READ ONCE.
+     *
+     * `status=checked_in,in_service` arrives as one string. An unknown word
+     * is dropped rather than silently matching nothing -- the controller
+     * refuses it before it reaches here.
+     */
+    const chips = (filters.status ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s !== '')
+      .filter(isCalendarChip);
+
+    const chosen = statusesForChips(chips);
+
+    /**
+     * EVERY STATUS A CHIP CAN REACH, not just the live ones.
+     *
+     * The read defaulted to LIVE_STATUSES, which excludes no_show and
+     * cancelled -- so those two chips filtered a list their bookings were
+     * never in and always returned nothing, silently. The day is read wide
+     * and the KPIs narrow back to live below.
+     */
+    const window = {
+      branchId,
+      fromDay: date,
+      toDay: addDays(date, 1),
+      statuses: CHIP_STATUSES,
+      ...(filters.staffId === undefined ? {} : { staffId: filters.staffId }),
+    };
+
+    /**
+     * TWO READS, DELIBERATELY.
+     *
+     * `all` is the whole day and feeds the KPI strip; `rows` is what the
+     * chips narrowed to and feeds the grid. Computing the strip from the
+     * filtered set made "Cancelled" report cancelled bookings as booked
+     * revenue -- a number that describes the filter, not the day.
+     */
+    const [all, ctx] = await Promise.all([
+      this.reads.list(window),
       this.context.loadDay(branchId, date),
     ]);
+
+    /**
+     * NO CHIP MEANS LIVE VISITS, not everything.
+     *
+     * The day is read wide so the no-show and cancelled chips have rows to
+     * find, but opening the diary should show today's work, not last week's
+     * losses. A cancelled visit is something you go looking for.
+     */
+    const rows = all.filter((r) =>
+      (chosen ?? LIVE_STATUSES).includes(r.status),
+    );
 
     const bookings = await this.decorate(branchId, rows);
 
@@ -521,7 +570,17 @@ export class BookingReadHandler {
       };
     });
 
-    const bookedMin = rows.reduce((n, r) => n + r.duration_min, 0);
+    /**
+     * THE STRIP COUNTS LIVE BOOKINGS ONLY.
+     *
+     * `all` now carries cancelled and no-showed visits so their chips work.
+     * Counting them as booked revenue would report lost money as earned.
+     */
+    const live = all.filter((r) =>
+      (LIVE_STATUSES as readonly string[]).includes(r.status),
+    );
+
+    const bookedMin = live.reduce((n, r) => n + r.duration_min, 0);
     const sellable = inView.reduce(
       (n, p) =>
         n +
@@ -546,11 +605,19 @@ export class BookingReadHandler {
       closureReason: ctx.closureReason ?? null,
       columns,
       bookings,
+      /**
+       * THE STRIP DESCRIBES THE DAY, NOT THE FILTER.
+       *
+       * Every figure here reads `all`, never `rows`. Tapping a chip narrows
+       * the grid below and leaves these still, which is what the desk
+       * expects of a header.
+       */
+      counts: chipCounts(all),
       kpis: {
-        booked: rows.length,
+        booked: live.length,
         utilisation: Number(utilisation(bookedMin, sellable).toFixed(4)),
-        revenue: wholeAed(rows.reduce((n, r) => n + r.price_fils, 0)),
-        pendingDeposits: rows.filter((r) => r.status === 'pending_payment')
+        revenue: wholeAed(live.reduce((n, r) => n + r.price_fils, 0)),
+        pendingDeposits: live.filter((r) => r.status === 'pending_payment')
           .length,
         conflicts: (await this.reads.openConflicts(branchId)).filter(
           (c) => c.trading_day.toISOString().slice(0, 10) === date,
@@ -1259,6 +1326,21 @@ function eventOutcome(p: PaymentStatus): string {
 
 function nowMinute(): number {
   return branchNowMinute();
+}
+
+/**
+ * How many bookings sit behind each chip.
+ *
+ * Over the WHOLE window, never the filtered set: a chip showing the size of
+ * what you are already looking at reads the same number every time.
+ */
+function chipCounts(rows: readonly BookingRow[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const chip of CALENDAR_CHIPS) {
+    const statuses = statusesForChips([chip]) ?? [];
+    out[chip] = rows.filter((r) => statuses.includes(r.status)).length;
+  }
+  return out;
 }
 
 export { LIVE_STATUSES };

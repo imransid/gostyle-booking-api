@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CALENDAR_CHIPS,
   LIST_FILTERS,
   LIVE_STATUSES,
+  isCalendarChip,
   isListFilter,
   isAmbiguous,
   statusesFor,
+  statusesForChips,
   toDepositOutcome,
   toScreenPayment,
   toScreenStatus,
@@ -187,5 +190,63 @@ describe('LIVE_STATUSES', () => {
     // The diary shows what blocks capacity. Sharing the definition with the
     // engine is what stops the grid and the masks disagreeing (CLAUDE.md 4).
     expect([...LIVE_STATUSES].sort()).toEqual([...BLOCKING_STATES].sort());
+  });
+});
+
+describe('calendar chips', () => {
+  it('folds a chip to its stored statuses', () => {
+    expect(statusesForChips(['checked_in'])).toEqual(['checked_in']);
+  });
+
+  it('upcoming is three statuses, not one', () => {
+    expect(statusesForChips(['upcoming'])).toEqual([
+      'pending_confirmation',
+      'confirmed',
+      'pending_payment',
+    ]);
+  });
+
+  it('completed includes settled', () => {
+    expect(statusesForChips(['completed'])).toEqual(['completed', 'settled']);
+  });
+
+  it('merges two chips without repeating a status', () => {
+    expect(statusesForChips(['checked_in', 'in_service'])).toEqual([
+      'checked_in',
+      'in_service',
+    ]);
+  });
+
+  /**
+   * NULL, NOT EVERY STATUS. "No chip picked" and "every chip picked" are
+   * different questions: the first falls back to LIVE_STATUSES, which hides
+   * cancelled visits; the second would show them.
+   */
+  it('no chips means no filter', () => {
+    expect(statusesForChips([])).toBeNull();
+  });
+
+  it('refuses a word that is not a chip', () => {
+    expect(isCalendarChip('checkedin')).toBe(false);
+    expect(isCalendarChip('checked_in')).toBe(true);
+  });
+
+  /**
+   * The five with no chip. A draft or a held row has no business on a diary,
+   * and rescheduled is a move, not a cancellation.
+   */
+  it('never shows draft, held, expired, skipped or rescheduled', () => {
+    const shown = new Set(
+      CALENDAR_CHIPS.flatMap((c) => statusesForChips([c]) ?? []),
+    );
+    for (const hidden of [
+      'draft',
+      'held',
+      'expired',
+      'skipped',
+      'rescheduled',
+    ]) {
+      expect(shown.has(hidden as never)).toBe(false);
+    }
   });
 });

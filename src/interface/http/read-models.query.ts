@@ -9,7 +9,10 @@ import {
   Max,
   Min,
 } from 'class-validator';
-import { LIST_FILTERS } from '@application/contract/screen-view';
+import {
+  CALENDAR_CHIPS,
+  LIST_FILTERS,
+} from '@application/contract/screen-view';
 import { EVENT_KINDS } from '@domain/booking/cancellation-feed';
 
 /**
@@ -37,6 +40,11 @@ import { EVENT_KINDS } from '@domain/booking/cancellation-feed';
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 const MONTH = /^\d{4}-\d{2}$/;
+
+/** One or more chip names, comma-separated, nothing else. */
+const CHIP_LIST = new RegExp(
+  `^(${CALENDAR_CHIPS.join('|')})(,(${CALENDAR_CHIPS.join('|')}))*$`,
+);
 
 /** `branchId` is accepted everywhere and authoritative nowhere. See §1. */
 class BranchScoped {
@@ -114,9 +122,32 @@ export class CalendarDayQuery extends BranchScoped {
   @IsString()
   staffId?: string;
 
-  @ApiPropertyOptional()
+  /**
+   * THE VISIT-STATUS CHIPS, comma-separated.
+   *
+   * Checked here, not in the handler: `status` used to pass @IsString and
+   * then be ignored entirely, so a typo returned the WHOLE day and looked
+   * like a filter that had worked. The caller is now told which word was
+   * wrong.
+   *
+   * EMPTY IS ABSENT. The chip bar sends `status=` when nothing is picked,
+   * and that means the diary, not a 400. @IsOptional only skips a missing
+   * value, so the empty string is made missing first.
+   */
+  @ApiPropertyOptional({
+    enum: CALENDAR_CHIPS,
+    isArray: true,
+    example: 'checked_in,in_service',
+    description: 'Comma-separated. Omit, or send empty, for every live status.',
+  })
+  @Transform(({ value }: { value: unknown }): unknown =>
+    value === '' ? undefined : value,
+  )
   @IsOptional()
   @IsString()
+  @Matches(CHIP_LIST, {
+    message: `status must be a comma-separated list of: ${CALENDAR_CHIPS.join(', ')}`,
+  })
   status?: string;
 }
 

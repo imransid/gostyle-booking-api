@@ -183,3 +183,59 @@ export const LIVE_STATUSES: readonly BookingStatus[] = [
   'completed',
   'settled',
 ];
+
+/**
+ * The visit-status chips on the staff calendar.
+ *
+ * Deliberately NOT LIST_FILTERS above: those are the customer list's tabs
+ * (TODAY, CONFLICTS, NOT_REMINDED) and mean different things. Folding them
+ * together would make one impossible to change without the other.
+ */
+export const CALENDAR_CHIPS = [
+  'upcoming',
+  'checked_in',
+  'in_service',
+  'completed',
+  'no_show',
+  'cancelled',
+] as const;
+
+export type CalendarChip = (typeof CALENDAR_CHIPS)[number];
+
+export function isCalendarChip(v: string): v is CalendarChip {
+  return (CALENDAR_CHIPS as readonly string[]).includes(v);
+}
+
+/** Which stored statuses each chip means. */
+const CHIP_MAP: Readonly<Record<CalendarChip, readonly BookingStatus[]>> = {
+  upcoming: ['pending_confirmation', 'confirmed', 'pending_payment'],
+  checked_in: ['checked_in'],
+  in_service: ['in_service'],
+  completed: ['completed', 'settled'],
+  no_show: ['no_show'],
+  cancelled: ['cancelled'],
+};
+
+/**
+ * The chips a caller picked, flattened to stored statuses.
+ *
+ * No chips means no filter, so the caller falls back to LIVE_STATUSES.
+ * `draft`, `held`, `expired`, `skipped` and `rescheduled` have no chip and
+ * are never shown.
+ */
+export function statusesForChips(
+  chips: readonly CalendarChip[],
+): readonly BookingStatus[] | null {
+  if (chips.length === 0) return null;
+  return [...new Set(chips.flatMap((c) => CHIP_MAP[c]))];
+}
+
+/**
+ * Every status a calendar chip can show.
+ *
+ * Wider than LIVE_STATUSES: the diary defaults to live visits, but the
+ * no-show and cancelled chips need rows the default read would drop.
+ */
+export const CHIP_STATUSES: readonly BookingStatus[] = [
+  ...new Set(CALENDAR_CHIPS.flatMap((c) => CHIP_MAP[c])),
+];
