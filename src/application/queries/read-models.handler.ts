@@ -651,7 +651,7 @@ export class BookingReadHandler {
         toDay: to,
         limit: WEEK_LIMIT,
       }),
-      this.reads.dailyTotals(branchId, from, to),
+      this.reads.dailyTotals({ branchId, fromDay: from, toDay: to }),
     ]);
 
     /**
@@ -694,7 +694,11 @@ export class BookingReadHandler {
     horizonDays: number,
   ): Promise<unknown> {
     const { from, to } = monthBounds(month);
-    const totals = await this.reads.dailyTotals(branchId, from, to);
+    const totals = await this.reads.dailyTotals({
+      branchId,
+      fromDay: from,
+      toDay: to,
+    });
     const byDay = new Map(totals.map((t) => [t.day, t]));
 
     const lastBookable = addDays(today(), horizonDays);
@@ -721,7 +725,7 @@ export class BookingReadHandler {
     const [current, prior, totals] = await Promise.all([
       this.reads.windowStats(branchId, start, end),
       this.reads.windowStats(branchId, priorStart, start),
-      this.reads.dailyTotals(branchId, start, end),
+      this.reads.dailyTotals({ branchId, fromDay: start, toDay: end }),
     ]);
 
     const byDay = new Map(totals.map((t) => [t.day, t]));

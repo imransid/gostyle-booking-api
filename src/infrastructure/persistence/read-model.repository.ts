@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from './prisma.service';
 import { toUuid } from './hold.repository';
 import type { BookingStatus } from '@domain/booking/lifecycle';
@@ -68,6 +69,46 @@ export interface ListFilters {
   readonly offset?: number | undefined;
 }
 
+/**
+ * THE WHERE, WRITTEN ONCE.
+ *
+ * `list` and `count` each carried their own copy of these conditions, and
+ * they had already drifted: staffId and customerId narrowed the rows and not
+ * the count, so a filtered read showed five rows and reported `total: 109`.
+ * Every pager built on that asks for pages that do not exist.
+ *
+ * One builder, every caller. A filter added here reaches all of them, and
+ * the grid cannot disagree with the strip about what it is looking at
+ * (CLAUDE.md 4).
+ *
+ * Prisma.sql binds its arguments exactly as a tagged template does, so
+ * nothing here is string concatenation.
+ */
+function bookingWhere(f: ListFilters): Prisma.Sql {
+  const statuses = [...(f.statuses ?? LIVE_STATUSES)];
+
+  return Prisma.sql`
+         b.branch_id = ${toUuid(f.branchId)}::uuid
+     AND b.trading_day >= ${f.fromDay}::date
+     AND b.trading_day < ${f.toDay}::date
+     AND b.status::text = ANY(${statuses}::text[])
+     AND (${f.staffId ?? null}::text IS NULL OR EXISTS (
+           SELECT 1 FROM booking_item si
+            WHERE si.booking_id = b.id
+              AND si.staff_id = ${
+                f.staffId === undefined ? null : toUuid(f.staffId)
+              }::uuid))
+     AND (${f.customerId ?? null}::text IS NULL
+          OR b.customer_id = ${
+            f.customerId === undefined ? null : toUuid(f.customerId)
+          }::uuid)
+     AND (${f.notReminded ?? false}::boolean IS FALSE
+          OR b.reminded_24h_at IS NULL)
+     AND (${f.conflictsOnly ?? false}::boolean IS FALSE OR EXISTS (
+           SELECT 1 FROM roster_change_item ri
+            WHERE ri.booking_id = b.id AND ri.state = 'open'))`;
+}
+
 @Injectable()
 export class ReadModelRepository {
   constructor(private readonly prisma: PrismaService) {}
@@ -81,8 +122,6 @@ export class ReadModelRepository {
    * 900ms.
    */
   async list(f: ListFilters): Promise<BookingRow[]> {
-    const statuses = [...(f.statuses ?? LIVE_STATUSES)];
-
     return this.prisma.$queryRaw<BookingRow[]>`
       SELECT b.id, b.code, b.branch_id, b.customer_id, b.status::text AS status,
              b.payment_status::text AS payment_status,
@@ -99,26 +138,8 @@ export class ReadModelRepository {
                FILTER (WHERE i.resource_type IS NOT NULL) AS resource_types
         FROM booking b
         LEFT JOIN booking_item i ON i.booking_id = b.id
-       WHERE b.branch_id = ${toUuid(f.branchId)}::uuid
-         AND b.trading_day >= ${f.fromDay}::date
-         AND b.trading_day < ${f.toDay}::date
-         AND b.status::text = ANY(${statuses}::text[])
-         AND (${f.staffId ?? null}::text IS NULL OR EXISTS (
-               SELECT 1 FROM booking_item si
-                WHERE si.booking_id = b.id
-                  AND si.staff_id = ${
-                    f.staffId === undefined ? null : toUuid(f.staffId)
-                  }::uuid))
-         AND (${f.customerId ?? null}::text IS NULL
-              OR b.customer_id = ${
-                f.customerId === undefined ? null : toUuid(f.customerId)
-              }::uuid)
-         AND (${f.notReminded ?? false}::boolean IS FALSE
-              OR b.reminded_24h_at IS NULL)
-         AND (${f.conflictsOnly ?? false}::boolean IS FALSE OR EXISTS (
-               SELECT 1 FROM roster_change_item ri
-                WHERE ri.booking_id = b.id AND ri.state = 'open'))
-       GROUP BY b.id
+        WHERE ${bookingWhere(f)}
+        GROUP BY b.id
        ORDER BY b.start_at ASC
        LIMIT ${f.limit ?? 500} OFFSET ${f.offset ?? 0}`;
   }
@@ -132,29 +153,10 @@ export class ReadModelRepository {
    * pager built on that asks for pages that do not exist.
    */
   async count(f: ListFilters): Promise<number> {
-    const statuses = [...(f.statuses ?? LIVE_STATUSES)];
     const rows = await this.prisma.$queryRaw<{ n: bigint }[]>`
       SELECT count(*) AS n
         FROM booking b
-       WHERE b.branch_id = ${toUuid(f.branchId)}::uuid
-         AND b.trading_day >= ${f.fromDay}::date
-         AND b.trading_day < ${f.toDay}::date
-         AND b.status::text = ANY(${statuses}::text[])
-         AND (${f.staffId ?? null}::text IS NULL OR EXISTS (
-               SELECT 1 FROM booking_item si
-                WHERE si.booking_id = b.id
-                  AND si.staff_id = ${
-                    f.staffId === undefined ? null : toUuid(f.staffId)
-                  }::uuid))
-         AND (${f.customerId ?? null}::text IS NULL
-              OR b.customer_id = ${
-                f.customerId === undefined ? null : toUuid(f.customerId)
-              }::uuid)
-         AND (${f.notReminded ?? false}::boolean IS FALSE
-              OR b.reminded_24h_at IS NULL)
-         AND (${f.conflictsOnly ?? false}::boolean IS FALSE OR EXISTS (
-               SELECT 1 FROM roster_change_item ri
-                WHERE ri.booking_id = b.id AND ri.state = 'open'))`;
+       WHERE ${bookingWhere(f)}`;
     return Number(rows[0]?.n ?? 0n);
   }
 
@@ -165,19 +167,14 @@ export class ReadModelRepository {
    * before, which is 31 round trips to render one screen.
    */
   async dailyTotals(
-    branchId: string,
-    fromDay: string,
-    toDay: string,
+    f: ListFilters,
   ): Promise<{ day: string; n: number; revenueFils: number }[]> {
-    const rows = await this.prisma.$queryRaw<
-      { day: Date; n: bigint; revenue: bigint | null }[]
-    >`
+    type Row = { day: Date; n: bigint; revenue: bigint | null };
+
+    const rows: Row[] = await this.prisma.$queryRaw`
       SELECT b.trading_day AS day, count(*) AS n, sum(b.price_fils) AS revenue
         FROM booking b
-       WHERE b.branch_id = ${toUuid(branchId)}::uuid
-         AND b.trading_day >= ${fromDay}::date
-         AND b.trading_day < ${toDay}::date
-         AND b.status::text = ANY(${[...LIVE_STATUSES]}::text[])
+       WHERE ${bookingWhere(f)}
        GROUP BY b.trading_day
        ORDER BY b.trading_day`;
 
@@ -187,7 +184,6 @@ export class ReadModelRepository {
       revenueFils: Number(r.revenue ?? 0n),
     }));
   }
-
   /**
    * The numbers behind one KPI window.
    *
