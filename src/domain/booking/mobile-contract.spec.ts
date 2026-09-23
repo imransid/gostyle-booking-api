@@ -228,6 +228,83 @@ describe('refuseUnsupported', () => {
     });
     expect(r?.code).toBe('products_not_supported');
   });
+
+  /**
+   * PRODUCTS_FROM_PLATFORM, as the domain sees it: one boolean.
+   *
+   * The flag is read in infrastructure; what arrives here is the answer.
+   * OMITTED MUST STILL REFUSE, because every other caller of this function
+   * passes no such key and none of them can price a product -- a default of
+   * "accepted" would let a basket through the group, desk and wizard paths
+   * with nothing to check it against.
+   */
+  const pomade = [{ id: 'prd_pomade' }];
+
+  it('still refuses products when productsAccepted is omitted', () => {
+    expect(refuseUnsupported({ ...ok, products: pomade })?.code).toBe(
+      'products_not_supported',
+    );
+  });
+
+  it('still refuses products when productsAccepted is false', () => {
+    const r = refuseUnsupported({
+      ...ok,
+      products: pomade,
+      productsAccepted: false,
+    });
+    expect(r?.code).toBe('products_not_supported');
+  });
+
+  it('lets a basket through when productsAccepted is true', () => {
+    expect(
+      refuseUnsupported({ ...ok, products: pomade, productsAccepted: true }),
+    ).toBeNull();
+  });
+
+  it.each([
+    ['the string "true"', 'true'],
+    ['the number 1', 1],
+    ['an object', {}],
+  ])('refuses products for %s, not only for false', (_name, value) => {
+    // `productsAccepted !== true`, so a truthy stand-in from an untyped
+    // caller refuses rather than sells.
+    expect(
+      refuseUnsupported({
+        ...ok,
+        products: pomade,
+        productsAccepted: value as unknown as boolean,
+      })?.code,
+    ).toBe('products_not_supported');
+  });
+
+  it('does not let productsAccepted excuse ROUTINE', () => {
+    const r = refuseUnsupported({
+      ...ok,
+      products: pomade,
+      bookingType: 'ROUTINE',
+      productsAccepted: true,
+    });
+    expect(r?.code).toBe('routine_not_supported');
+  });
+
+  it('does not let productsAccepted excuse an empty stylist list', () => {
+    const r = refuseUnsupported({
+      ...ok,
+      products: pomade,
+      stylists: [],
+      productsAccepted: true,
+    });
+    expect(r?.code).toBe('stylist_required');
+  });
+
+  it('accepting products does not change what an empty basket answers', () => {
+    expect(
+      refuseUnsupported({ ...ok, products: [], productsAccepted: true }),
+    ).toBeNull();
+    expect(
+      refuseUnsupported({ ...ok, products: undefined, productsAccepted: true }),
+    ).toBeNull();
+  });
 });
 
 describe('stylistsLineUp', () => {

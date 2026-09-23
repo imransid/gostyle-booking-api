@@ -44,6 +44,20 @@ import {
 import { isBookingError } from '@application/contract/errors';
 import type { ListFilter } from '@domain/booking/booking-shelf';
 import { storedTotalFils } from '@domain/booking/stored-money';
+import { PlatformProductCatalogue } from '@infrastructure/persistence/platform-product-catalogue';
+import { oneCurrency } from '@domain/booking/service-resolution';
+import {
+  NO_PRODUCTS,
+  addProducts,
+  addProductsIfPriced,
+  checkProducts,
+  productMoney,
+  productsOut,
+  type MoneyFigures,
+  type PricedProduct,
+  type ProductMoney,
+  type SoldProduct,
+} from '@domain/booking/mobile-products';
 
 /**
  * One call for the mobile app: hold, confirm, and issue the payment link.
@@ -148,7 +162,12 @@ export interface MobileBookingCommand {
     readonly amount: number;
   }[];
   readonly products:
-    readonly { readonly id: string; readonly amount: number }[] | undefined;
+    | readonly {
+        readonly id: string;
+        readonly amount: number;
+        readonly quantity?: number;
+      }[]
+    | undefined;
   readonly stylists: readonly string[];
   readonly date: string;
   readonly startTime: string;
@@ -184,6 +203,9 @@ export class MobileBookingHandler {
     // that ran out of time -- this one just gets there sooner.
     private readonly lifecycle: LifecycleRepository,
     @Inject(BOOKING_CONTEXT) private readonly context: BookingContextReader,
+    // Behind PRODUCTS_FROM_PLATFORM. Resolved HERE and handed down; the
+    // repository never asks the catalogue anything (CLAUDE.md 7).
+    private readonly productCatalogue: PlatformProductCatalogue,
   ) {}
 
   async execute(cmd: MobileBookingCommand): Promise<unknown> {
@@ -194,6 +216,7 @@ export class MobileBookingHandler {
       products: cmd.products,
       bookingType: cmd.bookingType,
       stylists: cmd.stylists,
+      productsAccepted: this.productCatalogue.enabled(),
     });
     if (unsupported !== null) {
       throw MobileContractError.of(
@@ -299,6 +322,35 @@ export class MobileBookingHandler {
     }
 
     // ---- 4. Money is VERIFIED, never trusted (§3) ------------------------
+
+    // ---- 3b. Products, priced from platform and checked line by line ----
+    //
+    // BEFORE THE HOLD, on purpose. A refused line or a platform outage then
+    // costs nobody a chair, and the 503's "Nothing was charged" stays true.
+    // Only reachable with PRODUCTS_FROM_PLATFORM on: step 1 refused products
+    // otherwise, and resolve() throws if that ever stops being true.
+    let productLines: readonly PricedProduct[] = [];
+    let productFigures: ProductMoney = NO_PRODUCTS;
+    if (cmd.products !== undefined && cmd.products.length > 0) {
+      const offers = await this.productCatalogue.resolve(
+        cmd.salonId,
+        cmd.products.map((p) => p.id),
+      );
+      // A mixed basket was already refused by the service catalogue. If one
+      // ever gets here, '' makes every product fail the currency check.
+      const basket = oneCurrency(known);
+      const checked = checkProducts({
+        lines: cmd.products,
+        offers,
+        currency: basket.kind === 'ok' ? basket.currency : '',
+      });
+      if (checked.kind === 'refused') {
+        throw new MobileContractError(checked.errors);
+      }
+      productLines = checked.lines;
+      productFigures = checked.money;
+    }
+
     //
     // Recomputed by the same handler the desk quote uses, so the figure the
     // app is checked against is the figure the booking will actually charge.
@@ -311,7 +363,18 @@ export class MobileBookingHandler {
       startMin: start.minuteOfDay,
     });
 
-    this.verifyMoney(cmd, quote);
+    // The services' figures from the quote, plus the products'. The app's
+    // amount_without_tax, tax_amount and total must include its products.
+    const expected = addProducts(
+      {
+        subtotalFils: quote.subtotalMinor,
+        vatFils: quote.vatMinor,
+        discountFils: quote.tierDiscountMinor + quote.bundleDiscountMinor,
+        totalFils: quote.totalMinor,
+      },
+      productFigures,
+    );
+    this.verifyMoney(cmd, expected);
 
     const declaredEnd = start.minuteOfDay + quote.durationMin;
     if (end.minuteOfDay !== declaredEnd) {
@@ -361,6 +424,7 @@ export class MobileBookingHandler {
         customerId: cmd.customerId,
         tradingDay: start.tradingDay,
         serviceIds,
+        ...(productLines.length === 0 ? {} : { products: productLines }),
         channel: 'online',
         /**
          * LINK is what puts the booking at PENDING_PAYMENT with a window on
@@ -440,11 +504,9 @@ export class MobileBookingHandler {
           : null;
 
       // A freshly quoted booking, so the figures are the quote's own.
+      // The quote's figures plus the products', exactly as verified above.
       return this.present(cmd, booking.bookingId, expiresAt, {
-        subtotalFils: quote.subtotalMinor,
-        vatFils: quote.vatMinor,
-        discountFils: quote.tierDiscountMinor + quote.bundleDiscountMinor,
-        totalFils: quote.totalMinor,
+        ...expected,
         depositFils: quote.depositMinor,
         priced: true,
       });
@@ -509,10 +571,7 @@ export class MobileBookingHandler {
    * job on a mismatch is to show the customer what changed -- "prices moved"
    * with no new price is a dead end.
    */
-  private verifyMoney(
-    cmd: MobileBookingCommand,
-    quote: Awaited<ReturnType<GetQuoteHandler['execute']>>,
-  ): void {
+  private verifyMoney(cmd: MobileBookingCommand, expected: MoneyFigures): void {
     const claim = (field: string, value: number): number => {
       const fils = aedToFils(value);
       if (fils === null) {
@@ -529,24 +588,20 @@ export class MobileBookingHandler {
       [
         'amount_without_tax',
         claim('amount_without_tax', cmd.amountWithoutTax),
-        quote.subtotalMinor,
+        expected.subtotalFils,
       ],
-      ['tax_amount', claim('tax_amount', cmd.taxAmount), quote.vatMinor],
-      [
-        'discount',
-        claim('discount', cmd.discount),
-        quote.tierDiscountMinor + quote.bundleDiscountMinor,
-      ],
-      ['total', claim('total', cmd.total), quote.totalMinor],
+      ['tax_amount', claim('tax_amount', cmd.taxAmount), expected.vatFils],
+      ['discount', claim('discount', cmd.discount), expected.discountFils],
+      ['total', claim('total', cmd.total), expected.totalFils],
     ];
 
-    for (const [field, claimed, expected] of checks) {
-      if (!amountsAgree(expected, claimed)) {
+    for (const [field, claimed, want] of checks) {
+      if (!amountsAgree(want, claimed)) {
         throw MobileContractError.of(
           field,
           'amount_mismatch',
           'Prices changed since this booking was started.',
-          filsToAed(expected),
+          filsToAed(want),
         );
       }
     }
@@ -560,12 +615,12 @@ export class MobileBookingHandler {
         0,
       );
     }
-    if (!amountsAgree(quote.totalMinor, claim('due_amount', cmd.dueAmount))) {
+    if (!amountsAgree(expected.totalFils, claim('due_amount', cmd.dueAmount))) {
       throw MobileContractError.of(
         'due_amount',
         'amount_mismatch',
         'due_amount is total minus advance_paid_amount, so it equals total on create.',
-        filsToAed(quote.totalMinor),
+        filsToAed(expected.totalFils),
       );
     }
   }
@@ -1001,6 +1056,30 @@ export class MobileBookingHandler {
   }
 
   /**
+   * What a booking is worth: the services' figures plus the products sold
+   * with it.
+   *
+   * The products come from booking_product, priced as SOLD. Never re-asked
+   * of platform, and never behind PRODUCTS_FROM_PLATFORM: a booking sold
+   * while the flag was on still owes for its products after it is turned
+   * off.
+   *
+   * net_fils and tax_fils on the row are the SERVICES' alone (confirm writes
+   * the quote's figures), so adding the products here cannot count them
+   * twice. Storing products in net_fils as well would.
+   */
+  private async moneyFor(
+    b: StoredMoney &
+      QuotableBooking & { readonly products: readonly SoldProduct[] },
+  ): Promise<BookingMoney> {
+    const services = await this.servicesMoneyFor(b);
+    return {
+      ...services,
+      ...addProductsIfPriced(services, productMoney(b.products)),
+    };
+  }
+
+  /**
    * The money a booking is worth, recomputed.
    *
    * The row stores a NET price and nothing else; tax, discount and the
@@ -1049,7 +1128,7 @@ export class MobileBookingHandler {
    * every figure by the tax, and understating what someone owes is worse
    * than admitting the number is unavailable.
    */
-  private async moneyFor(
+  private async servicesMoneyFor(
     b: StoredMoney & QuotableBooking,
   ): Promise<BookingMoney> {
     try {
@@ -1211,8 +1290,9 @@ export class MobileBookingHandler {
         name: i.serviceName,
         amount: filsToAed(i.priceFils),
       })),
-      // Refused on the way in, so always empty on the way out.
-      products: [],
+      // The rows as sold, in the order picked. Variant uuids, never folded
+      // through toUuid, so there is no slug to turn them back into.
+      products: productsOut(b.products),
       stylists: stylistIds.map((id) => ({
         id,
         name: names.get(id)?.name ?? null,

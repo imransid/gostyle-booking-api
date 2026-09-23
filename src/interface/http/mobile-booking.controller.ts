@@ -30,18 +30,22 @@ import {
   IsArray,
   IsIn,
   IsISO8601,
+  IsInt,
   IsNumber,
   IsOptional,
   IsString,
   Matches,
+  Max,
   Min,
   ValidateNested,
 } from 'class-validator';
 import { MobileBookingHandler } from '@application/commands/mobile-booking.handler';
+import { MAX_PRODUCT_QUANTITY } from '@domain/booking/mobile-products';
 import { IdempotentInterceptor } from './idempotent.interceptor';
 import { mobileValidationPipe } from './mobile-validation.pipe';
 import type { MobilePaymentMethod } from '@domain/booking/mobile-contract';
 import { parseFilter } from '@domain/booking/booking-shelf';
+import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
 import { BookingRepository } from '@infrastructure/persistence/booking.repository';
 import { MobileContractError } from '@application/commands/mobile-booking.error';
 import { CurrentActor } from '../../auth/actor.decorator';
@@ -63,6 +67,22 @@ export class MobileLineDto {
   amount!: number;
 }
 
+/** A product line: a line plus a quantity. `id` is the VARIANT id. */
+export class MobileProductLineDto extends MobileLineDto {
+  @ApiPropertyOptional({
+    example: 1,
+    default: 1,
+    minimum: 1,
+    maximum: MAX_PRODUCT_QUANTITY,
+    description: 'Whole units. Omitted means 1. `amount` is the UNIT price.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(MAX_PRODUCT_QUANTITY)
+  quantity?: number;
+}
+
 export class MobileBookingDto {
   @ApiProperty({ example: 'marina-walk' })
   @IsString()
@@ -76,17 +96,18 @@ export class MobileBookingDto {
   services!: MobileLineDto[];
 
   @ApiPropertyOptional({
-    type: [MobileLineDto],
+    type: [MobileProductLineDto],
     description:
-      'REFUSED with 422 products_not_supported when non-empty. There is no ' +
-      'product catalogue to price a line against, and a product silently ' +
-      'dropped from a basket is money the salon does not take.',
+      'Refused with 422 products_not_supported unless PRODUCTS_FROM_PLATFORM ' +
+      'is on. With it on, each line is checked against the platform ' +
+      'catalogue: unknown_product, amount_mismatch, currency_mismatch, ' +
+      'out_of_stock.',
   })
   @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
-  @Type(() => MobileLineDto)
-  products?: MobileLineDto[];
+  @Type(() => MobileProductLineDto)
+  products?: MobileProductLineDto[];
 
   @ApiProperty({
     type: [String],
@@ -427,6 +448,22 @@ export class MobileBookingController {
     });
 
     return {
+      /**
+       * THE ENGINE'S OWN BOOKABLE DAY, so callers stop guessing it.
+       *
+       * `feasibleSet` searches DAY_START_MIN..DAY_END_MIN and nothing
+       * outside it, whatever hours a branch keeps. The customer app's picker
+       * reads the branch's real hours, so a salon opening at 09:00 had its
+       * first hour offered and then refused -- "09:00 is no longer
+       * available" about a slot that was never reachable.
+       *
+       * Sent with the busy window because the caller is already here, and
+       * READ rather than copied: a constant repeated in another service is
+       * the one that goes stale (CLAUDE.md 4). The right fix is a per-branch
+       * trading day; until then this at least means only one service
+       * believes it knows the hours.
+       */
+      day: { from_min: DAY_START_MIN, to_min: DAY_END_MIN },
       busy: busy.map((b) => ({
         staff_id: b.staffId,
         start_at: b.startAt.toISOString(),

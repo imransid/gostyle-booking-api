@@ -245,8 +245,17 @@ export function refuseUnsupported(input: {
   readonly products: readonly unknown[] | undefined;
   readonly bookingType: string;
   readonly stylists: readonly string[];
+  /**
+   * PRODUCTS_FROM_PLATFORM. Omitted means off, so every caller that does
+   * not pass it keeps refusing products exactly as before.
+   */
+  readonly productsAccepted?: boolean;
 }): UnsupportedRefusal | null {
-  if (input.products !== undefined && input.products.length > 0) {
+  if (
+    input.productsAccepted !== true &&
+    input.products !== undefined &&
+    input.products.length > 0
+  ) {
     return {
       code: 'products_not_supported',
       field: 'products',

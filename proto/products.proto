@@ -1,0 +1,37 @@
+syntax = "proto3";
+package gostyle.products.v1;
+
+// Retail products the booking app may add to a booking.
+service ProductsDirectory {
+  rpc ListProducts (ListProductsRequest) returns (ListProductsResponse);
+}
+
+message ListProductsRequest {
+  string tenant_id = 1;            // required, UUID
+  string branch_id = 2;            // optional; empty = no stock numbers
+  repeated string variant_ids = 3; // optional; empty = every variant
+}
+
+message ListProductsResponse {
+  repeated ProductVariant variants = 1;
+}
+
+// ONE ROW PER VARIANT (one size / one SKU), never per product.
+message ProductVariant {
+  string variant_id = 1;
+  string product_id = 2;
+  string product_name = 3;
+  string variant_name = 4;
+  string sku = 5;
+  int32 price_minor = 6;
+  string currency = 7;
+  string image_url = 8;      // '' when the product has no image
+  string category_name = 9;  // '' when the product has no category
+
+  // Stock at branch_id. tracked = false means "nobody counts this item at
+  // this branch": sell it freely and ignore `available`. Always false when
+  // no branch_id was sent.
+  bool tracked = 10;
+  // On hand minus live POS holds. Can go negative after an approved oversell.
+  int32 available = 11;
+}

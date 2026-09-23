@@ -35,6 +35,9 @@ export type MobileErrorCode =
   | 'routine_not_supported'
   | 'stylist_required'
   // §11
+  | 'unknown_product'
+  | 'currency_mismatch'
+  | 'out_of_stock'
   | 'already_paid'
   | 'deposit_too_low'
   | 'missing_payment_reference'

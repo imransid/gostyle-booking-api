@@ -38,6 +38,7 @@ import { linkWindow } from '@domain/booking/payment-link';
 import {
   BookingRepository,
   type ConfirmItem,
+  type ConfirmProduct,
   type PaymentRail,
 } from '@infrastructure/persistence/booking.repository';
 import { PrismaService } from '@infrastructure/persistence/prisma.service';
@@ -69,6 +70,7 @@ export interface ConfirmBookingCommand {
    * 402 is skipped. See the guard in `execute`.
    */
   readonly depositDeferred?: boolean;
+  readonly products?: readonly ConfirmProduct[];
 }
 
 export interface BookingView {
@@ -287,6 +289,7 @@ export class ConfirmBookingHandler {
       tradingDay: cmd.tradingDay,
       channel: cmd.channel,
       items,
+      ...(cmd.products === undefined ? {} : { products: cmd.products }),
       priceFils: total.fils,
       depositFils: deposit.fils,
       /**

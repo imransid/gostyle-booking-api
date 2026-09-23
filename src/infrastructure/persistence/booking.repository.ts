@@ -43,6 +43,19 @@ export interface ConfirmItem {
   readonly source: ItemSource;
 }
 
+/**
+ * One product sold with the visit. Built and priced by the mobile handler;
+ * persistence only writes it (CLAUDE.md 7).
+ */
+export interface ConfirmProduct {
+  /** The VARIANT id, a lowercase uuid. Not folded through toUuid. */
+  readonly productId: string;
+  readonly productName: string;
+  /** Unit price, whole fils, frozen from the catalogue. */
+  readonly priceFils: number;
+  readonly quantity: number;
+}
+
 export interface ConfirmBookingInput {
   readonly holdId: string;
   readonly branchId: string;
@@ -50,6 +63,12 @@ export interface ConfirmBookingInput {
   readonly tradingDay: string;
   readonly channel: string;
   readonly items: readonly ConfirmItem[];
+  /**
+   * Products sold with the visit. Every desk path omits it and writes no
+   * booking_product rows, exactly as before.
+   */
+  readonly products?: readonly ConfirmProduct[];
+
   readonly priceFils: number;
   readonly depositFils: number;
   /**
@@ -245,6 +264,25 @@ export class BookingRepository {
         }
         const firstItem = items[0];
         if (firstItem === undefined) throw new Error('a booking needs an item');
+
+        // 3b. Products, in the SAME commit as the booking. They take no time
+        //     and no reservation, so nothing below reads them. `position` is
+        //     the order the customer picked them in, as for items.
+        const products = input.products ?? [];
+        if (products.length > 0) {
+          await tx.bookingProduct.createMany({
+            data: products.map((p, position) => ({
+              bookingId: booking.id,
+              productId: p.productId,
+              productName: p.productName,
+              priceFils: p.priceFils,
+              quantity: p.quantity,
+              position,
+            })),
+          });
+        }
+
+        // 4. THE IMPORTANT ONE. The reservations are RE-POINTED, not deleted
 
         // 4. THE IMPORTANT ONE. The reservations are RE-POINTED, not deleted
         //    and remade. The row never leaves the table, so the capacity is
@@ -443,6 +481,7 @@ export class BookingRepository {
       where: { id: bookingId },
       include: {
         items: { orderBy: { position: 'asc' } },
+        products: { orderBy: { position: 'asc' } },
         ledger: { orderBy: { createdAt: 'asc' } },
         statusHistory: { orderBy: { createdAt: 'asc' } },
       },
@@ -544,6 +583,7 @@ export class BookingRepository {
       where,
       include: {
         items: { orderBy: { position: 'asc' } },
+        products: { orderBy: { position: 'asc' } },
         ledger: { orderBy: { createdAt: 'asc' } },
       },
       // Soonest first on the way forward, most recent first on the way back
