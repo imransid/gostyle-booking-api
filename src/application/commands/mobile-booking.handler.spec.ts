@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Logger } from '@nestjs/common';
 import {
   MobileBookingHandler,
@@ -8,6 +8,8 @@ import { isMobileContractError } from './mobile-booking.error';
 import { TenantContext } from '@infrastructure/tenancy/tenant-context';
 import type { CatalogueProduct } from '@application/ports/products-directory.port';
 import type { Service } from '@domain/availability/feasible';
+import type { SoldProduct } from '@domain/booking/mobile-products';
+import { toUuid } from '@infrastructure/persistence/hold.repository';
 
 /**
  * ORCHESTRATION SPEC — the ORDER of the mobile create, with products in it.
@@ -24,6 +26,9 @@ import type { Service } from '@domain/availability/feasible';
  *      figure, so an app that sends the services' total with a basket
  *      attached is refused with the right number to show the customer.
  *   3. THE CATALOGUE IS NOT ASKED WHEN THERE IS NOTHING TO ASK ABOUT.
+ *   4. EVERY READ PRICES THE PRODUCTS AS SOLD. Read, list and PATCH add
+ *      booking_product to the services' figures, never ask the catalogue,
+ *      and never depend on the flag -- and create and read agree.
  *
  * Every collaborator is a hand-written double that records what it was
  * given, so a test asserts on the call the handler actually made.
@@ -31,6 +36,7 @@ import type { Service } from '@domain/availability/feasible';
 
 const SALON = 'marina-walk';
 const CUSTOMER = 'cus_ayesha';
+const BOOKING = 'eeeeeeee-5555-4eee-8eee-eeeeeeeeeeee';
 const OIL = 'cccccccc-3333-4ccc-8ccc-cccccccccccc';
 const SPRAY = 'dddddddd-4444-4ddd-8ddd-dddddddddddd';
 
@@ -83,6 +89,18 @@ interface HandlerOptions {
   /** Platform could not be reached. */
   readonly resolveThrows?: Error;
   readonly services?: readonly Service[];
+  /** booking_product rows already on the stored booking, before any create. */
+  readonly sold?: readonly SoldProduct[];
+  /** The customer's list page: one booking per entry, each with these rows. */
+  readonly page?: readonly (readonly SoldProduct[])[];
+  /** The quote handler cannot price the booking (a retired service, say). */
+  readonly quoteThrows?: Error;
+  /** The breakdown stored at creation. Null throughout by default. */
+  readonly stored?: {
+    readonly netFils: number | null;
+    readonly taxFils: number | null;
+    readonly discountFils: number | null;
+  };
 }
 
 function handlerWith(options: HandlerOptions = {}) {
@@ -101,10 +119,18 @@ function handlerWith(options: HandlerOptions = {}) {
     },
   };
 
+  /**
+   * booking_product, as the repository would hold it: whatever confirm was
+   * handed is what every later read gets back. A read test that seeded its
+   * own rows could agree with itself and still disagree with create.
+   */
+  let sold: readonly SoldProduct[] = options.sold ?? [];
+
   const confirms = {
     execute: (args: unknown) => {
       record('confirms.execute', args);
-      return Promise.resolve({ bookingId: 'booking-1' });
+      sold = (args as { products?: readonly SoldProduct[] }).products ?? [];
+      return Promise.resolve({ bookingId: BOOKING });
     },
   };
 
@@ -118,40 +144,58 @@ function handlerWith(options: HandlerOptions = {}) {
   const quotes = {
     execute: (q: unknown) => {
       record('quotes.execute', q);
+      if (options.quoteThrows !== undefined) {
+        return Promise.reject(options.quoteThrows);
+      }
       return Promise.resolve(QUOTE);
     },
   };
 
+  /** One stored booking, as detail() and customerPage() both return it. */
+  const row = (id: string, products: readonly SoldProduct[]) => ({
+    id,
+    code: 'GS-1001',
+    tenantId: null,
+    branchId: SALON,
+    // The column holds the folded uuid, never the slug (CLAUDE.md 8).
+    customerId: toUuid(CUSTOMER),
+    status: 'pending_payment',
+    paymentStatus: 'unpaid',
+    bookingType: 'single',
+    tradingDay: new Date('2026-09-20T00:00:00.000Z'),
+    startMinute: 840,
+    durationMin: 45,
+    createdAt: new Date('2026-09-19T10:00:00.000Z'),
+    linkExpiresAt: null,
+    netFils: null,
+    taxFils: null,
+    discountFils: null,
+    ...options.stored,
+    depositFils: 5_000,
+    items: [
+      {
+        serviceId: 'haircut-finish',
+        serviceName: 'Haircut & finish',
+        priceFils: 16_000,
+        staffId: 'maya',
+      },
+    ],
+    products,
+    ledger: [],
+  });
+
   const bookings = {
     detail: (id: string) => {
       record('bookings.detail', id);
+      return Promise.resolve(row(id, sold));
+    },
+    customerPage: (args: unknown) => {
+      record('bookings.customerPage', args);
+      const rows = (options.page ?? []).map((p, i) => row(`booking-${i}`, p));
       return Promise.resolve({
-        id,
-        code: 'GS-1001',
-        tenantId: null,
-        branchId: SALON,
-        customerId: CUSTOMER,
-        status: 'pending_payment',
-        paymentStatus: 'unpaid',
-        bookingType: 'single',
-        tradingDay: new Date('2026-09-20T00:00:00.000Z'),
-        startMinute: 840,
-        durationMin: 45,
-        createdAt: new Date('2026-09-19T10:00:00.000Z'),
-        linkExpiresAt: null,
-        netFils: null,
-        taxFils: null,
-        discountFils: null,
-        depositFils: 5_000,
-        items: [
-          {
-            serviceId: 'haircut-finish',
-            serviceName: 'Haircut & finish',
-            priceFils: 16_000,
-            staffId: 'maya',
-          },
-        ],
-        ledger: [],
+        rows,
+        count: rows.length,
+        counts: { upcoming: rows.length, archive: 0 },
       });
     },
   };
@@ -184,13 +228,20 @@ function handlerWith(options: HandlerOptions = {}) {
     },
   };
 
+  const payments = {
+    record: (args: unknown) => {
+      record('payments.record', args);
+      return Promise.resolve({ kind: 'recorded' });
+    },
+  };
+
   const handler = new MobileBookingHandler(
     holds as never,
     confirms as never,
     links as never,
     quotes as never,
     bookings as never,
-    { record: () => Promise.reject(new Error('not used')) } as never,
+    payments as never,
     new TenantContext(),
     { transition: () => Promise.resolve({ kind: 'transitioned' }) } as never,
     context as never,
@@ -636,20 +687,293 @@ describe('a basket does not disturb the rest of the create', () => {
 });
 
 describe('what the create response says about the products', () => {
-  it('reports an empty products array, even for a basket that was sold', async () => {
+  it('lists the products sold, read back from the rows confirm wrote', async () => {
     /**
-     * PINNED AS IT IS TODAY, NOT AS THE CONTRACT WANTS IT. §8 of
-     * booking-create.md returns `products: [{id, name, amount}]`, and
-     * `present` hardcodes `[]` with a comment from when products were
-     * refused outright. The rows ARE written -- booking.repository.spec
-     * proves that -- so this is a read-back gap, not a lost sale.
+     * §8 returns `products: [{id, name, amount, quantity}]`, and `present`
+     * now fills it from booking_product rather than hardcoding `[]`. The
+     * name is the catalogue's at the moment of sale and `amount` is the UNIT
+     * price, as the app sent it in -- not the line total.
      *
-     * Change this expectation the day the read fills it in.
+     * The fake's detail() returns exactly what confirm was handed, so this
+     * is the round trip: priced on the way in, stored, read back out.
      */
     const { handler } = handlerWith({ productsEnabled: true });
 
     const view = (await handler.execute(withOil())) as Record<string, unknown>;
 
+    expect(view.products).toStrictEqual([
+      { id: OIL, name: 'Argan Oil (100 ml)', amount: 85, quantity: 2 },
+    ]);
+  });
+});
+
+/** Two bottles of oil, as booking_product holds them after a sale. */
+const OIL_SOLD: SoldProduct = {
+  productId: OIL,
+  productName: 'Argan Oil (100 ml)',
+  priceFils: 8_500,
+  quantity: 2,
+};
+
+/** The customer who owns BOOKING, as the token names them. */
+const OWNER = {
+  bookingId: BOOKING,
+  actorId: CUSTOMER,
+  actorKind: 'customer',
+  actorBranchId: null,
+} as const;
+
+/** A §11 body, FULLY_PAID for the combined AED 346.50 unless told otherwise. */
+const patch = (
+  over: Partial<Parameters<MobileBookingHandler['recordPayment']>[0]> = {},
+) => ({
+  ...OWNER,
+  paymentStatus: 'FULLY_PAID',
+  paymentMethod: 'CARD' as const,
+  advancePaidAmount: 346.5,
+  dueAmount: 0,
+  paymentReference: null,
+  ...over,
+});
+
+describe('§10 read: the products are part of what the booking is worth', () => {
+  it('lists the sold products and adds them to every figure', async () => {
+    const { handler } = handlerWith({
+      productsEnabled: true,
+      sold: [OIL_SOLD],
+    });
+
+    const view = (await handler.read(OWNER)) as Record<string, unknown>;
+
+    expect(view.products).toStrictEqual([
+      { id: OIL, name: 'Argan Oil (100 ml)', amount: 85, quantity: 2 },
+    ]);
+    // Services 160 + oil 170 = 330; VAT 8 + 8.50 = 16.50; total 346.50.
+    expect(view.amount_without_tax).toBe(330);
+    expect(view.tax_amount).toBe(16.5);
+    expect(view.discount).toBe(0);
+    expect(view.total).toBe(346.5);
+    expect(view.due_amount).toBe(346.5);
+  });
+
+  it('never asks the catalogue: the sold line is priced from its row', async () => {
+    const { handler, of } = handlerWith({
+      productsEnabled: true,
+      sold: [OIL_SOLD],
+    });
+
+    await handler.read(OWNER);
+
+    expect(of('catalogue.resolve')).toHaveLength(0);
+  });
+
+  it('still lists and charges for them with PRODUCTS_FROM_PLATFORM off', async () => {
+    // Sold while the flag was on, read after it was turned off. The
+    // customer still owes for the oil.
+    const { handler, of } = handlerWith({
+      productsEnabled: false,
+      sold: [OIL_SOLD],
+    });
+
+    const view = (await handler.read(OWNER)) as Record<string, unknown>;
+
+    expect(view.products).toStrictEqual([
+      { id: OIL, name: 'Argan Oil (100 ml)', amount: 85, quantity: 2 },
+    ]);
+    expect(view.total).toBe(346.5);
+    expect(of('catalogue.resolve')).toHaveLength(0);
+  });
+
+  it('reports only the services for a booking that sold none', async () => {
+    const { handler } = handlerWith({ productsEnabled: true });
+
+    const view = (await handler.read(OWNER)) as Record<string, unknown>;
+
     expect(view.products).toStrictEqual([]);
+    expect(view.total).toBe(168);
+  });
+});
+
+describe('§10 read when the quote cannot price the services', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const unpriced = (stored: HandlerOptions['stored']) => {
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    return handlerWith({
+      productsEnabled: true,
+      sold: [OIL_SOLD],
+      quoteThrows: new Error('Unknown service: haircut-finish'),
+      stored,
+    });
+  };
+
+  it('adds the products to the stored breakdown', async () => {
+    // The breakdown create wrote: the SERVICES' 160 + 8, nothing else.
+    const { handler } = unpriced({
+      netFils: 16_000,
+      taxFils: 800,
+      discountFils: 0,
+    });
+
+    const view = (await handler.read(OWNER)) as Record<string, unknown>;
+
+    expect(view.amount_without_tax).toBe(330);
+    expect(view.tax_amount).toBe(16.5);
+    expect(view.total).toBe(346.5);
+    expect(view.due_amount).toBe(346.5);
+  });
+
+  it('reports no total rather than the products alone when nothing was stored', async () => {
+    // AED 178.50 of oil is not what this booking costs. Unknown stays
+    // unknown; the lines themselves are still listed.
+    const { handler } = unpriced({
+      netFils: null,
+      taxFils: null,
+      discountFils: null,
+    });
+
+    const view = (await handler.read(OWNER)) as Record<string, unknown>;
+
+    expect(view.amount_without_tax).toBeNull();
+    expect(view.total).toBeNull();
+    expect(view.due_amount).toBeNull();
+    expect(view.products).toHaveLength(1);
+  });
+});
+
+describe('the list: each row is worth its own products', () => {
+  it("adds a row's products to its total and due, and only to its own", async () => {
+    const { handler } = handlerWith({
+      productsEnabled: true,
+      page: [[OIL_SOLD], []],
+    });
+
+    const page = (await handler.list({
+      customerId: CUSTOMER,
+      filter: 'upcoming',
+      page: 1,
+      pageSize: 20,
+    })) as { results: readonly Record<string, unknown>[] };
+
+    expect(page.results.map((r) => [r.total, r.due_amount])).toStrictEqual([
+      [346.5, 346.5],
+      [168, 168],
+    ]);
+  });
+
+  it('never asks the catalogue', async () => {
+    const { handler, of } = handlerWith({
+      productsEnabled: true,
+      page: [[OIL_SOLD]],
+    });
+
+    await handler.list({
+      customerId: CUSTOMER,
+      filter: 'upcoming',
+      page: 1,
+      pageSize: 20,
+    });
+
+    expect(of('catalogue.resolve')).toHaveLength(0);
+  });
+});
+
+describe('§11 PATCH checks the payment against the combined total', () => {
+  it('accepts FULLY_PAID for services and products together', async () => {
+    const { handler, of } = handlerWith({
+      productsEnabled: true,
+      sold: [OIL_SOLD],
+    });
+
+    const view = (await handler.recordPayment(patch())) as Record<
+      string,
+      unknown
+    >;
+
+    expect(of('payments.record')[0]!.args).toMatchObject({
+      amountFils: 34_650,
+      paymentStatus: 'fully_paid',
+    });
+    expect(view.total).toBe(346.5);
+    expect(of('catalogue.resolve')).toHaveLength(0);
+  });
+
+  it('refuses FULLY_PAID for the services alone, naming the combined figure', async () => {
+    const { handler, of } = handlerWith({
+      productsEnabled: true,
+      sold: [OIL_SOLD],
+    });
+
+    const e = await refusal(
+      handler.recordPayment(patch({ advancePaidAmount: 168 })),
+    );
+
+    expect(e.errors[0]).toMatchObject({
+      field: 'advance_paid_amount',
+      code: 'amount_mismatch',
+      expected: 346.5,
+    });
+    expect(of('payments.record')).toHaveLength(0);
+  });
+
+  it('checks due_amount against the combined total on a deposit', async () => {
+    // AED 50 down leaves 296.50, not the services' 118.
+    const { handler } = handlerWith({
+      productsEnabled: true,
+      sold: [OIL_SOLD],
+    });
+
+    const e = await refusal(
+      handler.recordPayment(
+        patch({
+          paymentStatus: 'PARTIALLY',
+          advancePaidAmount: 50,
+          dueAmount: 118,
+        }),
+      ),
+    );
+
+    expect(e.errors[0]).toMatchObject({
+      field: 'due_amount',
+      code: 'amount_mismatch',
+      expected: 296.5,
+    });
+  });
+});
+
+describe('create and read agree: the products are counted once', () => {
+  it('reads back the same money the create reported', async () => {
+    // Create already adds the products to the quote; the row's net_fils is
+    // the services' alone. If either path added them a second time, one of
+    // these would read 525 (346.50 + 178.50).
+    const { handler } = handlerWith({ productsEnabled: true });
+
+    const created = (await handler.execute(withOil())) as Record<
+      string,
+      unknown
+    >;
+    const read = (await handler.read(OWNER)) as Record<string, unknown>;
+
+    const money = (v: Record<string, unknown>) => ({
+      amount_without_tax: v.amount_without_tax,
+      tax_amount: v.tax_amount,
+      discount: v.discount,
+      total: v.total,
+      due_amount: v.due_amount,
+      products: v.products,
+    });
+    expect(money(created)).toStrictEqual({
+      amount_without_tax: 330,
+      tax_amount: 16.5,
+      discount: 0,
+      total: 346.5,
+      due_amount: 346.5,
+      products: [
+        { id: OIL, name: 'Argan Oil (100 ml)', amount: 85, quantity: 2 },
+      ],
+    });
+    expect(money(read)).toStrictEqual(money(created));
   });
 });

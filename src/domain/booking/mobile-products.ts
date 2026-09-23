@@ -185,6 +185,36 @@ export function productMoney(
   };
 }
 
+/** One booking_product row, as stored. */
+export interface SoldProduct {
+  readonly productId: string;
+  readonly productName: string;
+  /** Unit price, whole fils, frozen at sale. */
+  readonly priceFils: number;
+  readonly quantity: number;
+}
+
+/** A product line in §8's shape. `amount` is the UNIT price, as on create. */
+export interface ProductOut {
+  readonly id: string;
+  readonly name: string;
+  readonly amount: number;
+  readonly quantity: number;
+}
+
+/**
+ * The sold lines, as §8 returns them. From the rows, never the catalogue:
+ * the catalogue moves, the sold line does not.
+ */
+export function productsOut(rows: readonly SoldProduct[]): ProductOut[] {
+  return rows.map((r) => ({
+    id: r.productId,
+    name: r.productName,
+    amount: filsToAed(r.priceFils),
+    quantity: r.quantity,
+  }));
+}
+
 /** The four figures §3 compares against the app's. */
 export interface MoneyFigures {
   readonly subtotalFils: number;
@@ -242,4 +272,36 @@ function nameOf(o: ProductOffer): string {
   return variant === '' || variant === product
     ? product
     : `${product} (${variant})`;
+}
+
+/** A booking's figures when they may be unknown. */
+export interface MaybeFigures {
+  readonly subtotalFils: number | null;
+  readonly vatFils: number;
+  readonly discountFils: number;
+  readonly totalFils: number | null;
+}
+
+/**
+ * addProducts, for figures that may be missing.
+ *
+ * An unknown services total stays unknown: adding products to nothing
+ * would report a total that leaves the services out.
+ */
+export function addProductsIfPriced(
+  services: MaybeFigures,
+  products: ProductMoney,
+): MaybeFigures {
+  if (services.subtotalFils === null || services.totalFils === null) {
+    return services;
+  }
+  return addProducts(
+    {
+      subtotalFils: services.subtotalFils,
+      vatFils: services.vatFils,
+      discountFils: services.discountFils,
+      totalFils: services.totalFils,
+    },
+    products,
+  );
 }

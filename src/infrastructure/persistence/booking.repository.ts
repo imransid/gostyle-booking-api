@@ -481,6 +481,7 @@ export class BookingRepository {
       where: { id: bookingId },
       include: {
         items: { orderBy: { position: 'asc' } },
+        products: { orderBy: { position: 'asc' } },
         ledger: { orderBy: { createdAt: 'asc' } },
         statusHistory: { orderBy: { createdAt: 'asc' } },
       },
@@ -582,6 +583,7 @@ export class BookingRepository {
       where,
       include: {
         items: { orderBy: { position: 'asc' } },
+        products: { orderBy: { position: 'asc' } },
         ledger: { orderBy: { createdAt: 'asc' } },
       },
       // Soonest first on the way forward, most recent first on the way back

@@ -3,11 +3,14 @@ import {
   MAX_PRODUCT_QUANTITY,
   NO_PRODUCTS,
   addProducts,
+  addProductsIfPriced,
   checkProducts,
   productMoney,
+  productsOut,
   type ProductCheck,
   type ProductLineClaim,
   type ProductOffer,
+  type SoldProduct,
 } from './mobile-products';
 
 /**
@@ -383,5 +386,104 @@ describe('several bad lines', () => {
     ]);
     expect(result).not.toHaveProperty('lines');
     expect(result).not.toHaveProperty('money');
+  });
+});
+
+describe('productsOut', () => {
+  const sold = (over: Partial<SoldProduct> = {}): SoldProduct => ({
+    productId: OIL,
+    productName: 'Argan Oil (100 ml)',
+    priceFils: 8_500,
+    quantity: 1,
+    ...over,
+  });
+
+  it('returns each row in the app shape, with the unit price in AED', () => {
+    expect(productsOut([sold()])).toStrictEqual([
+      { id: OIL, name: 'Argan Oil (100 ml)', amount: 85, quantity: 1 },
+    ]);
+  });
+
+  it('gives the UNIT price, not the line total, for quantity 3', () => {
+    const [line] = productsOut([sold({ quantity: 3 })]);
+
+    expect(line!.amount).toBe(85);
+    expect(line!.quantity).toBe(3);
+  });
+
+  it('keeps fils exact: 1 fil is 0.01, 8_505 fils is 85.05', () => {
+    expect(
+      productsOut([
+        sold({ priceFils: 1 }),
+        sold({ productId: SPRAY, priceFils: 8_505 }),
+      ]).map((l) => l.amount),
+    ).toStrictEqual([0.01, 85.05]);
+  });
+
+  it('keeps row order', () => {
+    expect(
+      productsOut([sold({ productId: SPRAY }), sold()]).map((l) => l.id),
+    ).toStrictEqual([SPRAY, OIL]);
+  });
+
+  it('returns [] for no rows', () => {
+    expect(productsOut([])).toStrictEqual([]);
+  });
+
+  it('round-trips what checkProducts priced', () => {
+    const r = ok(check([{ id: OIL, amount: 85, quantity: 2 }]));
+
+    expect(productsOut(r.lines)).toStrictEqual([
+      { id: OIL, name: 'Argan Oil (100 ml)', amount: 85, quantity: 2 },
+    ]);
+  });
+});
+
+describe('addProductsIfPriced', () => {
+  const products = { netFils: 4_500, vatFils: 225, totalFils: 4_725 };
+  const services = {
+    subtotalFils: 18_000,
+    vatFils: 800,
+    discountFils: 2_000,
+    totalFils: 16_800,
+  };
+
+  it('is addProducts when the services are priced', () => {
+    expect(addProductsIfPriced(services, products)).toStrictEqual(
+      addProducts(services, products),
+    );
+  });
+
+  it('leaves the figures unchanged when the subtotal is unknown', () => {
+    const unknown = { ...services, subtotalFils: null };
+
+    expect(addProductsIfPriced(unknown, products)).toStrictEqual(unknown);
+  });
+
+  it('leaves the figures unchanged when the total is unknown', () => {
+    const unknown = { ...services, totalFils: null };
+
+    expect(addProductsIfPriced(unknown, products)).toStrictEqual(unknown);
+  });
+
+  it('leaves the figures unchanged when both are unknown', () => {
+    const unknown = { ...services, subtotalFils: null, totalFils: null };
+
+    expect(addProductsIfPriced(unknown, products)).toStrictEqual(unknown);
+  });
+
+  it('changes nothing when there are no products', () => {
+    expect(addProductsIfPriced(services, NO_PRODUCTS)).toStrictEqual(services);
+  });
+
+  it('treats a total of 0 as known, not missing', () => {
+    const free = { subtotalFils: 0, vatFils: 0, discountFils: 0, totalFils: 0 };
+
+    expect(addProductsIfPriced(free, products)).toStrictEqual({
+      subtotalFils: 4_500,
+      vatFils: 225,
+      discountFils: 0,
+      totalFils: 4_725,
+    });
   });
 });

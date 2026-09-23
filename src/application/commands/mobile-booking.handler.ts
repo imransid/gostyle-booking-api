@@ -49,10 +49,14 @@ import { oneCurrency } from '@domain/booking/service-resolution';
 import {
   NO_PRODUCTS,
   addProducts,
+  addProductsIfPriced,
   checkProducts,
+  productMoney,
+  productsOut,
   type MoneyFigures,
   type PricedProduct,
   type ProductMoney,
+  type SoldProduct,
 } from '@domain/booking/mobile-products';
 
 /**
@@ -1052,6 +1056,30 @@ export class MobileBookingHandler {
   }
 
   /**
+   * What a booking is worth: the services' figures plus the products sold
+   * with it.
+   *
+   * The products come from booking_product, priced as SOLD. Never re-asked
+   * of platform, and never behind PRODUCTS_FROM_PLATFORM: a booking sold
+   * while the flag was on still owes for its products after it is turned
+   * off.
+   *
+   * net_fils and tax_fils on the row are the SERVICES' alone (confirm writes
+   * the quote's figures), so adding the products here cannot count them
+   * twice. Storing products in net_fils as well would.
+   */
+  private async moneyFor(
+    b: StoredMoney &
+      QuotableBooking & { readonly products: readonly SoldProduct[] },
+  ): Promise<BookingMoney> {
+    const services = await this.servicesMoneyFor(b);
+    return {
+      ...services,
+      ...addProductsIfPriced(services, productMoney(b.products)),
+    };
+  }
+
+  /**
    * The money a booking is worth, recomputed.
    *
    * The row stores a NET price and nothing else; tax, discount and the
@@ -1100,7 +1128,7 @@ export class MobileBookingHandler {
    * every figure by the tax, and understating what someone owes is worse
    * than admitting the number is unavailable.
    */
-  private async moneyFor(
+  private async servicesMoneyFor(
     b: StoredMoney & QuotableBooking,
   ): Promise<BookingMoney> {
     try {
@@ -1262,8 +1290,9 @@ export class MobileBookingHandler {
         name: i.serviceName,
         amount: filsToAed(i.priceFils),
       })),
-      // Refused on the way in, so always empty on the way out.
-      products: [],
+      // The rows as sold, in the order picked. Variant uuids, never folded
+      // through toUuid, so there is no slug to turn them back into.
+      products: productsOut(b.products),
       stylists: stylistIds.map((id) => ({
         id,
         name: names.get(id)?.name ?? null,
