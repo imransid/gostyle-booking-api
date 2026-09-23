@@ -14,6 +14,7 @@
 import { Money } from '../shared/money';
 import { VAT_PERCENT } from './quote';
 import { aedToFils, amountsAgree, filsToAed } from './mobile-contract';
+import { looksLikePlatformId } from './service-resolution';
 
 /** booking_product.quantity is a SMALLINT. This keeps us far below it. */
 export const MAX_PRODUCT_QUANTITY = 99;
@@ -119,7 +120,7 @@ export function checkProducts(input: {
       errors.push({
         field: `${at}.id`,
         code: 'unknown_product',
-        message: `Not sold at this salon: ${line.id}.`,
+        message: unknownProductMessage(line.id, offer),
       });
       return;
     }
@@ -246,6 +247,32 @@ function sellable(o: ProductOffer): boolean {
     Number.isInteger(o.priceMinor) &&
     o.priceMinor > 0 &&
     o.currency.trim() !== ''
+  );
+}
+
+/**
+ * Why a line is unknown_product, in words that point at the fix.
+ *
+ * ONE CODE, THREE CAUSES. The code stays unknown_product for all of them,
+ * because §9's code list is closed. The message used to be "Not sold at this
+ * salon" for every one, which sent people looking at the salon's shop when
+ * the real mistake was almost always the id: the app sent the product's `id`
+ * instead of its `variant_id`, and that id is never in the catalogue.
+ *
+ * Platform leaves unknown, deleted, inactive and non-RETAIL variants out of
+ * its answer alike, so an id it did not return cannot be told apart any
+ * further than this.
+ */
+function unknownProductMessage(id: string, offer?: ProductOffer): string {
+  if (offer !== undefined) {
+    return `${nameOf(offer)} has no price at this salon yet, so it cannot be booked.`;
+  }
+  if (!looksLikePlatformId(id)) {
+    return `'${id}' is not a valid product id. Send the product's variant_id.`;
+  }
+  return (
+    `No product at this salon has the variant id ${id}. ` +
+    "Send the product's variant_id, not its id."
   );
 }
 

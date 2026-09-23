@@ -242,6 +242,45 @@ describe('unknown_product, at products[i].id', () => {
       code: 'unknown_product',
     });
   });
+
+  /**
+   * ONE CODE, A MESSAGE PER CAUSE. "Not sold at this salon" for all of them
+   * sent a developer who had sent the product's `id` to look at the salon's
+   * shop, which did sell the product.
+   */
+  describe('says which of the causes it was', () => {
+    it('an id the catalogue did not return: send the variant_id', () => {
+      const [e] = refused(
+        check([{ id: OIL, amount: 85 }], offers(offer(SPRAY))),
+      );
+
+      expect(e?.message).toBe(
+        `No product at this salon has the variant id ${OIL}. ` +
+          "Send the product's variant_id, not its id.",
+      );
+    });
+
+    it('not a uuid at all: not a valid id', () => {
+      const [e] = refused(check([{ id: 'argan-oil', amount: 85 }]));
+
+      expect(e?.message).toBe(
+        "'argan-oil' is not a valid product id. Send the product's variant_id.",
+      );
+    });
+
+    it.each([
+      ['a price of 0', { priceMinor: 0 }],
+      ["a currency of ''", { currency: '' }],
+    ])('%s: named, and has no price', (_name, over) => {
+      const [e] = refused(
+        check([{ id: OIL, amount: 85 }], offers(offer(OIL, over))),
+      );
+
+      expect(e?.message).toBe(
+        'Argan Oil (100 ml) has no price at this salon yet, so it cannot be booked.',
+      );
+    });
+  });
 });
 
 describe('currency', () => {

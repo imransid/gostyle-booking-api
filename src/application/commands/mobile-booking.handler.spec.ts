@@ -538,7 +538,9 @@ describe('a line the catalogue refuses', () => {
       {
         field: 'products[0].id',
         code: 'unknown_product',
-        message: `Not sold at this salon: ${OIL}.`,
+        message:
+          `No product at this salon has the variant id ${OIL}. ` +
+          "Send the product's variant_id, not its id.",
       },
     ]);
   });
