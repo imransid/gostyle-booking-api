@@ -287,6 +287,8 @@ function monthBounds(month: string): { from: string; to: string } {
 
 // ------------------------------------------------------------ the handler
 
+const WEEK_LIMIT = 2_000;
+
 @Injectable()
 export class BookingReadHandler {
   constructor(
@@ -630,10 +632,37 @@ export class BookingReadHandler {
   /** §6.4. Seven day summaries, each with its bookings. */
   async week(branchId: string, from: string): Promise<unknown> {
     const to = addDays(from, 7);
+
+    /**
+     * THE CEILING IS DECLARED, AND SAID OUT LOUD WHEN IT IS HIT.
+     *
+     * This asked for the week without a limit and got the repository's
+     * default 500. The per-day counts come from a different query with no
+     * cap at all, so a busy week showed a strip reading 612 above a grid
+     * holding 500, with nothing to explain the gap. A week grid cannot be
+     * paged -- it needs all seven days at once to draw -- so the ceiling is
+     * raised to a number no salon reaches and the response admits when it
+     * was reached.
+     */
     const [rows, totals] = await Promise.all([
-      this.reads.list({ branchId, fromDay: from, toDay: to }),
+      this.reads.list({
+        branchId,
+        fromDay: from,
+        toDay: to,
+        limit: WEEK_LIMIT,
+      }),
       this.reads.dailyTotals(branchId, from, to),
     ]);
+
+    /**
+     * DERIVED FROM THE STRIP, NOT COUNTED AGAIN.
+     *
+     * The day totals already narrow by the same branch, the same dates and
+     * the same live statuses as the list, so their sum IS the week's size. A
+     * separate count() was a second copy of that number: one more query, and
+     * one more place for the strip and `total` to drift apart.
+     */
+    const total = totals.reduce((sum, t) => sum + t.n, 0);
 
     const views = await this.decorate(branchId, rows);
     const byDay = new Map(totals.map((t) => [t.day, t]));
@@ -649,6 +678,12 @@ export class BookingReadHandler {
           bookings: views.filter((v) => v.date === date),
         };
       }),
+      /** How many the week really holds, and how many came back. */
+      total,
+      returned: rows.length,
+      /** True when the week holds more than the grid was given. */
+      truncated: total > rows.length,
+      limit: WEEK_LIMIT,
     };
   }
 
