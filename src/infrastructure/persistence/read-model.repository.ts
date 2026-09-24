@@ -60,6 +60,8 @@ export interface ListFilters {
   readonly toDay: string;
   readonly statuses?: readonly BookingStatus[] | undefined;
   readonly staffId?: string | undefined;
+  /** One service. A booking matches when any of its lines is that service. */
+  readonly serviceId?: string | undefined;
   readonly customerId?: string | undefined;
   /** NOT_REMINDED: the 24-hour rung has not gone out. */
   readonly notReminded?: boolean | undefined;
@@ -97,6 +99,12 @@ function bookingWhere(f: ListFilters): Prisma.Sql {
             WHERE si.booking_id = b.id
               AND si.staff_id = ${
                 f.staffId === undefined ? null : toUuid(f.staffId)
+              }::uuid))
+              AND (${f.serviceId ?? null}::text IS NULL OR EXISTS (
+           SELECT 1 FROM booking_item si
+            WHERE si.booking_id = b.id
+              AND si.service_id = ${
+                f.serviceId === undefined ? null : toUuid(f.serviceId)
               }::uuid))
      AND (${f.customerId ?? null}::text IS NULL
           OR b.customer_id = ${

@@ -476,6 +476,7 @@ export class BookingReadHandler {
     date: string,
     filters: {
       staffId?: string | undefined;
+      serviceId?: string | undefined;
       status?: string | undefined;
       payment?: string | undefined;
     },
@@ -523,6 +524,9 @@ export class BookingReadHandler {
       toDay: addDays(date, 1),
       statuses: CHIP_STATUSES,
       ...(filters.staffId === undefined ? {} : { staffId: filters.staffId }),
+      ...(filters.serviceId === undefined
+        ? {}
+        : { serviceId: filters.serviceId }),
     };
 
     /**
@@ -657,6 +661,7 @@ export class BookingReadHandler {
     from: string,
     filters: {
       staffId?: string | undefined;
+      serviceId?: string | undefined;
       status?: string | undefined;
       payment?: string | undefined;
     } = {},
@@ -701,6 +706,9 @@ export class BookingReadHandler {
       fromDay: from,
       toDay: to,
       ...(filters.staffId === undefined ? {} : { staffId: filters.staffId }),
+      ...(filters.serviceId === undefined
+        ? {}
+        : { serviceId: filters.serviceId }),
     };
 
     /**

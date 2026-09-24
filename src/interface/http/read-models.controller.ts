@@ -100,6 +100,7 @@ export class ReadModelsController {
   ): Promise<unknown> {
     return this.reads.day(branchId, q.date, {
       staffId: q.staffId,
+      serviceId: q.serviceId,
       status: q.status,
       payment: q.payment,
     });
@@ -113,6 +114,7 @@ export class ReadModelsController {
   ): Promise<unknown> {
     return this.reads.week(branchId, q.from, {
       staffId: q.staffId,
+      serviceId: q.serviceId,
       status: q.status,
       payment: q.payment,
     });

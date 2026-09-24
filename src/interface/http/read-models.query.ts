@@ -114,6 +114,12 @@ const PAYMENT_LIST = new RegExp(
   `^(${PAYMENT_CHIPS.join('|')})(,(${PAYMENT_CHIPS.join('|')}))*$`,
 );
 
+/** Empty means "not sent". The chip bar sends `x=` when nothing is picked. */
+const blankIsAbsent = (): PropertyDecorator =>
+  Transform(({ value }: { value: unknown }): unknown =>
+    value === '' ? undefined : value,
+  );
+
 export class CalendarDayQuery extends BranchScoped {
   @ApiProperty({ example: '2026-09-18' })
   @Matches(DAY, { message: 'date must be YYYY-MM-DD' })
@@ -124,21 +130,32 @@ export class CalendarDayQuery extends BranchScoped {
       'Narrows the grid to one professional. `kpis.utilisation` is then ' +
       'measured against THEIR sellable minutes, not the branch’s.',
   })
+  @blankIsAbsent()
   @IsOptional()
   @IsString()
   staffId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Narrows to bookings holding this service on any line. A GROUP ' +
+      'booking stores only its first service, so a participant having a ' +
+      'second one is invisible here.',
+  })
+  @blankIsAbsent()
+  @IsOptional()
+  @IsString()
+  serviceId?: string;
 
   /**
    * THE VISIT-STATUS CHIPS, comma-separated.
    *
    * Checked here, not in the handler: `status` used to pass @IsString and
    * then be ignored entirely, so a typo returned the WHOLE day and looked
-   * like a filter that had worked. The caller is now told which word was
-   * wrong.
+   * like a filter that had worked.
    *
-   * EMPTY IS ABSENT. The chip bar sends `status=` when nothing is picked,
-   * and that means the diary, not a 400. @IsOptional only skips a missing
-   * value, so the empty string is made missing first.
+   * EMPTY IS ABSENT, on every filter here. An empty id reaches `toUuid('')`,
+   * which hashes to a uuid nothing holds -- so clearing a filter returned a
+   * blank diary with nothing to say why.
    */
   @ApiPropertyOptional({
     enum: CALENDAR_CHIPS,
@@ -146,9 +163,7 @@ export class CalendarDayQuery extends BranchScoped {
     example: 'checked_in,in_service',
     description: 'Comma-separated. Omit, or send empty, for every live status.',
   })
-  @Transform(({ value }: { value: unknown }): unknown =>
-    value === '' ? undefined : value,
-  )
+  @blankIsAbsent()
   @IsOptional()
   @IsString()
   @Matches(CHIP_LIST, {
@@ -157,10 +172,8 @@ export class CalendarDayQuery extends BranchScoped {
   status?: string;
 
   /**
-   * THE PAYMENT CHIPS, comma-separated. A SECOND ROW, not more of the first.
-   *
-   * "Finished and unpaid" is the question the desk asks most, and one row of
-   * chips cannot ask it.
+   * THE PAYMENT CHIPS. A SECOND ROW, not more of the first: "finished and
+   * unpaid" is the question the desk asks most, and one row cannot ask it.
    */
   @ApiPropertyOptional({
     enum: PAYMENT_CHIPS,
@@ -169,9 +182,7 @@ export class CalendarDayQuery extends BranchScoped {
     description:
       'Comma-separated. Omit, or send empty, for every payment state.',
   })
-  @Transform(({ value }: { value: unknown }): unknown =>
-    value === '' ? undefined : value,
-  )
+  @blankIsAbsent()
   @IsOptional()
   @IsString()
   @Matches(PAYMENT_LIST, {
@@ -181,11 +192,11 @@ export class CalendarDayQuery extends BranchScoped {
 }
 
 /**
- * THE SAME THREE FILTERS THE DAY GRID TAKES.
+ * THE SAME FOUR FILTERS THE DAY GRID TAKES.
  *
- * Spelled out rather than shared with CalendarDayQuery through a base class:
- * the two differ in their date field, and a base holding everything BUT the
- * date reads worse than the repetition. If a fourth filter arrives, revisit.
+ * Spelled out rather than shared through a base class: the two differ in
+ * their date field, and a base holding everything BUT the date reads worse
+ * than the repetition.
  */
 export class CalendarWeekQuery extends BranchScoped {
   @ApiProperty({
@@ -198,9 +209,21 @@ export class CalendarWeekQuery extends BranchScoped {
   @ApiPropertyOptional({
     description: 'Narrows every day of the week to one professional.',
   })
+  @blankIsAbsent()
   @IsOptional()
   @IsString()
   staffId?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Narrows to bookings holding this service on any line. A GROUP ' +
+      'booking stores only its first service, so a participant having a ' +
+      'second one is invisible here.',
+  })
+  @blankIsAbsent()
+  @IsOptional()
+  @IsString()
+  serviceId?: string;
 
   @ApiPropertyOptional({
     enum: CALENDAR_CHIPS,
@@ -208,9 +231,7 @@ export class CalendarWeekQuery extends BranchScoped {
     example: 'checked_in,in_service',
     description: 'Comma-separated. Omit, or send empty, for every live status.',
   })
-  @Transform(({ value }: { value: unknown }): unknown =>
-    value === '' ? undefined : value,
-  )
+  @blankIsAbsent()
   @IsOptional()
   @IsString()
   @Matches(CHIP_LIST, {
@@ -225,9 +246,7 @@ export class CalendarWeekQuery extends BranchScoped {
     description:
       'Comma-separated. Omit, or send empty, for every payment state.',
   })
-  @Transform(({ value }: { value: unknown }): unknown =>
-    value === '' ? undefined : value,
-  )
+  @blankIsAbsent()
   @IsOptional()
   @IsString()
   @Matches(PAYMENT_LIST, {
