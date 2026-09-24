@@ -15,6 +15,7 @@ import {
   PAYMENT_CHIPS,
 } from '@application/contract/screen-view';
 import { EVENT_KINDS } from '@domain/booking/cancellation-feed';
+import { commaList } from '@domain/booking/calendar-query';
 
 /**
  * QUERY DTOs, so the ValidationPipe sees the query string too.
@@ -127,6 +128,30 @@ const blankIsAbsent = (): PropertyDecorator =>
     value === '' ? undefined : value,
   );
 
+/**
+ * Tidy a chip list before the pattern validator sees it.
+ *
+ * The chips answered a stray comma differently from the ids: `staffId=reem,`
+ * worked (commaList trims it) while `status=upcoming,` was a 400 (the regex saw
+ * it first). Same slip, two answers -- a front end that joins a list and leaves
+ * a trailing comma got a 400 on the chips and nothing on the ids.
+ *
+ * commaList is REUSED, not re-implemented: it is the one reader for every comma
+ * list on the calendar (CLAUDE.md 4), so the chips and the ids cannot drift on
+ * what a comma means. `upcoming,` becomes `upcoming`; `,` and a lone space
+ * become absent, exactly as `staffId=,` already does.
+ *
+ * IT DROPS EMPTIES, IT NEVER REPAIRS A WORD. The gaps a stray comma leaves are
+ * removed; the surviving values are re-joined and handed to @Matches whole, so
+ * `checkedin` and `paid` still reach the validator and are still refused.
+ */
+const tidyChipList = (): PropertyDecorator =>
+  Transform(({ value }: { value: unknown }): unknown => {
+    if (typeof value !== 'string') return value;
+    const cleaned = commaList(value);
+    return cleaned === undefined ? undefined : cleaned.join(',');
+  });
+
 export class CalendarDayQuery extends BranchScoped {
   @ApiProperty({ example: '2026-09-18' })
   @Matches(DAY, { message: 'date must be YYYY-MM-DD' })
@@ -171,7 +196,7 @@ export class CalendarDayQuery extends BranchScoped {
     example: 'checked_in,in_service',
     description: 'Comma-separated. Omit, or send empty, for every live status.',
   })
-  @blankIsAbsent()
+  @tidyChipList()
   @IsOptional()
   @IsString()
   @Matches(CHIP_LIST, {
@@ -190,7 +215,7 @@ export class CalendarDayQuery extends BranchScoped {
     description:
       'Comma-separated. Omit, or send empty, for every payment state.',
   })
-  @blankIsAbsent()
+  @tidyChipList()
   @IsOptional()
   @IsString()
   @Matches(PAYMENT_LIST, {
@@ -241,7 +266,7 @@ export class CalendarWeekQuery extends BranchScoped {
     example: 'checked_in,in_service',
     description: 'Comma-separated. Omit, or send empty, for every live status.',
   })
-  @blankIsAbsent()
+  @tidyChipList()
   @IsOptional()
   @IsString()
   @Matches(CHIP_LIST, {
@@ -256,7 +281,7 @@ export class CalendarWeekQuery extends BranchScoped {
     description:
       'Comma-separated. Omit, or send empty, for every payment state.',
   })
-  @blankIsAbsent()
+  @tidyChipList()
   @IsOptional()
   @IsString()
   @Matches(PAYMENT_LIST, {
