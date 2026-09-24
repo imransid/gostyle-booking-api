@@ -16,11 +16,19 @@ import {
  * time, and would do it silently, because null is a legitimate answer here.
  * Middleware wraps next(), so the whole downstream runs inside the scope.
  *
- * The cost of that choice is that middleware runs BEFORE the guard, so
- * request.actor does not exist yet and the token's tenantId claim cannot be
- * a fallback. That is acceptable: the instruction is to populate from
- * X-Tenant-Id, and a header the platform controls is a better source than a
- * claim baked into a token hours ago.
+ * Middleware runs BEFORE the guard, so the token has not been verified yet
+ * and only the header can be read here. The scope opens with whatever the
+ * header said -- possibly nothing -- and BookingAuthGuard fills it from the
+ * token's tenantId claim once the signature checks out
+ * (`TenantContext.fillFromToken`). The header still wins when it is present;
+ * the token only answers when it is not.
+ *
+ * This comment used to say the claim could not be a fallback at all, and the
+ * cost was a desk user holding a perfectly good token with no tenant: every
+ * tenant-scoped platform lookup was refused, and the calendar drew six
+ * fixture stylists at a branch with three real ones. A caller chooses the
+ * header; the token is the one thing a caller cannot choose -- the same
+ * reason the branch reads the token (branch-context.ts).
  */
 @Injectable()
 export class TenantMiddleware implements NestMiddleware {
