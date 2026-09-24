@@ -12,6 +12,7 @@ import {
 import {
   CALENDAR_CHIPS,
   LIST_FILTERS,
+  PAYMENT_CHIPS,
 } from '@application/contract/screen-view';
 import { EVENT_KINDS } from '@domain/booking/cancellation-feed';
 
@@ -108,6 +109,11 @@ export class WorklistQuery extends BranchScoped {}
 
 export class WaitlistBoardQuery extends BranchScoped {}
 
+/** One or more payment chip names, comma-separated, nothing else. */
+const PAYMENT_LIST = new RegExp(
+  `^(${PAYMENT_CHIPS.join('|')})(,(${PAYMENT_CHIPS.join('|')}))*$`,
+);
+
 export class CalendarDayQuery extends BranchScoped {
   @ApiProperty({ example: '2026-09-18' })
   @Matches(DAY, { message: 'date must be YYYY-MM-DD' })
@@ -149,6 +155,29 @@ export class CalendarDayQuery extends BranchScoped {
     message: `status must be a comma-separated list of: ${CALENDAR_CHIPS.join(', ')}`,
   })
   status?: string;
+
+  /**
+   * THE PAYMENT CHIPS, comma-separated. A SECOND ROW, not more of the first.
+   *
+   * "Finished and unpaid" is the question the desk asks most, and one row of
+   * chips cannot ask it.
+   */
+  @ApiPropertyOptional({
+    enum: PAYMENT_CHIPS,
+    isArray: true,
+    example: 'unpaid',
+    description:
+      'Comma-separated. Omit, or send empty, for every payment state.',
+  })
+  @Transform(({ value }: { value: unknown }): unknown =>
+    value === '' ? undefined : value,
+  )
+  @IsOptional()
+  @IsString()
+  @Matches(PAYMENT_LIST, {
+    message: `payment must be a comma-separated list of: ${PAYMENT_CHIPS.join(', ')}`,
+  })
+  payment?: string;
 }
 
 export class CalendarWeekQuery extends BranchScoped {

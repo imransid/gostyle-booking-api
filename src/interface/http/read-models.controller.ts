@@ -101,6 +101,7 @@ export class ReadModelsController {
     return this.reads.day(branchId, q.date, {
       staffId: q.staffId,
       status: q.status,
+      payment: q.payment,
     });
   }
 

@@ -43,6 +43,8 @@ import {
   CHIP_STATUSES,
   isCalendarChip,
   isListFilter,
+  isPaymentChip,
+  matchesAnyPaymentChip,
   statusesFor,
   statusesForChips,
   toDepositOutcome,
@@ -472,7 +474,11 @@ export class BookingReadHandler {
   async day(
     branchId: string,
     date: string,
-    filters: { staffId?: string | undefined; status?: string | undefined },
+    filters: {
+      staffId?: string | undefined;
+      status?: string | undefined;
+      payment?: string | undefined;
+    },
   ): Promise<unknown> {
     /**
      * THE CHIPS, READ ONCE.
@@ -488,6 +494,20 @@ export class BookingReadHandler {
       .filter(isCalendarChip);
 
     const chosen = statusesForChips(chips);
+
+    /**
+     * THE PAYMENT CHIPS, a second and independent row.
+     *
+     * Narrowed in TypeScript rather than in SQL, deliberately: the rule reads
+     * two columns with an OR across them, and writing it in the WHERE as well
+     * would put one rule in two places (CLAUDE.md 4). The day is already read
+     * whole, so there is nothing to fetch.
+     */
+    const payChips = (filters.payment ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s !== '')
+      .filter(isPaymentChip);
 
     /**
      * EVERY STATUS A CHIP CAN REACH, not just the live ones.
@@ -525,8 +545,10 @@ export class BookingReadHandler {
      * find, but opening the diary should show today's work, not last week's
      * losses. A cancelled visit is something you go looking for.
      */
-    const rows = all.filter((r) =>
-      (chosen ?? LIVE_STATUSES).includes(r.status),
+    const rows = all.filter(
+      (r) =>
+        (chosen ?? LIVE_STATUSES).includes(r.status) &&
+        matchesAnyPaymentChip(payChips, r.payment_status, r.status),
     );
 
     const bookings = await this.decorate(branchId, rows);
