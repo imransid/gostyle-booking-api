@@ -1,5 +1,10 @@
-import { describe, it, expect } from 'vitest';
-import { Controller, Get, UnauthorizedException } from '@nestjs/common';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  Controller,
+  Get,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { ExecutionContext } from '@nestjs/common';
 import { BookingAuthGuard } from './booking-auth.guard';
@@ -81,12 +86,10 @@ const tenantAfterGuard = (
   tenants: TenantContext,
   verifier: TokenVerifier,
   header: string | null,
-  handler: object = day,
-  headers: Record<string, string> = bearer,
 ): Promise<string | null> =>
   tenants.run(header, async () => {
     const guard = new BookingAuthGuard(verifier, new Reflector(), tenants);
-    await guard.canActivate(contextFor(handler, headers));
+    await guard.canActivate(contextFor(day, bearer));
     return tenants.current();
   });
 
@@ -133,12 +136,70 @@ describe('the guard fills the tenant from the token', () => {
       expect(tenants.current()).toBeNull();
     });
   });
+});
 
-  it('reads no token on a @Public() route, so fills nothing', async () => {
+/**
+ * The new-booking panel's availability calls are @Public(), and the guard
+ * used to return before it looked at the token at all. A desk user there got
+ * no tenant, and the panel offered two fixture stylists while the calendar
+ * drew the three real ones.
+ */
+describe('a @Public() route reads a token when one is sent', () => {
+  /** Runs the guard on the public route and reports what the handler sees. */
+  const publicCall = (
+    verifier: TokenVerifier,
+    headers: Record<string, string>,
+  ) => {
     const tenants = new TenantContext();
-    await expect(
-      tenantAfterGuard(tenants, verifierFor(staff(TENANT)), null, open, {}),
-    ).resolves.toBeNull();
+    const request: { headers: Record<string, string>; actor?: Actor } = {
+      headers,
+    };
+    const ctx = {
+      getHandler: () => open,
+      getClass: () => CalendarController,
+      switchToHttp: () => ({ getRequest: () => request }),
+    } as unknown as ExecutionContext;
+    return tenants.run(null, async () => {
+      const guard = new BookingAuthGuard(verifier, new Reflector(), tenants);
+      const allowed = await guard.canActivate(ctx);
+      return { allowed, actor: request.actor, tenant: tenants.current() };
+    });
+  };
+
+  it('fills the tenant and the actor from a valid staff token', async () => {
+    const seen = await publicCall(verifierFor(staff(TENANT)), bearer);
+    expect(seen.allowed).toBe(true);
+    expect(seen.tenant).toBe(TENANT);
+    expect(seen.actor?.id).toBe('staff-1');
+  });
+
+  it('stays anonymous with no token, and never asks the verifier', async () => {
+    const verify = vi.fn();
+    const seen = await publicCall({ verify } as unknown as TokenVerifier, {});
+    expect(seen).toEqual({ allowed: true, actor: undefined, tenant: null });
+    expect(verify).not.toHaveBeenCalled();
+  });
+
+  it('serves a token that fails verification anonymously, not as a 401', async () => {
+    await expect(publicCall(refusingVerifier, bearer)).resolves.toEqual({
+      allowed: true,
+      actor: undefined,
+      tenant: null,
+    });
+  });
+
+  it('serves anonymously when the token cannot be checked at all (503)', async () => {
+    // Consumer auth down, or no staff secret: a guarded route answers 503.
+    // A customer browsing times must not lose the page to that.
+    const unavailable = {
+      verify: () =>
+        Promise.reject(new ServiceUnavailableException('consumer auth down')),
+    } as unknown as TokenVerifier;
+    await expect(publicCall(unavailable, bearer)).resolves.toEqual({
+      allowed: true,
+      actor: undefined,
+      tenant: null,
+    });
   });
 });
 
