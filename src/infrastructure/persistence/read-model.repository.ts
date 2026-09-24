@@ -192,6 +192,39 @@ export class ReadModelRepository {
       revenueFils: Number(r.revenue ?? 0n),
     }));
   }
+
+  /**
+   * How many bookings in each status, and what they are worth.
+   *
+   * FOR A WINDOW TOO WIDE TO READ ROW BY ROW. The month's KPI strip needs a
+   * count and a sum, not bookings. Fetching them only to count them borrowed
+   * the week grid's 2000-row ceiling, and a month past it undercounted the
+   * header while the cells -- summed in SQL by dailyTotals -- stayed right.
+   * This returns one row per status however busy the month is.
+   *
+   * GROUPED BY STATUS, NOT BY CHIP. Which statuses are live and which ones a
+   * chip means is screen-view.ts's to say; folding them here would be a
+   * second copy of that map, written in Postgres (CLAUDE.md 4).
+   */
+  async statusTotals(
+    f: ListFilters,
+  ): Promise<{ status: BookingStatus; n: number; revenueFils: number }[]> {
+    type Row = { status: BookingStatus; n: bigint; revenue: bigint | null };
+
+    const rows: Row[] = await this.prisma.$queryRaw`
+      SELECT b.status::text AS status, count(*) AS n,
+             sum(b.price_fils) AS revenue
+        FROM booking b
+       WHERE ${bookingWhere(f)}
+       GROUP BY b.status`;
+
+    return rows.map((r) => ({
+      status: r.status,
+      n: Number(r.n),
+      revenueFils: Number(r.revenue ?? 0n),
+    }));
+  }
+
   /**
    * The numbers behind one KPI window.
    *

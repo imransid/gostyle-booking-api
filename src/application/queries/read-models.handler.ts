@@ -897,11 +897,33 @@ export class BookingReadHandler {
     horizonDays: number,
   ): Promise<unknown> {
     const { from, to } = monthBounds(month);
-    const totals = await this.reads.dailyTotals({
-      branchId,
-      fromDay: from,
-      toDay: to,
-    });
+
+    /**
+     * FOUR OF THE SIX, AND THE OTHER TWO ABSENT RATHER THAN ZERO.
+     *
+     * `utilisation` needs sellable minutes, which are a PER-DAY fact: a
+     * month would be thirty roster loads, and with STAFF_FROM_PLATFORM on,
+     * thirty gRPC calls to draw the cheapest screen in the product.
+     *
+     * `walkInsWaiting` counts the people sitting in the salon RIGHT NOW.
+     * Over a month it is not a small number or a stale one, it is a
+     * category error.
+     *
+     * Neither is published as 0. The worklist already settled this: a tile
+     * that always reads zero is worse than no tile, because a client cannot
+     * tell "nobody is waiting" from "we do not know".
+     */
+    const [totals, byStatus, openConflicts] = await Promise.all([
+      this.reads.dailyTotals({ branchId, fromDay: from, toDay: to }),
+      this.reads.statusTotals({
+        branchId,
+        fromDay: from,
+        toDay: to,
+        statuses: CHIP_STATUSES,
+      }),
+      this.reads.openConflicts(branchId),
+    ]);
+
     const byDay = new Map(totals.map((t) => [t.day, t]));
 
     const lastBookable = addDays(today(), horizonDays);
@@ -914,7 +936,46 @@ export class BookingReadHandler {
         withinHorizon: d <= lastBookable,
       });
     }
-    return { month, cells };
+    /**
+     * READ WIDE, COUNTED WIDE, SUMMED NARROW.
+     *
+     * The month is read across every status a chip can reach so `counts` can
+     * say how many no-shows and cancellations it holds -- a zero that means
+     * "nobody looked" is a bug this file has already fixed twice. The money
+     * and the booked count narrow back to live, because a cancelled visit
+     * was never earned.
+     *
+     * COUNTED, NOT FETCHED. This read the month's bookings only to count and
+     * sum them, under WEEK_LIMIT -- with no-shows and cancellations spending
+     * the cap. Past 2000 (a salon doing 65 a day) the tiles undercounted
+     * while the cells, which had no cap, stayed right, and nothing in the
+     * payload said why. Postgres now returns one row per status, so there is
+     * no ceiling to hit.
+     */
+    const live = byStatus.filter((t) =>
+      (LIVE_STATUSES as readonly string[]).includes(t.status),
+    );
+    const bookingsIn = (ts: readonly { n: number }[]) =>
+      ts.reduce((n, t) => n + t.n, 0);
+
+    const conflicts = openConflicts.filter((c) => {
+      const d = c.trading_day.toISOString().slice(0, 10);
+      return d >= from && d < to;
+    }).length;
+
+    return {
+      month,
+      cells,
+      kpis: {
+        booked: bookingsIn(live),
+        revenue: wholeAed(live.reduce((n, t) => n + t.revenueFils, 0)),
+        pendingDeposits: bookingsIn(
+          live.filter((t) => t.status === 'pending_payment'),
+        ),
+        conflicts,
+      },
+      counts: chipCountsOf(byStatus),
+    };
   }
 
   // ------------------------------------------------------------- summary
@@ -1611,10 +1672,25 @@ function nowMinute(): number {
  * what you are already looking at reads the same number every time.
  */
 function chipCounts(rows: readonly BookingRow[]): Record<string, number> {
+  return chipCountsOf(rows.map((r) => ({ status: r.status, n: 1 })));
+}
+
+/**
+ * The same, from per-status totals, for a window too wide to read row by row.
+ *
+ * ONE LOOP FOR BOTH. chipCounts is this with every row a total of one, so the
+ * day grid and the month strip cannot disagree about what a chip holds, and
+ * which statuses a chip means is still asked of screen-view.ts alone.
+ */
+function chipCountsOf(
+  totals: readonly { status: BookingStatus; n: number }[],
+): Record<string, number> {
   const out: Record<string, number> = {};
   for (const chip of CALENDAR_CHIPS) {
     const statuses = statusesForChips([chip]) ?? [];
-    out[chip] = rows.filter((r) => statuses.includes(r.status)).length;
+    out[chip] = totals
+      .filter((t) => statuses.includes(t.status))
+      .reduce((n, t) => n + t.n, 0);
   }
   return out;
 }
