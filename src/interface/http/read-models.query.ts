@@ -180,6 +180,13 @@ export class CalendarDayQuery extends BranchScoped {
   payment?: string;
 }
 
+/**
+ * THE SAME THREE FILTERS THE DAY GRID TAKES.
+ *
+ * Spelled out rather than shared with CalendarDayQuery through a base class:
+ * the two differ in their date field, and a base holding everything BUT the
+ * date reads worse than the repetition. If a fourth filter arrives, revisit.
+ */
 export class CalendarWeekQuery extends BranchScoped {
   @ApiProperty({
     example: '2026-09-14',
@@ -187,6 +194,46 @@ export class CalendarWeekQuery extends BranchScoped {
   })
   @Matches(DAY, { message: 'from must be YYYY-MM-DD' })
   from!: string;
+
+  @ApiPropertyOptional({
+    description: 'Narrows every day of the week to one professional.',
+  })
+  @IsOptional()
+  @IsString()
+  staffId?: string;
+
+  @ApiPropertyOptional({
+    enum: CALENDAR_CHIPS,
+    isArray: true,
+    example: 'checked_in,in_service',
+    description: 'Comma-separated. Omit, or send empty, for every live status.',
+  })
+  @Transform(({ value }: { value: unknown }): unknown =>
+    value === '' ? undefined : value,
+  )
+  @IsOptional()
+  @IsString()
+  @Matches(CHIP_LIST, {
+    message: `status must be a comma-separated list of: ${CALENDAR_CHIPS.join(', ')}`,
+  })
+  status?: string;
+
+  @ApiPropertyOptional({
+    enum: PAYMENT_CHIPS,
+    isArray: true,
+    example: 'unpaid',
+    description:
+      'Comma-separated. Omit, or send empty, for every payment state.',
+  })
+  @Transform(({ value }: { value: unknown }): unknown =>
+    value === '' ? undefined : value,
+  )
+  @IsOptional()
+  @IsString()
+  @Matches(PAYMENT_LIST, {
+    message: `payment must be a comma-separated list of: ${PAYMENT_CHIPS.join(', ')}`,
+  })
+  payment?: string;
 }
 
 export class CalendarMonthQuery extends BranchScoped {

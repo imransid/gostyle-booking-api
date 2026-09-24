@@ -652,8 +652,38 @@ export class BookingReadHandler {
   }
 
   /** §6.4. Seven day summaries, each with its bookings. */
-  async week(branchId: string, from: string): Promise<unknown> {
+  async week(
+    branchId: string,
+    from: string,
+    filters: {
+      staffId?: string | undefined;
+      status?: string | undefined;
+      payment?: string | undefined;
+    } = {},
+  ): Promise<unknown> {
     const to = addDays(from, 7);
+
+    /**
+     * THE SAME TWO ROWS THE DAY GRID HAS, read the same way.
+     *
+     * A filter that works on one view of the diary and not the next is a
+     * filter the desk cannot trust. The chips are parsed here rather than
+     * shared with day() only because the two windows differ; the meaning of
+     * each chip lives in screen-view.ts and is not repeated.
+     */
+    const chips = (filters.status ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s !== '')
+      .filter(isCalendarChip);
+
+    const chosen = statusesForChips(chips);
+
+    const payChips = (filters.payment ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s !== '')
+      .filter(isPaymentChip);
 
     /**
      * THE CEILING IS DECLARED, AND SAID OUT LOUD WHEN IT IS HIT.
@@ -666,16 +696,40 @@ export class BookingReadHandler {
      * raised to a number no salon reaches and the response admits when it
      * was reached.
      */
-    const [rows, totals] = await Promise.all([
+    const window = {
+      branchId,
+      fromDay: from,
+      toDay: to,
+      ...(filters.staffId === undefined ? {} : { staffId: filters.staffId }),
+    };
+
+    /**
+     * THE STRIP DESCRIBES THE WEEK, THE GRID NARROWS.
+     *
+     * `dailyTotals` deliberately keeps the default live statuses while the
+     * booking list is read wide: the per-day count and revenue are the
+     * week's shape and must not move when a chip is tapped, exactly as the
+     * day grid's KPI strip does not move. A cancelled visit counted as
+     * revenue would report lost money as earned.
+     */
+    const [all, totals] = await Promise.all([
       this.reads.list({
-        branchId,
-        fromDay: from,
-        toDay: to,
+        ...window,
+        statuses: CHIP_STATUSES,
         limit: WEEK_LIMIT,
       }),
-      this.reads.dailyTotals({ branchId, fromDay: from, toDay: to }),
+      this.reads.dailyTotals(window),
     ]);
 
+    /**
+     * NO CHIP MEANS LIVE VISITS, exactly as on the day grid. The week is
+     * read wide so the no-show and cancelled chips have rows to find.
+     */
+    const rows = all.filter(
+      (r) =>
+        (chosen ?? LIVE_STATUSES).includes(r.status) &&
+        matchesAnyPaymentChip(payChips, r.payment_status, r.status),
+    );
     /**
      * DERIVED FROM THE STRIP, NOT COUNTED AGAIN.
      *
@@ -700,11 +754,25 @@ export class BookingReadHandler {
           bookings: views.filter((v) => v.date === date),
         };
       }),
-      /** How many the week really holds, and how many came back. */
+      /**
+       * `total` IS THE WEEK; `returned` IS WHAT THE FILTER LEFT.
+       *
+       * They are different populations and comparing them is meaningless:
+       * `total` is the live count from the day strip, `returned` is the
+       * filtered grid, and with `status=no_show` the second is legitimately
+       * LARGER than the first.
+       */
       total,
       returned: rows.length,
-      /** True when the week holds more than the grid was given. */
-      truncated: total > rows.length,
+      /**
+       * ONE MEANING: the read hit its ceiling and bookings were dropped.
+       *
+       * This compared `total` against the filtered rows, so it read true
+       * whenever a filter hid anything -- eight calls in eighteen, none of
+       * them within two thousand of the limit. A warning that fires on every
+       * filtered view is a warning the desk learns to ignore.
+       */
+      truncated: all.length >= WEEK_LIMIT,
       limit: WEEK_LIMIT,
     };
   }

@@ -111,7 +111,11 @@ export class ReadModelsController {
     @BranchId() branchId: string,
     @Query() q: CalendarWeekQuery,
   ): Promise<unknown> {
-    return this.reads.week(branchId, q.from);
+    return this.reads.week(branchId, q.from, {
+      staffId: q.staffId,
+      status: q.status,
+      payment: q.payment,
+    });
   }
 
   @Get('calendar/month')
