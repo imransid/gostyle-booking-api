@@ -10,6 +10,7 @@ import type { Request } from 'express';
 import { TokenVerifier } from './token-verifier.service';
 import type { Actor } from './actor';
 import { mayWorkTheDesk, deskRefusal } from '@domain/booking/desk-authority';
+import { TenantContext } from '@infrastructure/tenancy/tenant-context';
 
 /** Mark an endpoint open to anyone. */
 export const PUBLIC_KEY = 'booking:public';
@@ -34,6 +35,7 @@ export class BookingAuthGuard implements CanActivate {
   constructor(
     private readonly verifier: TokenVerifier,
     private readonly reflector: Reflector,
+    private readonly tenants: TenantContext,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -54,6 +56,11 @@ export class BookingAuthGuard implements CanActivate {
     // rather than flattened into one generic 401.
     const actor = await this.verifier.verify(token);
     request.actor = actor;
+
+    // The earliest point the token's tenant is trustworthy. TenantMiddleware
+    // opened the scope with the header alone; this fills it only if the
+    // header gave nothing (TenantContext.fillFromToken says why).
+    this.tenants.fillFromToken(actor.tenantId);
 
     // AFTER the token is verified, so a customer learns they are the wrong
     // KIND of caller rather than that their credential is bad. 403, not 401:

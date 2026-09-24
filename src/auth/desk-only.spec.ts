@@ -8,6 +8,7 @@ import { Public } from './public.decorator';
 import type { Actor } from './actor';
 import type { TokenVerifier } from './token-verifier.service';
 import type { ActorKind } from '@domain/booking/lifecycle';
+import { TenantContext } from '@infrastructure/tenancy/tenant-context';
 
 /**
  * POST /v1/walk-ins returned `500 Internal server error` to any customer
@@ -78,7 +79,11 @@ const run = (
   cls: object,
   headers: Record<string, string> = { authorization: 'Bearer t' },
 ): Promise<boolean> => {
-  const guard = new BookingAuthGuard(verifierFor(kind), new Reflector());
+  const guard = new BookingAuthGuard(
+    verifierFor(kind),
+    new Reflector(),
+    new TenantContext(),
+  );
   const { ctx } = contextFor(handler, cls, headers);
   return guard.canActivate(ctx);
 };
@@ -121,7 +126,11 @@ describe('@DeskOnly() lets the salon through', () => {
   );
 
   it('still puts the actor on the request for the handler to read', async () => {
-    const guard = new BookingAuthGuard(verifierFor('staff'), new Reflector());
+    const guard = new BookingAuthGuard(
+      verifierFor('staff'),
+      new Reflector(),
+      new TenantContext(),
+    );
     const { ctx, request } = contextFor(deskHandler, DeskController, {
       authorization: 'Bearer t',
     });

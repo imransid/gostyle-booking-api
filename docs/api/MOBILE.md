@@ -117,7 +117,9 @@ X-Tenant-Id: <tenant>
 Optional. Trimmed, and rejected if empty or longer than 64 characters. It is
 **stored on the rows you create and nothing else** — see
 [Things that will surprise you](#5-things-that-will-surprise-you). If it is
-absent, the `tenantId` claim on a staff token is used instead.
+absent (or malformed), the `tenantId` claim on a staff token is used instead.
+The header wins whenever it is present; the claim never overrides it. A
+customer token carries no tenant.
 
 ### There is no `X-Branch-Id`
 
@@ -3571,11 +3573,12 @@ Two consequences for you:
 
 - **Never treat the tenant header as an access-control boundary.** It is not
   one, and building UI that assumes it is will be wrong when it becomes one.
-- **If you do not send the header, the column is `NULL`.** There is no fallback
-  to the `tenantId` claim on the token, despite a comment in the schema that
-  says otherwise. Send it on every request if you want the rows attributed.
+- **If you do not send the header, a staff token's `tenantId` claim is used.**
+  It only fills in: a header that is present always wins. A customer token
+  carries no tenant, so a customer request without the header stores `NULL`.
 - A malformed header — empty, whitespace, or longer than 64 characters — is
-  treated as absent and stores `NULL`. It never errors.
+  treated as absent, so the token's claim answers instead, or `NULL` without
+  one. It never errors.
 
 `GET /v1/bookings/:id` echoes the stored value back as `tenantId`, so you can
 see what was recorded even though nothing gates on it.
