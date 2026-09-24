@@ -1,4 +1,4 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import {
   ReadModelRepository,
   type BookingRow,
@@ -263,6 +263,26 @@ function toView(
   };
 }
 
+/**
+ * The professionals a staff filter leaves in view.
+ *
+ * SHARED, because the day grid and the week strip both need it and a rule
+ * written twice is a rule that drifts (CLAUDE.md 4). The two copies were
+ * identical the day the second was written, which is the only day they ever
+ * are.
+ *
+ * The filter arrives as whatever the caller spells it -- a slug from the
+ * roster, a uuid from the column -- so SlugIndex answers to both.
+ */
+function inViewFor<T extends { id: string }>(
+  professionals: readonly T[],
+  staffId: string | undefined,
+): readonly T[] {
+  if (staffId === undefined) return professionals;
+  const index = new SlugIndex(professionals.map((p) => p.id));
+  return professionals.filter((p) => p.id === index.toSlug(staffId));
+}
+
 // ------------------------------------------------------------ date helpers
 
 /** Trading days are branch-local calendar dates; all arithmetic is on those. */
@@ -293,6 +313,8 @@ const WEEK_LIMIT = 2_000;
 
 @Injectable()
 export class BookingReadHandler {
+  private static readonly log = new Logger(BookingReadHandler.name);
+
   constructor(
     private readonly reads: ReadModelRepository,
     @Inject(BOOKING_CONTEXT) private readonly context: BookingContextReader,
@@ -571,12 +593,7 @@ export class BookingReadHandler {
      * populations is not a low number, it is a wrong one -- and the front
      * end was right to refuse to recompute it client-side.
      */
-    const inView =
-      filters.staffId === undefined
-        ? ctx.professionals
-        : ctx.professionals.filter(
-            (p) => p.id === index.toSlug(filters.staffId!),
-          );
+    const inView = inViewFor(ctx.professionals, filters.staffId);
 
     const columns = inView.map((p) => {
       const mine = rows.filter((r) =>
@@ -751,6 +768,84 @@ export class BookingReadHandler {
     const views = await this.decorate(branchId, rows);
     const byDay = new Map(totals.map((t) => [t.day, t]));
 
+    /**
+     * THE SAME SIX THE DAY GRID PUBLISHES, over seven days.
+     *
+     * Computed from `all`, never `rows`: the strip describes the week and
+     * must not move when a chip is tapped, which is the rule the day grid
+     * already follows.
+     *
+     * UTILISATION COSTS SEVEN ROSTER LOADS, one per day, because sellable
+     * minutes are a per-day fact -- a stylist rostered Monday and off
+     * Tuesday sells nothing on Tuesday, and dividing by a week of full
+     * shifts would report every salon as half empty. They run in parallel
+     * and a day whose roster fails contributes nothing rather than failing
+     * the read.
+     *
+     * WALK-INS ARE A RIGHT-NOW NUMBER: how many people are sitting in the
+     * salon at this moment. Over a week that means nothing, so it is
+     * today's figure when today falls inside the week and zero when it does
+     * not -- never a sum across seven days, which would count the same
+     * person every day they waited.
+     */
+    const live = all.filter((r) =>
+      (LIVE_STATUSES as readonly string[]).includes(r.status),
+    );
+
+    const days = Array.from({ length: 7 }, (_, i) => addDays(from, i));
+
+    /**
+     * THE DENOMINATOR NARROWS WITH THE FILTER, here as on the day grid.
+     *
+     * Counting one stylist's minutes and dividing by the whole salon's
+     * sellable time made Reem read 25% on the day and 1.35% on the week --
+     * the same stylist, the same bookings, two answers. A utilisation whose
+     * numerator and denominator describe different populations is not a low
+     * number, it is a wrong one.
+     */
+    const sellablePerDay = await Promise.all(
+      days.map((d) =>
+        this.context
+          .loadDay(branchId, d)
+          .then((ctx) => {
+            return inViewFor(ctx.professionals, filters.staffId).reduce(
+              (n, p) =>
+                n +
+                sellableMinutes({
+                  shift: { fromMin: p.shift.startMin, toMin: p.shift.endMin },
+                  timeOff: [],
+                }),
+              0,
+            );
+          })
+          .catch((e: unknown) => {
+            /**
+             * SAID OUT LOUD (CLAUDE.md 9). A dropped day keeps its bookings
+             * and loses its sellable minutes, so utilisation silently rises.
+             * Swallowing that leaves a wrong number with no evidence.
+             */
+            BookingReadHandler.log.warn(
+              `Roster unreachable for ${d}; its sellable minutes are excluded ` +
+                `from the week's utilisation, which will read high. ` +
+                (e instanceof Error ? e.message : String(e)),
+            );
+            return 0;
+          }),
+      ),
+    );
+
+    const sellable = sellablePerDay.reduce((n, m) => n + m, 0);
+    const bookedMin = live.reduce((n, r) => n + r.duration_min, 0);
+
+    const todayIsInside = days.includes(today());
+    const walkIns = todayIsInside
+      ? await this.reads.walkInPressure(branchId, today(), nowMinute())
+      : { waiting: 0, longestWaitMin: 0 };
+
+    const conflicts = (await this.reads.openConflicts(branchId)).filter((c) =>
+      days.includes(c.trading_day.toISOString().slice(0, 10)),
+    ).length;
+
     return {
       days: Array.from({ length: 7 }, (_, i) => {
         const date = addDays(from, i);
@@ -770,6 +865,16 @@ export class BookingReadHandler {
        * filtered grid, and with `status=no_show` the second is legitimately
        * LARGER than the first.
        */
+      kpis: {
+        booked: live.length,
+        utilisation: Number(utilisation(bookedMin, sellable).toFixed(4)),
+        revenue: wholeAed(live.reduce((n, r) => n + r.price_fils, 0)),
+        pendingDeposits: live.filter((r) => r.status === 'pending_payment')
+          .length,
+        conflicts,
+        walkInsWaiting: walkIns.waiting,
+      },
+      counts: chipCounts(all),
       total,
       returned: rows.length,
       /**
