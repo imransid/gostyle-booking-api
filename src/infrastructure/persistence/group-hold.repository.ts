@@ -10,6 +10,7 @@ import {
   type PartyParticipant,
   type PartyPlan,
 } from '@domain/availability/party';
+import { planPartyAtEach } from '@domain/availability/party-starts';
 
 export interface GroupHoldInput {
   readonly branchId: string;
@@ -327,6 +328,48 @@ export class GroupHoldRepository {
         input.options ?? {},
       );
     });
+  }
+
+  /**
+   * Plan a party at many starts, and write nothing.
+   *
+   * planOnly(), asked many times, for the price of asking once. The day is
+   * read ONCE, in one transaction, and every start is planned against that
+   * one picture of it with THE SAME contextFor() and THE SAME planParty() --
+   * so each answer is the one planOnly() would have given that start against
+   * the same diary, and no two starts can disagree about who was busy.
+   *
+   * The planning happens AFTER the transaction, not inside it. The picture
+   * is already in memory; what the transaction bought was reading it
+   * together. Planning inside would hold a pooled connection open for as
+   * long as the slowest party takes to search (see MAX_PARTY_STARTS), for
+   * nothing.
+   */
+  async planMany(input: {
+    readonly branchId: string;
+    readonly tradingDay: string;
+    readonly targetMins: readonly number[];
+    readonly mode: GroupMode;
+    readonly participants: readonly {
+      readonly participant: PartyParticipant;
+    }[];
+    readonly roster: GroupHoldInput['roster'];
+    readonly options?: PartyOptions;
+  }): Promise<PartyPlan[]> {
+    const day = new Date(`${input.tradingDay}T00:00:00Z`);
+    const branch = toUuid(input.branchId);
+
+    const ctx = await this.prisma.$transaction((tx) =>
+      this.contextFor(tx, branch, day, input.roster),
+    );
+
+    return planPartyAtEach(
+      input.participants.map((p) => p.participant),
+      input.targetMins,
+      input.mode,
+      ctx,
+      input.options ?? {},
+    );
   }
 
   /** The day as the planner needs it: who is free, and which chairs are taken. */
