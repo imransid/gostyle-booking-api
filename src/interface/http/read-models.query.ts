@@ -114,6 +114,13 @@ const PAYMENT_LIST = new RegExp(
   `^(${PAYMENT_CHIPS.join('|')})(,(${PAYMENT_CHIPS.join('|')}))*$`,
 );
 
+/** The serviceId text, shared by the day and the week so it cannot drift. */
+const SERVICE_LIST =
+  'Comma-separated. Narrows to bookings holding any of these services on ' +
+  'any line; with `staffId` too, a booking must match both. A GROUP ' +
+  'booking stores only its first service, so a participant having a ' +
+  'second one is invisible here.';
+
 /** Empty means "not sent". The chip bar sends `x=` when nothing is picked. */
 const blankIsAbsent = (): PropertyDecorator =>
   Transform(({ value }: { value: unknown }): unknown =>
@@ -126,9 +133,12 @@ export class CalendarDayQuery extends BranchScoped {
   date!: string;
 
   @ApiPropertyOptional({
+    example: 'reem,maya',
     description:
-      'Narrows the grid to one professional. `kpis.utilisation` is then ' +
-      'measured against THEIR sellable minutes, not the branch’s.',
+      'Comma-separated. Narrows the grid to these professionals: a booking ' +
+      'shows when any of its lines is held by any of them. `kpis.utilisation` ' +
+      'is then measured against THEIR sellable minutes, not the branch’s. An ' +
+      'id nobody holds matches nothing rather than failing.',
   })
   @blankIsAbsent()
   @IsOptional()
@@ -136,10 +146,8 @@ export class CalendarDayQuery extends BranchScoped {
   staffId?: string;
 
   @ApiPropertyOptional({
-    description:
-      'Narrows to bookings holding this service on any line. A GROUP ' +
-      'booking stores only its first service, so a participant having a ' +
-      'second one is invisible here.',
+    example: 'full-colour,blow-dry',
+    description: SERVICE_LIST,
   })
   @blankIsAbsent()
   @IsOptional()
@@ -207,7 +215,11 @@ export class CalendarWeekQuery extends BranchScoped {
   from!: string;
 
   @ApiPropertyOptional({
-    description: 'Narrows every day of the week to one professional.',
+    example: 'reem,maya',
+    description:
+      'Comma-separated. Narrows every day of the week to these ' +
+      'professionals, the sellable minutes behind `kpis.utilisation` ' +
+      'included.',
   })
   @blankIsAbsent()
   @IsOptional()
@@ -215,10 +227,8 @@ export class CalendarWeekQuery extends BranchScoped {
   staffId?: string;
 
   @ApiPropertyOptional({
-    description:
-      'Narrows to bookings holding this service on any line. A GROUP ' +
-      'booking stores only its first service, so a participant having a ' +
-      'second one is invisible here.',
+    example: 'full-colour,blow-dry',
+    description: SERVICE_LIST,
   })
   @blankIsAbsent()
   @IsOptional()

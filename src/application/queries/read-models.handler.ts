@@ -67,6 +67,7 @@ import {
   deriveSeriesHealth,
   type SeriesFacts,
 } from '@domain/booking/series-health';
+import { commaList } from '@domain/booking/calendar-query';
 
 /**
  * The read side of the bookings module.
@@ -273,14 +274,19 @@ function toView(
  *
  * The filter arrives as whatever the caller spells it -- a slug from the
  * roster, a uuid from the column -- so SlugIndex answers to both.
+ *
+ * A LIST, so the denominator is the CHOSEN stylists' sellable time: Reem and
+ * Maya together sell 1080 minutes, not the salon's 3180 and not Reem's 480.
+ * An id the roster does not know adds no one, and no minutes.
  */
 function inViewFor<T extends { id: string }>(
   professionals: readonly T[],
-  staffId: string | undefined,
+  staffIds: readonly string[] | undefined,
 ): readonly T[] {
-  if (staffId === undefined) return professionals;
+  if (staffIds === undefined) return professionals;
   const index = new SlugIndex(professionals.map((p) => p.id));
-  return professionals.filter((p) => p.id === index.toSlug(staffId));
+  const chosen = new Set(staffIds.map((id) => index.toSlug(id)));
+  return professionals.filter((p) => chosen.has(p.id));
 }
 
 // ------------------------------------------------------------ date helpers
@@ -339,6 +345,7 @@ export class BookingReadHandler {
     pageSize: number;
     total: number;
     counts: Record<string, number>;
+    kpis: ReturnType<typeof windowKpis>;
   }> {
     const filter = this.readFilter(q.filter);
     const page = Math.max(1, q.page ?? 1);
@@ -351,21 +358,50 @@ export class BookingReadHandler {
       ...(statusesFor(filter) === null
         ? {}
         : { statuses: statusesFor(filter)! }),
-      ...(q.staffId === undefined ? {} : { staffId: q.staffId }),
+      /**
+       * ONE ID, AS IT ALWAYS WAS. The comma list belongs to the calendar;
+       * the agenda's staffId was not asked to change, so it is handed down
+       * whole and `a,b` still reads as one id that nobody holds.
+       */
+      ...(q.staffId === undefined ? {} : { staffIds: [q.staffId] }),
       ...(q.customerId === undefined ? {} : { customerId: q.customerId }),
       notReminded: filter === 'NOT_REMINDED',
       conflictsOnly: filter === 'CONFLICTS',
     };
 
-    const [rows, total, counts] = await Promise.all([
+    /**
+     * THE MONTH'S FOUR TILES, over THIS list's window and filters.
+     *
+     * Unlike `counts`, they move when a filter does: they describe what the
+     * list is showing, as the calendar's strip describes its grid.
+     *
+     * CONFLICTS IS COUNTED THROUGH THE LIST'S OWN WHERE, not the month's
+     * worklist read. The month counts open worklist ITEMS by the roster
+     * change's day, whatever the booking's status; the list counts the
+     * BOOKINGS that `filter=CONFLICTS` would list. Those differ in ways the
+     * desk would see -- a no-show still holding an open item is not on the
+     * agenda, and one booking can hold two items -- and a tile reading 1 over
+     * a CONFLICTS chip that lists nothing would contradict itself.
+     */
+    const [rows, byStatus, conflicts, counts] = await Promise.all([
       this.reads.list({
         ...base,
         limit: pageSize,
         offset: (page - 1) * pageSize,
       }),
-      this.reads.count(base),
+      this.reads.statusTotals(base),
+      this.reads.count({ ...base, conflictsOnly: true }),
       this.counts(q.branchId),
     ]);
+
+    /**
+     * DERIVED FROM THE STATUS TOTALS, NOT COUNTED AGAIN.
+     *
+     * They narrow by the same WHERE, so their sum IS the list's size. A
+     * separate count() was a second copy of that number -- one more query,
+     * and one more place for `total` and `kpis.booked` to drift apart.
+     */
+    const total = byStatus.reduce((n, t) => n + t.n, 0);
 
     return {
       data: await this.decorate(q.branchId, rows),
@@ -373,6 +409,7 @@ export class BookingReadHandler {
       pageSize,
       total,
       counts,
+      kpis: windowKpis(byStatus, conflicts),
     };
   }
 
@@ -510,11 +547,7 @@ export class BookingReadHandler {
      * is dropped rather than silently matching nothing -- the controller
      * refuses it before it reaches here.
      */
-    const chips = (filters.status ?? '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter((s) => s !== '')
-      .filter(isCalendarChip);
+    const chips = (commaList(filters.status) ?? []).filter(isCalendarChip);
 
     const chosen = statusesForChips(chips);
 
@@ -526,11 +559,14 @@ export class BookingReadHandler {
      * would put one rule in two places (CLAUDE.md 4). The day is already read
      * whole, so there is nothing to fetch.
      */
-    const payChips = (filters.payment ?? '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter((s) => s !== '')
-      .filter(isPaymentChip);
+    const payChips = (commaList(filters.payment) ?? []).filter(isPaymentChip);
+
+    /**
+     * WHOSE DIARY, AND WHICH SERVICES: lists, `staffId=reem,maya`. One id is
+     * a list of one and reads exactly as it did.
+     */
+    const staffIds = commaList(filters.staffId);
+    const serviceIds = commaList(filters.serviceId);
 
     /**
      * EVERY STATUS A CHIP CAN REACH, not just the live ones.
@@ -545,10 +581,8 @@ export class BookingReadHandler {
       fromDay: date,
       toDay: addDays(date, 1),
       statuses: CHIP_STATUSES,
-      ...(filters.staffId === undefined ? {} : { staffId: filters.staffId }),
-      ...(filters.serviceId === undefined
-        ? {}
-        : { serviceId: filters.serviceId }),
+      ...(staffIds === undefined ? {} : { staffIds }),
+      ...(serviceIds === undefined ? {} : { serviceIds }),
     };
 
     /**
@@ -593,7 +627,7 @@ export class BookingReadHandler {
      * populations is not a low number, it is a wrong one -- and the front
      * end was right to refuse to recompute it client-side.
      */
-    const inView = inViewFor(ctx.professionals, filters.staffId);
+    const inView = inViewFor(ctx.professionals, staffIds);
 
     const columns = inView.map((p) => {
       const mine = rows.filter((r) =>
@@ -693,19 +727,14 @@ export class BookingReadHandler {
      * shared with day() only because the two windows differ; the meaning of
      * each chip lives in screen-view.ts and is not repeated.
      */
-    const chips = (filters.status ?? '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter((s) => s !== '')
-      .filter(isCalendarChip);
+    const chips = (commaList(filters.status) ?? []).filter(isCalendarChip);
 
     const chosen = statusesForChips(chips);
 
-    const payChips = (filters.payment ?? '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter((s) => s !== '')
-      .filter(isPaymentChip);
+    const payChips = (commaList(filters.payment) ?? []).filter(isPaymentChip);
+
+    const staffIds = commaList(filters.staffId);
+    const serviceIds = commaList(filters.serviceId);
 
     /**
      * THE CEILING IS DECLARED, AND SAID OUT LOUD WHEN IT IS HIT.
@@ -722,10 +751,8 @@ export class BookingReadHandler {
       branchId,
       fromDay: from,
       toDay: to,
-      ...(filters.staffId === undefined ? {} : { staffId: filters.staffId }),
-      ...(filters.serviceId === undefined
-        ? {}
-        : { serviceId: filters.serviceId }),
+      ...(staffIds === undefined ? {} : { staffIds }),
+      ...(serviceIds === undefined ? {} : { serviceIds }),
     };
 
     /**
@@ -808,7 +835,7 @@ export class BookingReadHandler {
         this.context
           .loadDay(branchId, d)
           .then((ctx) => {
-            return inViewFor(ctx.professionals, filters.staffId).reduce(
+            return inViewFor(ctx.professionals, staffIds).reduce(
               (n, p) =>
                 n +
                 sellableMinutes({
@@ -952,12 +979,6 @@ export class BookingReadHandler {
      * payload said why. Postgres now returns one row per status, so there is
      * no ceiling to hit.
      */
-    const live = byStatus.filter((t) =>
-      (LIVE_STATUSES as readonly string[]).includes(t.status),
-    );
-    const bookingsIn = (ts: readonly { n: number }[]) =>
-      ts.reduce((n, t) => n + t.n, 0);
-
     const conflicts = openConflicts.filter((c) => {
       const d = c.trading_day.toISOString().slice(0, 10);
       return d >= from && d < to;
@@ -966,14 +987,7 @@ export class BookingReadHandler {
     return {
       month,
       cells,
-      kpis: {
-        booked: bookingsIn(live),
-        revenue: wholeAed(live.reduce((n, t) => n + t.revenueFils, 0)),
-        pendingDeposits: bookingsIn(
-          live.filter((t) => t.status === 'pending_payment'),
-        ),
-        conflicts,
-      },
+      kpis: windowKpis(byStatus, conflicts),
       counts: chipCountsOf(byStatus),
     };
   }
@@ -1693,6 +1707,42 @@ function chipCountsOf(
       .reduce((n, t) => n + t.n, 0);
   }
   return out;
+}
+
+/**
+ * The four tiles a window can publish from per-status totals.
+ *
+ * SHARED by the month and the agenda list, so the two cannot disagree about
+ * what "booked" or "revenue" means (CLAUDE.md 4). Live statuses only: a
+ * cancelled visit was never earned. `conflicts` is the caller's, because each
+ * view counts it over its own population.
+ *
+ * `utilisation` and `walkInsWaiting` are not here, and a caller must not add
+ * them as zero -- see month() for why they are absent.
+ */
+function windowKpis(
+  totals: readonly { status: BookingStatus; n: number; revenueFils: number }[],
+  conflicts: number,
+): {
+  booked: number;
+  revenue: number;
+  pendingDeposits: number;
+  conflicts: number;
+} {
+  const live = totals.filter((t) =>
+    (LIVE_STATUSES as readonly string[]).includes(t.status),
+  );
+  const bookingsIn = (ts: readonly { n: number }[]) =>
+    ts.reduce((n, t) => n + t.n, 0);
+
+  return {
+    booked: bookingsIn(live),
+    revenue: wholeAed(live.reduce((n, t) => n + t.revenueFils, 0)),
+    pendingDeposits: bookingsIn(
+      live.filter((t) => t.status === 'pending_payment'),
+    ),
+    conflicts,
+  };
 }
 
 export { LIVE_STATUSES };

@@ -59,9 +59,14 @@ export interface ListFilters {
   readonly fromDay: string;
   readonly toDay: string;
   readonly statuses?: readonly BookingStatus[] | undefined;
-  readonly staffId?: string | undefined;
-  /** One service. A booking matches when any of its lines is that service. */
-  readonly serviceId?: string | undefined;
+  /**
+   * Any of these professionals: a booking matches when ANY of its lines is
+   * held by ANY of them. Absent means everyone. An empty list is not
+   * "everyone" -- it matches nothing, so a caller with no ids leaves this out.
+   */
+  readonly staffIds?: readonly string[] | undefined;
+  /** Any of these services, on any line. Absent means every service. */
+  readonly serviceIds?: readonly string[] | undefined;
   readonly customerId?: string | undefined;
   /** NOT_REMINDED: the 24-hour rung has not gone out. */
   readonly notReminded?: boolean | undefined;
@@ -85,27 +90,33 @@ export interface ListFilters {
  *
  * Prisma.sql binds its arguments exactly as a tagged template does, so
  * nothing here is string concatenation.
+ *
+ * STAFF AND SERVICE ARE LISTS. Within one list it is ANY: any line, any of
+ * the ids. Across the two it is AND: a booking must hold one of the staff and
+ * one of the services -- on the same line or on different ones, because both
+ * are asked of the booking, as the single-id version always asked them. One
+ * id is a list of one, and `= ANY('{x}')` is `= x`.
  */
 function bookingWhere(f: ListFilters): Prisma.Sql {
   const statuses = [...(f.statuses ?? LIVE_STATUSES)];
+  // Folded here, once per id, so every caller spells an id the way the
+  // column does (CLAUDE.md 8). null is "no filter".
+  const staff = f.staffIds?.map((id) => toUuid(id)) ?? null;
+  const services = f.serviceIds?.map((id) => toUuid(id)) ?? null;
 
   return Prisma.sql`
          b.branch_id = ${toUuid(f.branchId)}::uuid
      AND b.trading_day >= ${f.fromDay}::date
      AND b.trading_day < ${f.toDay}::date
      AND b.status::text = ANY(${statuses}::text[])
-     AND (${f.staffId ?? null}::text IS NULL OR EXISTS (
+     AND (${staff}::uuid[] IS NULL OR EXISTS (
            SELECT 1 FROM booking_item si
             WHERE si.booking_id = b.id
-              AND si.staff_id = ${
-                f.staffId === undefined ? null : toUuid(f.staffId)
-              }::uuid))
-              AND (${f.serviceId ?? null}::text IS NULL OR EXISTS (
+              AND si.staff_id = ANY(${staff}::uuid[])))
+     AND (${services}::uuid[] IS NULL OR EXISTS (
            SELECT 1 FROM booking_item si
             WHERE si.booking_id = b.id
-              AND si.service_id = ${
-                f.serviceId === undefined ? null : toUuid(f.serviceId)
-              }::uuid))
+              AND si.service_id = ANY(${services}::uuid[])))
      AND (${f.customerId ?? null}::text IS NULL
           OR b.customer_id = ${
             f.customerId === undefined ? null : toUuid(f.customerId)
