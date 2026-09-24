@@ -1,0 +1,77 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`one start: the request as it was before targetMins existed > accepts every optional field, and hands the handler the same query 1`] = `
+{
+  "asked": [
+    {
+      "method": "execute",
+      "query": "{"branchId":"branch-from-the-decorator","tradingDay":"2026-10-11","targetMin":900,"mode":"finish_together","finishWindowMin":15,"maxStaggerMin":45,"participants":[{"label":"A","serviceIds":["blow-dry"],"preferredStaffId":"maya"},{"label":"B","serviceIds":["gel-manicure","brow-lamination"],"preferredStaffId":null}]}",
+    },
+  ],
+  "dto": "{"branchId":"marina-walk","day":"2026-10-11","targetMin":900,"mode":"FINISH","finishWindowMin":15,"maxStaggerMin":45,"participants":[{"label":"A","serviceIds":["blow-dry"],"preferredStaffId":"maya"},{"label":"B","serviceIds":["gel-manicure","brow-lamination"]}]}",
+}
+`;
+
+exports[`one start: the request as it was before targetMins existed > accepts minimal, and hands the handler the same query 1`] = `
+{
+  "asked": [
+    {
+      "method": "execute",
+      "query": "{"branchId":"branch-from-the-decorator","tradingDay":"2026-10-11","targetMin":900,"mode":"arrive_together","participants":[{"label":"A","serviceIds":["blow-dry"],"preferredStaffId":null},{"label":"B","serviceIds":["gel-manicure"],"preferredStaffId":null}]}",
+    },
+  ],
+  "dto": "{"day":"2026-10-11","targetMin":900,"mode":"TOGETHER","participants":[{"label":"A","serviceIds":["blow-dry"]},{"label":"B","serviceIds":["gel-manicure"]}]}",
+}
+`;
+
+exports[`one start: the request as it was before targetMins existed > accepts the first minute, and hands the handler the same query 1`] = `
+{
+  "asked": [
+    {
+      "method": "execute",
+      "query": "{"branchId":"branch-from-the-decorator","tradingDay":"2026-10-11","targetMin":600,"mode":"arrive_together","participants":[{"label":"A","serviceIds":["blow-dry"],"preferredStaffId":null},{"label":"B","serviceIds":["gel-manicure"],"preferredStaffId":null}]}",
+    },
+  ],
+  "dto": "{"day":"2026-10-11","targetMin":600,"mode":"TOGETHER","participants":[{"label":"A","serviceIds":["blow-dry"]},{"label":"B","serviceIds":["gel-manicure"]}]}",
+}
+`;
+
+exports[`one start: the request as it was before targetMins existed > accepts the last minute, and hands the handler the same query 1`] = `
+{
+  "asked": [
+    {
+      "method": "execute",
+      "query": "{"branchId":"branch-from-the-decorator","tradingDay":"2026-10-11","targetMin":1319,"mode":"arrive_together","participants":[{"label":"A","serviceIds":["blow-dry"],"preferredStaffId":null},{"label":"B","serviceIds":["gel-manicure"],"preferredStaffId":null}]}",
+    },
+  ],
+  "dto": "{"day":"2026-10-11","targetMin":1319,"mode":"TOGETHER","participants":[{"label":"A","serviceIds":["blow-dry"]},{"label":"B","serviceIds":["gel-manicure"]}]}",
+}
+`;
+
+exports[`one start: the request as it was before targetMins existed > refuses a day that is not a date with the same 400 1`] = `"{"message":["day must be YYYY-MM-DD"],"error":"Bad Request","statusCode":400}"`;
+
+exports[`one start: the request as it was before targetMins existed > refuses a field the route does not take with the same 400 1`] = `"{"message":["property arrangement should not exist"],"error":"Bad Request","statusCode":400}"`;
+
+exports[`one start: the request as it was before targetMins existed > refuses a participant with a customerId with the same 400 1`] = `"{"message":["participants.0.property customerId should not exist"],"error":"Bad Request","statusCode":400}"`;
+
+exports[`one start: the request as it was before targetMins existed > refuses a participant with no services with the same 400 1`] = `"{"message":["participants.0.serviceIds should not be empty"],"error":"Bad Request","statusCode":400}"`;
+
+exports[`one start: the request as it was before targetMins existed > refuses a party of nine with the same 400 1`] = `"{"message":["participants must contain no more than 8 elements"],"error":"Bad Request","statusCode":400}"`;
+
+exports[`one start: the request as it was before targetMins existed > refuses a party of one with the same 400 1`] = `"{"message":["participants must contain at least 2 elements"],"error":"Bad Request","statusCode":400}"`;
+
+exports[`one start: the request as it was before targetMins existed > refuses an empty body with the same 400 1`] = `"{"message":["day must be YYYY-MM-DD","targetMin must not be greater than 1319","targetMin must not be less than 600","targetMin must be an integer number","mode must be one of the following values: TOGETHER, FINISH","participants must contain no more than 8 elements","participants must contain at least 2 elements","participants must be an array"],"error":"Bad Request","statusCode":400}"`;
+
+exports[`one start: the request as it was before targetMins existed > refuses an unknown mode with the same 400 1`] = `"{"message":["mode must be one of the following values: TOGETHER, FINISH"],"error":"Bad Request","statusCode":400}"`;
+
+exports[`one start: the request as it was before targetMins existed > refuses no targetMin with the same 400 1`] = `"{"message":["targetMin must not be greater than 1319","targetMin must not be less than 600","targetMin must be an integer number"],"error":"Bad Request","statusCode":400}"`;
+
+exports[`one start: the request as it was before targetMins existed > refuses targetMin as a string with the same 400 1`] = `"{"message":["targetMin must not be greater than 1319","targetMin must not be less than 600","targetMin must be an integer number"],"error":"Bad Request","statusCode":400}"`;
+
+exports[`one start: the request as it was before targetMins existed > refuses targetMin at the close with the same 400 1`] = `"{"message":["targetMin must not be greater than 1319"],"error":"Bad Request","statusCode":400}"`;
+
+exports[`one start: the request as it was before targetMins existed > refuses targetMin before the open with the same 400 1`] = `"{"message":["targetMin must not be less than 600"],"error":"Bad Request","statusCode":400}"`;
+
+exports[`one start: the request as it was before targetMins existed > refuses targetMin null with the same 400 1`] = `"{"message":["targetMin must not be greater than 1319","targetMin must not be less than 600","targetMin must be an integer number"],"error":"Bad Request","statusCode":400}"`;
+
+exports[`one start: the request as it was before targetMins existed > refuses targetMin with a fraction with the same 400 1`] = `"{"message":["targetMin must be an integer number"],"error":"Bad Request","statusCode":400}"`;
