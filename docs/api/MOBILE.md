@@ -117,7 +117,9 @@ X-Tenant-Id: <tenant>
 Optional. Trimmed, and rejected if empty or longer than 64 characters. It is
 **stored on the rows you create and nothing else** — see
 [Things that will surprise you](#5-things-that-will-surprise-you). If it is
-absent, the `tenantId` claim on a staff token is used instead.
+absent (or malformed), the `tenantId` claim on a staff token is used instead.
+The header wins whenever it is present; the claim never overrides it. A
+customer token carries no tenant.
 
 ### There is no `X-Branch-Id`
 
@@ -1361,7 +1363,7 @@ Every bookable service and its id. The starting call for a booking flow — copy
 
 *Source: [availability.controller.ts:173](src/interface/http/availability.controller.ts#L173)*
 
-**Auth** — public — inherits the class-level @Public() (availability.controller.ts:137). No Authorization header needed; VERIFIED LIVE that a garbage bearer token is accepted and ignored (200).
+**Auth** — public — inherits the class-level @Public() (availability.controller.ts:137). No Authorization header needed. A token that IS sent is verified: a valid one sets the tenant and branch exactly as on a guarded route, and one that fails (garbage, expired) is served anonymously with a server-side warning — still 200, never 401.
 
 **Request (query)**
 
@@ -1435,7 +1437,7 @@ Which start times the salon can actually deliver for a chain of services on one 
 
 *Source: [availability.controller.ts:144](src/interface/http/availability.controller.ts#L144)*
 
-**Auth** — public — the whole AvailabilityController carries @Public() (availability.controller.ts:137). BookingAuthGuard (the APP_GUARD in src/app.module.ts:24) returns true immediately for @Public handlers, so NO Authorization header is required.
+**Auth** — public — the whole AvailabilityController carries @Public() (availability.controller.ts:137). BookingAuthGuard (the APP_GUARD in src/app.module.ts:24) lets @Public handlers through without one, so NO Authorization header is required. When one IS sent it is verified and used — a staff token's tenant and branch apply exactly as on a guarded route — and a token that fails is served anonymously (200, not 401). Send the staff token: without it the platform roster has no tenant and the engine falls back to the fixture stylists.
 
 **Request (query)**
 
@@ -3173,7 +3175,7 @@ Liveness plus readiness: is the process up, can it reach Postgres, and is the ou
 
 *Source: [health.controller.ts:33](src/interface/http/health.controller.ts#L33)*
 
-**Auth** — public — @Public() sits on the HealthController CLASS (health.controller.ts:26), so it covers this route (BookingAuthGuard uses reflector.getAllAndOverride over [handler, class] at guard lines 35-39). No bearer token; any Authorization header sent is ignored.
+**Auth** — public — @Public() sits on the HealthController CLASS (health.controller.ts:26), so it covers this route (BookingAuthGuard uses reflector.getAllAndOverride over [handler, class] at guard lines 35-39). No bearer token needed; one that is sent is verified if possible and never refused.
 
 **Request** — no body or query parameters.
 
@@ -3223,7 +3225,7 @@ Gateway payment-intent lifecycle webhook. Public by design (HMAC signature is th
 
 *Source: [webhooks.controller.ts:85](src/interface/http/webhooks.controller.ts#L85)*
 
-**Auth** — public — @Public() on the handler (webhooks.controller.ts:86), so the global BookingAuthGuard (src/auth/booking-auth.guard.ts, wired as APP_GUARD in src/app.module.ts:24) returns true at line 39 without looking for a bearer token.
+**Auth** — public — @Public() on the handler (webhooks.controller.ts:86), so the global BookingAuthGuard (src/auth/booking-auth.guard.ts, wired as APP_GUARD in src/app.module.ts:24) lets it through without a bearer token; the HMAC signature is the authentication.
 
 **Request (body)**
 
@@ -3571,11 +3573,12 @@ Two consequences for you:
 
 - **Never treat the tenant header as an access-control boundary.** It is not
   one, and building UI that assumes it is will be wrong when it becomes one.
-- **If you do not send the header, the column is `NULL`.** There is no fallback
-  to the `tenantId` claim on the token, despite a comment in the schema that
-  says otherwise. Send it on every request if you want the rows attributed.
+- **If you do not send the header, a staff token's `tenantId` claim is used.**
+  It only fills in: a header that is present always wins. A customer token
+  carries no tenant, so a customer request without the header stores `NULL`.
 - A malformed header — empty, whitespace, or longer than 64 characters — is
-  treated as absent and stores `NULL`. It never errors.
+  treated as absent, so the token's claim answers instead, or `NULL` without
+  one. It never errors.
 
 `GET /v1/bookings/:id` echoes the stored value back as `tenantId`, so you can
 see what was recorded even though nothing gates on it.

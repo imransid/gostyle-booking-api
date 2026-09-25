@@ -22,6 +22,11 @@ import { PUBLIC_KEY } from './booking-auth.guard';
  * that and stops demanding a token for the operation. It is not the same as
  * deleting the key, and deliberately so: these routes still ACCEPT a token
  * when one is sent, which is exactly what an optional requirement describes.
+ *
+ * ACCEPT MEANS USE. A token that verifies sets the actor and fills the
+ * tenant exactly as on a guarded route; a token that does not is served
+ * anonymously with a warning, never refused. BookingAuthGuard's
+ * `identifyIfPossible` says why it must stay that way.
  */
 export const Public = (): MethodDecorator & ClassDecorator =>
   applyDecorators(SetMetadata(PUBLIC_KEY, true), ApiSecurity({}));
