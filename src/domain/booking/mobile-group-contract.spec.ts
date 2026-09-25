@@ -74,10 +74,16 @@ describe('checkParty: the create words (§4)', () => {
       'invalid_status',
     );
   });
-  it('only DRAFT: a party has no pay-at-the-salon arrangement', () => {
+  it('DRAFT or PAY_AFTER_CHECK_IN: both are saved to pay at the salon', () => {
+    expect(codeOf(party(undefined, { paymentStatus: 'DRAFT' }))).toBeNull();
     expect(
       codeOf(party(undefined, { paymentStatus: 'PAY_AFTER_CHECK_IN' })),
-    ).toBe('invalid_payment_status');
+    ).toBeNull();
+  });
+  it('nothing already paid: money is taken at the salon', () => {
+    expect(codeOf(party(undefined, { paymentStatus: 'FULLY_PAID' }))).toBe(
+      'invalid_payment_status',
+    );
   });
 });
 

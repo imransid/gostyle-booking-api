@@ -195,6 +195,30 @@ describe('route registration order', () => {
     expect(order.indexOf('EligibleStaffController')).toBeLessThan(bookings);
   });
 
+  it('keeps the mobile group routes ahead of MobileBookingController', () => {
+    // /mobile-booking/:id matches one segment and the group routes are
+    // deeper, so nothing collides today. Registered first anyway, so a
+    // future `/mobile-booking/:id/...` route can never be tried before a
+    // group path.
+    const order = registrationOrder();
+    const single = order.indexOf('MobileBookingController');
+    expect(single).toBeGreaterThan(-1);
+    expect(order.indexOf('MobileGroupBookingController')).toBeGreaterThan(-1);
+    expect(order.indexOf('MobileGroupBookingController')).toBeLessThan(single);
+  });
+
+  it('the mobile group routes are where the plan puts them', () => {
+    const group = routeTable()
+      .filter((r) => r.controller === 'MobileGroupBookingController')
+      .map((r) => `${r.method} ${r.path}`)
+      .sort();
+    expect(group).toEqual([
+      'Get mobile-booking/group/:groupId',
+      'Post mobile-booking/group',
+      'Post mobile-booking/group/:groupId/cancel',
+    ]);
+  });
+
   it('the two literals really are under /bookings', () => {
     const table = routeTable();
     // The decorator's own casing, so a failure prints what the source says.

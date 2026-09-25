@@ -48,6 +48,8 @@ import { parseFilter } from '@domain/booking/booking-shelf';
 import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
 import { BookingRepository } from '@infrastructure/persistence/booking.repository';
 import { MobileContractError } from '@application/commands/mobile-booking.error';
+import { MobileGroupReadHandler } from '@application/queries/mobile-group-read.handler';
+import { MOBILE_GROUP_BOOKING } from './mobile-group.flag';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
 
@@ -261,6 +263,7 @@ export class MobileBookingController {
   constructor(
     private readonly handler: MobileBookingHandler,
     private readonly bookings: BookingRepository,
+    private readonly groups: MobileGroupReadHandler,
   ) {}
 
   @Post()
@@ -349,7 +352,7 @@ export class MobileBookingController {
   @ApiUnprocessableEntityResponse({
     description: 'filter was not one of the three: code `invalid_filter`.',
   })
-  list(
+  async list(
     @CurrentActor() actor: Actor,
     @Query('filter') filter?: string,
     @Query('page') page?: string,
@@ -360,13 +363,19 @@ export class MobileBookingController {
       throw MobileContractError.invalidFilter(filter ?? '');
     }
 
-    return this.handler.list({
+    const shelfPage = await this.handler.list({
       customerId: actor.id ?? 'anonymous',
       filter: shelf,
       page: clampInt(page, 1, 1, 10_000),
       // §1: capped server-side at 50. A page is a quote per row.
       pageSize: clampInt(pageSize, 20, 1, 50),
     });
+
+    // Behind MOBILE_GROUP_BOOKING: a member of a mobile party is shown as
+    // one GROUP row for the party. Off, the page is exactly what it was.
+    return MOBILE_GROUP_BOOKING()
+      ? this.groups.decorateList(shelfPage)
+      : shelfPage;
   }
 
   /**

@@ -23,6 +23,12 @@ export type MemberKind = 'self' | 'registered' | 'guest';
 const KINDS: readonly string[] = ['self', 'registered', 'guest'];
 const AGE_GROUPS: readonly string[] = ['adult', 'child'];
 
+/** What the app may send as `payment_status` on create. Both are saved as pay at the salon. */
+export const CREATE_PAYMENT_STATUSES: readonly string[] = [
+  'DRAFT',
+  'PAY_AFTER_CHECK_IN',
+];
+
 export type GroupRefusalCode =
   | 'invalid_party_size'
   | 'duplicate_ref'
@@ -104,13 +110,15 @@ export function checkParty(
       'Only BOOKED may be sent on create.',
     );
   }
-  if (claim.paymentStatus !== 'DRAFT') {
-    // A party is always paid in the app after it is created (§4): there is
-    // no pay-at-the-salon arrangement for a group.
+  if (!CREATE_PAYMENT_STATUSES.includes(claim.paymentStatus)) {
+    // A party is always saved to pay at the salon (PAY_AFTER_CHECK_IN): the
+    // app spec sends DRAFT, and taking payment in the app belongs to another
+    // team. Both words are accepted so the app's body works as written; what
+    // is stored, and answered, is the truth.
     return refuse(
       'payment_status',
       'invalid_payment_status',
-      'Only DRAFT may be sent on create. Record the payment with PATCH once the gateway answers.',
+      'Only DRAFT or PAY_AFTER_CHECK_IN may be sent on create. A group pays at the salon.',
     );
   }
 

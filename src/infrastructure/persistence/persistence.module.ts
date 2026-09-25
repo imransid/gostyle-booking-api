@@ -5,6 +5,7 @@ import { BranchContext } from '../tenancy/branch-context';
 import { IdempotencyRepository } from './idempotency.repository';
 import { DeskExtrasRepository } from './desk-extras.repository';
 import { MobilePaymentRepository } from './mobile-payment.repository';
+import { MobileGroupConfirmRepository } from './mobile-group-confirm.repository';
 import { PlatformServiceCatalogue } from './platform-service-catalogue';
 import { PlatformStaffRoster } from './platform-staff-roster';
 import { ServicesGrpcModule } from '../grpc/services-grpc.module';
@@ -68,6 +69,7 @@ import { ProductsGrpcModule } from '../grpc/products-grpc.module';
     IdempotencyRepository,
     DeskExtrasRepository,
     MobilePaymentRepository,
+    MobileGroupConfirmRepository,
     PlatformServiceCatalogue,
     PlatformStaffRoster,
     ConfirmAskSweeper,
@@ -147,6 +149,7 @@ import { ProductsGrpcModule } from '../grpc/products-grpc.module';
     IdempotencyRepository,
     DeskExtrasRepository,
     MobilePaymentRepository,
+    MobileGroupConfirmRepository,
     PlatformServiceCatalogue,
     PlatformStaffRoster,
     ConfirmAskSweeper,

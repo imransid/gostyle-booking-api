@@ -53,7 +53,7 @@ export type MobileErrorCode =
   | 'invalid_age_group'
   | 'invalid_booking_type'
   | 'stylist_repeated'
-  | 'too_soon'
+  | 'cannot_cancel'
   // booking-list.md §5
   | 'invalid_filter';
 
