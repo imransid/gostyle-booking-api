@@ -42,6 +42,18 @@ export type MobileErrorCode =
   | 'deposit_too_low'
   | 'missing_payment_reference'
   | 'booking_expired'
+  // Group booking (docs/APP_GROUP_BOOKING_SPEC.md §7), the same words
+  // gostyle-customer-api already answers with.
+  | 'invalid_party_size'
+  | 'duplicate_ref'
+  | 'member_no_services'
+  | 'invalid_member_kind'
+  | 'member_id_required'
+  | 'member_name_required'
+  | 'invalid_age_group'
+  | 'invalid_booking_type'
+  | 'stylist_repeated'
+  | 'too_soon'
   // booking-list.md §5
   | 'invalid_filter';
 

@@ -695,6 +695,16 @@ model BookingGroup {
   /// dropped toward being a single booking. The count is what actually moved.
   activeCount Int @default(0) @map("active_count") @db.SmallInt
 
+  /// + MOBILE. Who made this party: null for the desk (every row written
+  /// before this column existed), 'mobile' for POST /v1/mobile-booking/group.
+  /// The mobile read only treats a 'mobile' group as one booking, so a party
+  /// the desk made looks exactly as it did before.
+  source String?
+
+  /// + MOBILE. The percent the party's deposit was worked out with. Null for
+  /// a desk party, which carries no deposit.
+  depositPercent Int? @map("deposit_percent") @db.SmallInt
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -726,6 +736,14 @@ model GroupParticipant {
   /// What this participant owes under the arrangement. Null until the group
   /// is priced.
   shareFils Int? @map("share_fils")
+
+  /// + MOBILE. 'adult' or 'child'. A child pays half of each service price.
+  /// Null for a desk party, which has no age groups.
+  ageGroup String? @map("age_group")
+
+  /// + MOBILE. The app's own index for this member, echoed back as `ref` so
+  /// the app can match its rows. Null for a desk party.
+  clientRef Int? @map("client_ref") @db.SmallInt
 
   position Int @db.SmallInt
 
