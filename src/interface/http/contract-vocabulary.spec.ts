@@ -44,7 +44,13 @@ const PRE_CONTRACT = new Set([
  * the engine. Listed rather than silently skipped, so adding another one is
  * a decision somebody makes on purpose.
  */
-const FOREIGN_CONTRACT = new Set(['mobile-booking.controller.ts']);
+const FOREIGN_CONTRACT = new Set([
+  'mobile-booking.controller.ts',
+  // The app's group booking (gostyle-customer-api
+  // docs/APP_GROUP_BOOKING_SPEC.md): the same snake_case dialect, translated
+  // in domain/booking/mobile-group-contract.ts and stopped at the controller.
+  'mobile-group-booking.controller.ts',
+]);
 
 function stripComments(src: string): string {
   return src

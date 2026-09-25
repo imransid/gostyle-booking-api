@@ -45,6 +45,7 @@ change an endpoint.
   - [Quote and booking](#quote-and-booking)
   - [Booking lifecycle](#booking-lifecycle)
   - [Groups](#groups)
+  - [Mobile group booking](#mobile-group-booking)
   - [Series](#series)
   - [Walk-ins](#walk-ins)
   - [Waitlist](#waitlist)
@@ -2243,6 +2244,196 @@ Turn a held party into one ordinary booking per participant. Locks and proves th
 
 > HTTP STATUS IS 201, not 200 — no @HttpCode. // THIS RE-RUNS THE PLANNER. The hold is not a promise; confirm asks again whether the party still fits and can refuse with a 409 even though you hold valid reservations. Budget for that in the UI. // ORDER AND COUNT ARE LOAD-BEARING AND SILENT. `for (const [i, lane] of replan.lanes.entries())` pairs positionally with `participants[i]` read from the DB ordered by position.
 
+
+### Mobile group booking
+
+The app's group booking, from gostyle-customer-api
+`docs/APP_GROUP_BOOKING_SPEC.md`. **Mobile only:** the business web books
+parties through [Groups](#groups) above and never calls these. **Behind
+`MOBILE_GROUP_BOOKING=true`**; with it off every route below is a `404`, as if
+it did not exist, and My Bookings is exactly what it was.
+
+A party is ONE booking to the app: the `id` it gets back is the group's. Inside,
+each member is an ordinary booking, written exactly as a single mobile
+`PAY_AFTER_CHECK_IN` booking is (`confirmed`, `none_required`, channel
+`online`, every service as its own line, products, VAT, a share of the
+deposit), linked by `group_id`. The desk sees each member as a party lane to be
+paid on arrival, which it already knows how to show.
+
+**Paid at the salon.** Taking payment in the app is another team's work. There
+is no draft window, so the payment link sweeper never touches a party and a
+party is never cancelled for want of an online payment. The deposit figure is
+still stored on every member's row, as a single `PAY_AFTER_CHECK_IN` booking
+stores it, so the desk can ask for it.
+
+| Method | Path | Does |
+| --- | --- | --- |
+| `POST` | `/v1/mobile-booking/group` | Book the whole party, every member or none. `201`. |
+| `GET` | `/v1/mobile-booking/group/:groupId` | Read it back in the same shape. `200`. |
+| `POST` | `/v1/mobile-booking/group/:groupId/cancel` | Cancel every member together. `200`. |
+| `GET` | `/v1/mobile-booking` | My Bookings: a member's row is replaced by one `GROUP` row for the party. |
+
+Environment:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `MOBILE_GROUP_BOOKING` | off | `true` turns the routes on. |
+| `MOBILE_GROUP_DEPOSIT_PERCENT` | `20` | The deposit, as a percent of the party total. The app's `deposit_percent` must match it. |
+| `PRODUCTS_FROM_PLATFORM` | off | As for a single booking: off, a party with products is refused with `products_not_supported`. |
+
+#### `POST /v1/mobile-booking/group`
+
+```http
+POST /v1/mobile-booking/group
+Authorization: Bearer <customer token>
+Idempotency-Key: <optional>
+Content-Type: application/json
+
+{
+  "salon_id": "marina-walk",
+  "start_time": "2026-11-03T15:00:00+06:00",
+  "members": [
+    { "ref": 0, "kind": "self", "id": "<the token's own id>", "name": "Sarah",
+      "age_group": "adult", "services": [{ "id": "haircut-finish", "amount": 160 }],
+      "products": [], "stylist_id": null },
+    { "ref": 1, "kind": "registered", "id": "<account id>", "name": "Rana",
+      "age_group": "adult", "services": [{ "id": "blow-dry", "amount": 140 }],
+      "stylist_id": null },
+    { "ref": 5, "kind": "guest", "name": "Liam (8 yrs)", "age_group": "child",
+      "services": [{ "id": "haircut-finish", "amount": 80 }], "stylist_id": null }
+  ],
+  "amount_without_tax": 380, "tax_amount": 19, "discount": 0, "promo_code": null,
+  "total": 399, "deposit_percent": 20, "advance_paid_amount": 0, "due_amount": 399,
+  "payment_status": "DRAFT", "status": "BOOKED", "booking_type": "GROUP"
+}
+```
+
+`payment_status` may be `DRAFT` (what the app spec sends) or
+`PAY_AFTER_CHECK_IN`; either way the party is saved to pay at the salon, and the
+answer says so.
+
+What the server decides, not the client:
+
+1. **Prices** come from the salon's own records. A `child` pays **50% of each
+   service**. Products are never discounted.
+2. **VAT** (5%) is charged once on the party's whole base, then split to the
+   members, so they always add back up to the party to the fil.
+3. **The deposit** is `MOBILE_GROUP_DEPOSIT_PERCENT` of the total, rounded once.
+4. **No discount and no promo** for a party: `discount` must be `0`;
+   `promo_code` is echoed and not applied.
+5. Any figure that disagrees is a `422 amount_mismatch` carrying the right one
+   in `expected`. Only the totals are compared, as for a single booking.
+
+Everyone arrives at `start_time`; each member gets their own stylist
+(`stylist_id: null` lets the planner choose).
+
+The answer, `201` (one member shown; the real answer lists all three):
+
+```http
+HTTP/1.1 201 Created
+
+{
+  "id": "d0609de1-b5ae-4286-b3a4-4c1ebfd32af2",
+  "salon_id": "marina-walk",
+  "booking_type": "GROUP",
+  "status": "CONFIRMED_BY_SALON",
+  "status_detail": "CONFIRMED",
+  "payment_status": "PAY_AFTER_CHECK_IN",
+  "payment_status_detail": "NONE_REQUIRED",
+  "date": "2026-11-03",
+  "start_time": "2026-11-03T15:00:00+06:00",
+  "end_time": "2026-11-03T15:45:00+06:00",
+  "member_count": 3,
+  "members": [
+    {
+      "ref": 5,
+      "id": "1190b99c-69c3-42c2-a228-dff017aad6ca",
+      "booking_code": "GS-1048",
+      "user_id": null,
+      "name": "Liam (8 yrs)",
+      "kind": "guest",
+      "age_group": "child",
+      "status": "CONFIRMED_BY_SALON",
+      "services": [{ "id": "haircut-finish", "name": "Haircut and finish", "amount": 80 }],
+      "products": [],
+      "stylist": { "id": "reem", "name": "Reem S." },
+      "start_time": "2026-11-03T15:00:00+06:00",
+      "end_time": "2026-11-03T15:45:00+06:00",
+      "total": 84
+    }
+  ],
+  "amount_without_tax": 380,
+  "tax_amount": 19,
+  "discount": 0,
+  "promo_code": null,
+  "total": 399,
+  "deposit_percent": 20,
+  "deposit_amount": 79.8,
+  "advance_paid_amount": 0,
+  "due_amount": 399,
+  "payment_method": null,
+  "pass_qr_code": "GS-1046",
+  "expires_at": null,
+  "created_at": "2026-09-25T14:35:33+06:00"
+}
+```
+
+- `members[].id` is the member's own id (their `group_participant` row), the
+  same for as long as the party exists. `booking_code` is their lane at the desk.
+- `pass_qr_code` is the booker's own lane code: one pass for the party, and one
+  the desk can already look up.
+- `expires_at` is always `null`: nothing lapses.
+- `members[].name` is the name sent. Only a guest's name is stored; on a read,
+  an account's `name` is `null` and gostyle-customer-api fills it in.
+
+Refusals, in the contract's envelope:
+
+| Status | `code` | When |
+| --- | --- | --- |
+| `404` | | The flag is off. |
+| `409` | `slot_taken` | The party does not fit at that time, or no longer does. The planner's own sentence is the message. Nothing was booked. |
+| `422` | `invalid_party_size` | Fewer than 2 or more than 8 members. |
+| `422` | `duplicate_ref` | Two members with one `ref`. |
+| `422` | `member_no_services` | A member with no services. |
+| `422` | `invalid_member_kind` | No `self`, two, a `self` who is not the token, one account twice, or a guest with an id. |
+| `422` | `member_id_required` | A `self` or `registered` member without an id. |
+| `422` | `member_name_required` | A guest without a name. |
+| `422` | `invalid_age_group` | Not `adult` or `child`. |
+| `422` | `stylist_repeated` | One stylist chosen for two members. |
+| `422` | `unknown_service` | A service the salon does not sell. The field names the member. |
+| `422` | `products_not_supported`, `unknown_product`, `amount_mismatch`, `out_of_stock`, `currency_mismatch` | As for a single booking; the field names the member and the line. Stock is counted across the whole party. |
+| `422` | `amount_mismatch` | A total, the VAT, the discount, `due_amount`, `advance_paid_amount` or `deposit_percent` disagrees. `expected` carries the right figure. |
+| `422` | `invalid_window` | `start_time` is not an instant, has passed, or the party would not finish within the hours taken online. |
+| `422` | `invalid_status`, `invalid_payment_status`, `invalid_booking_type` | Only `BOOKED`; `DRAFT` or `PAY_AFTER_CHECK_IN`; `GROUP`. |
+
+#### `GET /v1/mobile-booking/group/:groupId`
+
+The same shape as the create's answer, built from what was stored.
+
+Who may read it: the booker, anyone in the party, and staff of the salon
+(`branchId` on the token, or none for an owner). Anyone else, a malformed id,
+or a party the desk made is `404 not_found`, never `403`.
+
+#### `POST /v1/mobile-booking/group/:groupId/cancel`
+
+No body. The booker only; anyone else is `404`. Every member is cancelled by the
+same code `POST /v1/bookings/:id/cancel` runs for one booking, and the group
+follows to `cancelled`. Answers `200` with the party, read back.
+
+All or nothing, as far as the rules can say in advance: every member is checked
+first, and if one cannot be cancelled (already checked in, say) nothing is and
+the answer is `409 cannot_cancel`, naming the member's code. If a member fails
+part way for another reason, the ones before it are cancelled; sending the
+request again finishes the job, because members already gone are skipped.
+
+#### My Bookings: `GET /v1/mobile-booking`
+
+With the flag on, a row that is a member of a mobile party becomes one row for
+the party: `booking_type: "GROUP"`, `member_count`, the group's `id` (what the
+read and the cancel take), the party's span, every member's services and
+stylists, and the party's `total` and `due_amount`. A customer holds one lane
+per party, so the page size and the badge counts are unchanged. A party the
+desk made is shown exactly as before.
 
 ### Series
 

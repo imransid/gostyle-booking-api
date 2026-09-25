@@ -62,6 +62,10 @@ import { ReadModelsController } from '@interface/http/read-models.controller';
 import { MoneyController } from '@interface/http/money.controller';
 import { MobileBookingController } from '@interface/http/mobile-booking.controller';
 import { MobileBookingHandler } from '@application/commands/mobile-booking.handler';
+import { MobileGroupBookingController } from '@interface/http/mobile-group-booking.controller';
+import { MobileGroupBookingHandler } from '@application/commands/mobile-group-booking.handler';
+import { MobileGroupReadHandler } from '@application/queries/mobile-group-read.handler';
+import { MobileGroupCancelHandler } from '@application/commands/mobile-group-cancel.handler';
 import { DeskExtrasController } from '@interface/http/desk-extras.controller';
 import { DeskExtrasHandler } from '@application/commands/desk-extras.handler';
 import { MoneyRepository } from '@infrastructure/persistence/money.repository';
@@ -97,6 +101,9 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     SettingsController,
     ReadModelsController,
     MoneyController,
+    // Before MobileBookingController: nothing of that one may be tried
+    // first for a path under /mobile-booking/group.
+    MobileGroupBookingController,
     MobileBookingController,
     DeskExtrasController,
     DeskActionsController,
@@ -124,6 +131,9 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     BookingReadHandler,
     MoneyRepository,
     MobileBookingHandler,
+    MobileGroupBookingHandler,
+    MobileGroupReadHandler,
+    MobileGroupCancelHandler,
     DeskExtrasHandler,
     DeskActionsHandler,
     ReadModelRepository,
