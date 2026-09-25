@@ -198,6 +198,25 @@ export class BookingListDto {
     },
   })
   counts!: Record<string, number>;
+
+  @ApiProperty({
+    type: 'object',
+    additionalProperties: { type: 'number' },
+    description:
+      'The month’s four tiles, over THIS list’s window and filters, so ' +
+      'unlike `counts` they move when a filter does. `revenue` is whole AED ' +
+      'over live bookings. `conflicts` counts the bookings `filter=CONFLICTS` ' +
+      'would list, not worklist items. `utilisation` and `walkInsWaiting` are ' +
+      'ABSENT, not zero: one needs a roster per day, the other is a ' +
+      'right-now number that means nothing over a range.',
+    example: { booked: 42, revenue: 7560, pendingDeposits: 2, conflicts: 1 },
+  })
+  kpis!: {
+    booked: number;
+    revenue: number;
+    pendingDeposits: number;
+    conflicts: number;
+  };
 }
 
 export class CalendarColumnDto {

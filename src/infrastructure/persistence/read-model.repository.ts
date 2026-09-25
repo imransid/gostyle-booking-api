@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from './prisma.service';
 import { toUuid } from './hold.repository';
 import type { BookingStatus } from '@domain/booking/lifecycle';
@@ -58,7 +59,14 @@ export interface ListFilters {
   readonly fromDay: string;
   readonly toDay: string;
   readonly statuses?: readonly BookingStatus[] | undefined;
-  readonly staffId?: string | undefined;
+  /**
+   * Any of these professionals: a booking matches when ANY of its lines is
+   * held by ANY of them. Absent means everyone. An empty list is not
+   * "everyone" -- it matches nothing, so a caller with no ids leaves this out.
+   */
+  readonly staffIds?: readonly string[] | undefined;
+  /** Any of these services, on any line. Absent means every service. */
+  readonly serviceIds?: readonly string[] | undefined;
   readonly customerId?: string | undefined;
   /** NOT_REMINDED: the 24-hour rung has not gone out. */
   readonly notReminded?: boolean | undefined;
@@ -66,6 +74,58 @@ export interface ListFilters {
   readonly conflictsOnly?: boolean | undefined;
   readonly limit?: number | undefined;
   readonly offset?: number | undefined;
+}
+
+/**
+ * THE WHERE, WRITTEN ONCE.
+ *
+ * `list` and `count` each carried their own copy of these conditions, and
+ * they had already drifted: staffId and customerId narrowed the rows and not
+ * the count, so a filtered read showed five rows and reported `total: 109`.
+ * Every pager built on that asks for pages that do not exist.
+ *
+ * One builder, every caller. A filter added here reaches all of them, and
+ * the grid cannot disagree with the strip about what it is looking at
+ * (CLAUDE.md 4).
+ *
+ * Prisma.sql binds its arguments exactly as a tagged template does, so
+ * nothing here is string concatenation.
+ *
+ * STAFF AND SERVICE ARE LISTS. Within one list it is ANY: any line, any of
+ * the ids. Across the two it is AND: a booking must hold one of the staff and
+ * one of the services -- on the same line or on different ones, because both
+ * are asked of the booking, as the single-id version always asked them. One
+ * id is a list of one, and `= ANY('{x}')` is `= x`.
+ */
+function bookingWhere(f: ListFilters): Prisma.Sql {
+  const statuses = [...(f.statuses ?? LIVE_STATUSES)];
+  // Folded here, once per id, so every caller spells an id the way the
+  // column does (CLAUDE.md 8). null is "no filter".
+  const staff = f.staffIds?.map((id) => toUuid(id)) ?? null;
+  const services = f.serviceIds?.map((id) => toUuid(id)) ?? null;
+
+  return Prisma.sql`
+         b.branch_id = ${toUuid(f.branchId)}::uuid
+     AND b.trading_day >= ${f.fromDay}::date
+     AND b.trading_day < ${f.toDay}::date
+     AND b.status::text = ANY(${statuses}::text[])
+     AND (${staff}::uuid[] IS NULL OR EXISTS (
+           SELECT 1 FROM booking_item si
+            WHERE si.booking_id = b.id
+              AND si.staff_id = ANY(${staff}::uuid[])))
+     AND (${services}::uuid[] IS NULL OR EXISTS (
+           SELECT 1 FROM booking_item si
+            WHERE si.booking_id = b.id
+              AND si.service_id = ANY(${services}::uuid[])))
+     AND (${f.customerId ?? null}::text IS NULL
+          OR b.customer_id = ${
+            f.customerId === undefined ? null : toUuid(f.customerId)
+          }::uuid)
+     AND (${f.notReminded ?? false}::boolean IS FALSE
+          OR b.reminded_24h_at IS NULL)
+     AND (${f.conflictsOnly ?? false}::boolean IS FALSE OR EXISTS (
+           SELECT 1 FROM roster_change_item ri
+            WHERE ri.booking_id = b.id AND ri.state = 'open'))`;
 }
 
 @Injectable()
@@ -81,8 +141,6 @@ export class ReadModelRepository {
    * 900ms.
    */
   async list(f: ListFilters): Promise<BookingRow[]> {
-    const statuses = [...(f.statuses ?? LIVE_STATUSES)];
-
     return this.prisma.$queryRaw<BookingRow[]>`
       SELECT b.id, b.code, b.branch_id, b.customer_id, b.status::text AS status,
              b.payment_status::text AS payment_status,
@@ -99,26 +157,8 @@ export class ReadModelRepository {
                FILTER (WHERE i.resource_type IS NOT NULL) AS resource_types
         FROM booking b
         LEFT JOIN booking_item i ON i.booking_id = b.id
-       WHERE b.branch_id = ${toUuid(f.branchId)}::uuid
-         AND b.trading_day >= ${f.fromDay}::date
-         AND b.trading_day < ${f.toDay}::date
-         AND b.status::text = ANY(${statuses}::text[])
-         AND (${f.staffId ?? null}::text IS NULL OR EXISTS (
-               SELECT 1 FROM booking_item si
-                WHERE si.booking_id = b.id
-                  AND si.staff_id = ${
-                    f.staffId === undefined ? null : toUuid(f.staffId)
-                  }::uuid))
-         AND (${f.customerId ?? null}::text IS NULL
-              OR b.customer_id = ${
-                f.customerId === undefined ? null : toUuid(f.customerId)
-              }::uuid)
-         AND (${f.notReminded ?? false}::boolean IS FALSE
-              OR b.reminded_24h_at IS NULL)
-         AND (${f.conflictsOnly ?? false}::boolean IS FALSE OR EXISTS (
-               SELECT 1 FROM roster_change_item ri
-                WHERE ri.booking_id = b.id AND ri.state = 'open'))
-       GROUP BY b.id
+        WHERE ${bookingWhere(f)}
+        GROUP BY b.id
        ORDER BY b.start_at ASC
        LIMIT ${f.limit ?? 500} OFFSET ${f.offset ?? 0}`;
   }
@@ -132,29 +172,10 @@ export class ReadModelRepository {
    * pager built on that asks for pages that do not exist.
    */
   async count(f: ListFilters): Promise<number> {
-    const statuses = [...(f.statuses ?? LIVE_STATUSES)];
     const rows = await this.prisma.$queryRaw<{ n: bigint }[]>`
       SELECT count(*) AS n
         FROM booking b
-       WHERE b.branch_id = ${toUuid(f.branchId)}::uuid
-         AND b.trading_day >= ${f.fromDay}::date
-         AND b.trading_day < ${f.toDay}::date
-         AND b.status::text = ANY(${statuses}::text[])
-         AND (${f.staffId ?? null}::text IS NULL OR EXISTS (
-               SELECT 1 FROM booking_item si
-                WHERE si.booking_id = b.id
-                  AND si.staff_id = ${
-                    f.staffId === undefined ? null : toUuid(f.staffId)
-                  }::uuid))
-         AND (${f.customerId ?? null}::text IS NULL
-              OR b.customer_id = ${
-                f.customerId === undefined ? null : toUuid(f.customerId)
-              }::uuid)
-         AND (${f.notReminded ?? false}::boolean IS FALSE
-              OR b.reminded_24h_at IS NULL)
-         AND (${f.conflictsOnly ?? false}::boolean IS FALSE OR EXISTS (
-               SELECT 1 FROM roster_change_item ri
-                WHERE ri.booking_id = b.id AND ri.state = 'open'))`;
+       WHERE ${bookingWhere(f)}`;
     return Number(rows[0]?.n ?? 0n);
   }
 
@@ -165,24 +186,51 @@ export class ReadModelRepository {
    * before, which is 31 round trips to render one screen.
    */
   async dailyTotals(
-    branchId: string,
-    fromDay: string,
-    toDay: string,
+    f: ListFilters,
   ): Promise<{ day: string; n: number; revenueFils: number }[]> {
-    const rows = await this.prisma.$queryRaw<
-      { day: Date; n: bigint; revenue: bigint | null }[]
-    >`
+    type Row = { day: Date; n: bigint; revenue: bigint | null };
+
+    const rows: Row[] = await this.prisma.$queryRaw`
       SELECT b.trading_day AS day, count(*) AS n, sum(b.price_fils) AS revenue
         FROM booking b
-       WHERE b.branch_id = ${toUuid(branchId)}::uuid
-         AND b.trading_day >= ${fromDay}::date
-         AND b.trading_day < ${toDay}::date
-         AND b.status::text = ANY(${[...LIVE_STATUSES]}::text[])
+       WHERE ${bookingWhere(f)}
        GROUP BY b.trading_day
        ORDER BY b.trading_day`;
 
     return rows.map((r) => ({
       day: r.day.toISOString().slice(0, 10),
+      n: Number(r.n),
+      revenueFils: Number(r.revenue ?? 0n),
+    }));
+  }
+
+  /**
+   * How many bookings in each status, and what they are worth.
+   *
+   * FOR A WINDOW TOO WIDE TO READ ROW BY ROW. The month's KPI strip needs a
+   * count and a sum, not bookings. Fetching them only to count them borrowed
+   * the week grid's 2000-row ceiling, and a month past it undercounted the
+   * header while the cells -- summed in SQL by dailyTotals -- stayed right.
+   * This returns one row per status however busy the month is.
+   *
+   * GROUPED BY STATUS, NOT BY CHIP. Which statuses are live and which ones a
+   * chip means is screen-view.ts's to say; folding them here would be a
+   * second copy of that map, written in Postgres (CLAUDE.md 4).
+   */
+  async statusTotals(
+    f: ListFilters,
+  ): Promise<{ status: BookingStatus; n: number; revenueFils: number }[]> {
+    type Row = { status: BookingStatus; n: bigint; revenue: bigint | null };
+
+    const rows: Row[] = await this.prisma.$queryRaw`
+      SELECT b.status::text AS status, count(*) AS n,
+             sum(b.price_fils) AS revenue
+        FROM booking b
+       WHERE ${bookingWhere(f)}
+       GROUP BY b.status`;
+
+    return rows.map((r) => ({
+      status: r.status,
       n: Number(r.n),
       revenueFils: Number(r.revenue ?? 0n),
     }));

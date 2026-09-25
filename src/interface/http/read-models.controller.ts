@@ -90,7 +90,7 @@ export class ReadModelsController {
       'Utilisation is measured against SELLABLE minutes — the published ' +
       'shift, less approved time off — never against trading hours. A ' +
       'stylist rostered 10:00-14:00 and fully booked reads 100%, not 33%. ' +
-      'With `staffId` the whole strip narrows to that professional, ' +
+      'With `staffId` the whole strip narrows to those professionals, ' +
       'denominator included.',
   })
   @ApiOkResponse({ type: CalendarDayDto })
@@ -100,7 +100,9 @@ export class ReadModelsController {
   ): Promise<unknown> {
     return this.reads.day(branchId, q.date, {
       staffId: q.staffId,
+      serviceId: q.serviceId,
       status: q.status,
+      payment: q.payment,
     });
   }
 
@@ -110,7 +112,12 @@ export class ReadModelsController {
     @BranchId() branchId: string,
     @Query() q: CalendarWeekQuery,
   ): Promise<unknown> {
-    return this.reads.week(branchId, q.from);
+    return this.reads.week(branchId, q.from, {
+      staffId: q.staffId,
+      serviceId: q.serviceId,
+      status: q.status,
+      payment: q.payment,
+    });
   }
 
   @Get('calendar/month')
@@ -223,9 +230,10 @@ export class ReadModelsController {
     description:
       'Sorted by start, ascending. `counts` are computed against the ' +
       'UNFILTERED set, because a chip showing the size of what you are ' +
-      'already looking at would read the same number every time. `from` and ' +
-      '`to` are both INCLUSIVE trading days. `pageSize` is capped at 100 and ' +
-      'the response echoes the value actually used.',
+      'already looking at would read the same number every time. `kpis` are ' +
+      'the opposite: the month’s four tiles over this list’s own window and ' +
+      'filters. `from` and `to` are both INCLUSIVE trading days. `pageSize` ' +
+      'is capped at 100 and the response echoes the value actually used.',
   })
   @ApiOkResponse({ type: BookingListDto })
   list(

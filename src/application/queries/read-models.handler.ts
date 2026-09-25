@@ -1,4 +1,4 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import {
   ReadModelRepository,
   type BookingRow,
@@ -39,8 +39,14 @@ import {
 } from '@domain/booking/read-models';
 import {
   LIVE_STATUSES,
+  CALENDAR_CHIPS,
+  CHIP_STATUSES,
+  isCalendarChip,
   isListFilter,
+  isPaymentChip,
+  matchesAnyPaymentChip,
   statusesFor,
+  statusesForChips,
   toDepositOutcome,
   toScreenPayment,
   toScreenStatus,
@@ -61,6 +67,7 @@ import {
   deriveSeriesHealth,
   type SeriesFacts,
 } from '@domain/booking/series-health';
+import { commaList } from '@domain/booking/calendar-query';
 
 /**
  * The read side of the bookings module.
@@ -257,6 +264,31 @@ function toView(
   };
 }
 
+/**
+ * The professionals a staff filter leaves in view.
+ *
+ * SHARED, because the day grid and the week strip both need it and a rule
+ * written twice is a rule that drifts (CLAUDE.md 4). The two copies were
+ * identical the day the second was written, which is the only day they ever
+ * are.
+ *
+ * The filter arrives as whatever the caller spells it -- a slug from the
+ * roster, a uuid from the column -- so SlugIndex answers to both.
+ *
+ * A LIST, so the denominator is the CHOSEN stylists' sellable time: Reem and
+ * Maya together sell 1080 minutes, not the salon's 3180 and not Reem's 480.
+ * An id the roster does not know adds no one, and no minutes.
+ */
+function inViewFor<T extends { id: string }>(
+  professionals: readonly T[],
+  staffIds: readonly string[] | undefined,
+): readonly T[] {
+  if (staffIds === undefined) return professionals;
+  const index = new SlugIndex(professionals.map((p) => p.id));
+  const chosen = new Set(staffIds.map((id) => index.toSlug(id)));
+  return professionals.filter((p) => chosen.has(p.id));
+}
+
 // ------------------------------------------------------------ date helpers
 
 /** Trading days are branch-local calendar dates; all arithmetic is on those. */
@@ -283,8 +315,12 @@ function monthBounds(month: string): { from: string; to: string } {
 
 // ------------------------------------------------------------ the handler
 
+const WEEK_LIMIT = 2_000;
+
 @Injectable()
 export class BookingReadHandler {
+  private static readonly log = new Logger(BookingReadHandler.name);
+
   constructor(
     private readonly reads: ReadModelRepository,
     @Inject(BOOKING_CONTEXT) private readonly context: BookingContextReader,
@@ -309,6 +345,7 @@ export class BookingReadHandler {
     pageSize: number;
     total: number;
     counts: Record<string, number>;
+    kpis: ReturnType<typeof windowKpis>;
   }> {
     const filter = this.readFilter(q.filter);
     const page = Math.max(1, q.page ?? 1);
@@ -321,21 +358,50 @@ export class BookingReadHandler {
       ...(statusesFor(filter) === null
         ? {}
         : { statuses: statusesFor(filter)! }),
-      ...(q.staffId === undefined ? {} : { staffId: q.staffId }),
+      /**
+       * ONE ID, AS IT ALWAYS WAS. The comma list belongs to the calendar;
+       * the agenda's staffId was not asked to change, so it is handed down
+       * whole and `a,b` still reads as one id that nobody holds.
+       */
+      ...(q.staffId === undefined ? {} : { staffIds: [q.staffId] }),
       ...(q.customerId === undefined ? {} : { customerId: q.customerId }),
       notReminded: filter === 'NOT_REMINDED',
       conflictsOnly: filter === 'CONFLICTS',
     };
 
-    const [rows, total, counts] = await Promise.all([
+    /**
+     * THE MONTH'S FOUR TILES, over THIS list's window and filters.
+     *
+     * Unlike `counts`, they move when a filter does: they describe what the
+     * list is showing, as the calendar's strip describes its grid.
+     *
+     * CONFLICTS IS COUNTED THROUGH THE LIST'S OWN WHERE, not the month's
+     * worklist read. The month counts open worklist ITEMS by the roster
+     * change's day, whatever the booking's status; the list counts the
+     * BOOKINGS that `filter=CONFLICTS` would list. Those differ in ways the
+     * desk would see -- a no-show still holding an open item is not on the
+     * agenda, and one booking can hold two items -- and a tile reading 1 over
+     * a CONFLICTS chip that lists nothing would contradict itself.
+     */
+    const [rows, byStatus, conflicts, counts] = await Promise.all([
       this.reads.list({
         ...base,
         limit: pageSize,
         offset: (page - 1) * pageSize,
       }),
-      this.reads.count(base),
+      this.reads.statusTotals(base),
+      this.reads.count({ ...base, conflictsOnly: true }),
       this.counts(q.branchId),
     ]);
+
+    /**
+     * DERIVED FROM THE STATUS TOTALS, NOT COUNTED AGAIN.
+     *
+     * They narrow by the same WHERE, so their sum IS the list's size. A
+     * separate count() was a second copy of that number -- one more query,
+     * and one more place for `total` and `kpis.booked` to drift apart.
+     */
+    const total = byStatus.reduce((n, t) => n + t.n, 0);
 
     return {
       data: await this.decorate(q.branchId, rows),
@@ -343,6 +409,7 @@ export class BookingReadHandler {
       pageSize,
       total,
       counts,
+      kpis: windowKpis(byStatus, conflicts),
     };
   }
 
@@ -466,17 +533,83 @@ export class BookingReadHandler {
   async day(
     branchId: string,
     date: string,
-    filters: { staffId?: string | undefined; status?: string | undefined },
+    filters: {
+      staffId?: string | undefined;
+      serviceId?: string | undefined;
+      status?: string | undefined;
+      payment?: string | undefined;
+    },
   ): Promise<unknown> {
-    const [rows, ctx] = await Promise.all([
-      this.reads.list({
-        branchId,
-        fromDay: date,
-        toDay: addDays(date, 1),
-        ...(filters.staffId === undefined ? {} : { staffId: filters.staffId }),
-      }),
+    /**
+     * THE CHIPS, READ ONCE.
+     *
+     * `status=checked_in,in_service` arrives as one string. An unknown word
+     * is dropped rather than silently matching nothing -- the controller
+     * refuses it before it reaches here.
+     */
+    const chips = (commaList(filters.status) ?? []).filter(isCalendarChip);
+
+    const chosen = statusesForChips(chips);
+
+    /**
+     * THE PAYMENT CHIPS, a second and independent row.
+     *
+     * Narrowed in TypeScript rather than in SQL, deliberately: the rule reads
+     * two columns with an OR across them, and writing it in the WHERE as well
+     * would put one rule in two places (CLAUDE.md 4). The day is already read
+     * whole, so there is nothing to fetch.
+     */
+    const payChips = (commaList(filters.payment) ?? []).filter(isPaymentChip);
+
+    /**
+     * WHOSE DIARY, AND WHICH SERVICES: lists, `staffId=reem,maya`. One id is
+     * a list of one and reads exactly as it did.
+     */
+    const staffIds = commaList(filters.staffId);
+    const serviceIds = commaList(filters.serviceId);
+
+    /**
+     * EVERY STATUS A CHIP CAN REACH, not just the live ones.
+     *
+     * The read defaulted to LIVE_STATUSES, which excludes no_show and
+     * cancelled -- so those two chips filtered a list their bookings were
+     * never in and always returned nothing, silently. The day is read wide
+     * and the KPIs narrow back to live below.
+     */
+    const window = {
+      branchId,
+      fromDay: date,
+      toDay: addDays(date, 1),
+      statuses: CHIP_STATUSES,
+      ...(staffIds === undefined ? {} : { staffIds }),
+      ...(serviceIds === undefined ? {} : { serviceIds }),
+    };
+
+    /**
+     * TWO READS, DELIBERATELY.
+     *
+     * `all` is the whole day and feeds the KPI strip; `rows` is what the
+     * chips narrowed to and feeds the grid. Computing the strip from the
+     * filtered set made "Cancelled" report cancelled bookings as booked
+     * revenue -- a number that describes the filter, not the day.
+     */
+    const [all, ctx] = await Promise.all([
+      this.reads.list(window),
       this.context.loadDay(branchId, date),
     ]);
+
+    /**
+     * NO CHIP MEANS LIVE VISITS, not everything.
+     *
+     * The day is read wide so the no-show and cancelled chips have rows to
+     * find, but opening the diary should show today's work, not last week's
+     * losses. A cancelled visit is something you go looking for.
+     */
+    const rows = all.filter(
+      (r) =>
+        (chosen ?? LIVE_STATUSES).includes(r.status) &&
+        matchesAnyPaymentChip(payChips, r.payment_status, r.status),
+    );
 
     const bookings = await this.decorate(branchId, rows);
 
@@ -494,12 +627,7 @@ export class BookingReadHandler {
      * populations is not a low number, it is a wrong one -- and the front
      * end was right to refuse to recompute it client-side.
      */
-    const inView =
-      filters.staffId === undefined
-        ? ctx.professionals
-        : ctx.professionals.filter(
-            (p) => p.id === index.toSlug(filters.staffId!),
-          );
+    const inView = inViewFor(ctx.professionals, staffIds);
 
     const columns = inView.map((p) => {
       const mine = rows.filter((r) =>
@@ -521,7 +649,17 @@ export class BookingReadHandler {
       };
     });
 
-    const bookedMin = rows.reduce((n, r) => n + r.duration_min, 0);
+    /**
+     * THE STRIP COUNTS LIVE BOOKINGS ONLY.
+     *
+     * `all` now carries cancelled and no-showed visits so their chips work.
+     * Counting them as booked revenue would report lost money as earned.
+     */
+    const live = all.filter((r) =>
+      (LIVE_STATUSES as readonly string[]).includes(r.status),
+    );
+
+    const bookedMin = live.reduce((n, r) => n + r.duration_min, 0);
     const sellable = inView.reduce(
       (n, p) =>
         n +
@@ -546,11 +684,19 @@ export class BookingReadHandler {
       closureReason: ctx.closureReason ?? null,
       columns,
       bookings,
+      /**
+       * THE STRIP DESCRIBES THE DAY, NOT THE FILTER.
+       *
+       * Every figure here reads `all`, never `rows`. Tapping a chip narrows
+       * the grid below and leaves these still, which is what the desk
+       * expects of a header.
+       */
+      counts: chipCounts(all),
       kpis: {
-        booked: rows.length,
+        booked: live.length,
         utilisation: Number(utilisation(bookedMin, sellable).toFixed(4)),
-        revenue: wholeAed(rows.reduce((n, r) => n + r.price_fils, 0)),
-        pendingDeposits: rows.filter((r) => r.status === 'pending_payment')
+        revenue: wholeAed(live.reduce((n, r) => n + r.price_fils, 0)),
+        pendingDeposits: live.filter((r) => r.status === 'pending_payment')
           .length,
         conflicts: (await this.reads.openConflicts(branchId)).filter(
           (c) => c.trading_day.toISOString().slice(0, 10) === date,
@@ -561,15 +707,171 @@ export class BookingReadHandler {
   }
 
   /** §6.4. Seven day summaries, each with its bookings. */
-  async week(branchId: string, from: string): Promise<unknown> {
+  async week(
+    branchId: string,
+    from: string,
+    filters: {
+      staffId?: string | undefined;
+      serviceId?: string | undefined;
+      status?: string | undefined;
+      payment?: string | undefined;
+    } = {},
+  ): Promise<unknown> {
     const to = addDays(from, 7);
-    const [rows, totals] = await Promise.all([
-      this.reads.list({ branchId, fromDay: from, toDay: to }),
-      this.reads.dailyTotals(branchId, from, to),
+
+    /**
+     * THE SAME TWO ROWS THE DAY GRID HAS, read the same way.
+     *
+     * A filter that works on one view of the diary and not the next is a
+     * filter the desk cannot trust. The chips are parsed here rather than
+     * shared with day() only because the two windows differ; the meaning of
+     * each chip lives in screen-view.ts and is not repeated.
+     */
+    const chips = (commaList(filters.status) ?? []).filter(isCalendarChip);
+
+    const chosen = statusesForChips(chips);
+
+    const payChips = (commaList(filters.payment) ?? []).filter(isPaymentChip);
+
+    const staffIds = commaList(filters.staffId);
+    const serviceIds = commaList(filters.serviceId);
+
+    /**
+     * THE CEILING IS DECLARED, AND SAID OUT LOUD WHEN IT IS HIT.
+     *
+     * This asked for the week without a limit and got the repository's
+     * default 500. The per-day counts come from a different query with no
+     * cap at all, so a busy week showed a strip reading 612 above a grid
+     * holding 500, with nothing to explain the gap. A week grid cannot be
+     * paged -- it needs all seven days at once to draw -- so the ceiling is
+     * raised to a number no salon reaches and the response admits when it
+     * was reached.
+     */
+    const window = {
+      branchId,
+      fromDay: from,
+      toDay: to,
+      ...(staffIds === undefined ? {} : { staffIds }),
+      ...(serviceIds === undefined ? {} : { serviceIds }),
+    };
+
+    /**
+     * THE STRIP DESCRIBES THE WEEK, THE GRID NARROWS.
+     *
+     * `dailyTotals` deliberately keeps the default live statuses while the
+     * booking list is read wide: the per-day count and revenue are the
+     * week's shape and must not move when a chip is tapped, exactly as the
+     * day grid's KPI strip does not move. A cancelled visit counted as
+     * revenue would report lost money as earned.
+     */
+    const [all, totals] = await Promise.all([
+      this.reads.list({
+        ...window,
+        statuses: CHIP_STATUSES,
+        limit: WEEK_LIMIT,
+      }),
+      this.reads.dailyTotals(window),
     ]);
+
+    /**
+     * NO CHIP MEANS LIVE VISITS, exactly as on the day grid. The week is
+     * read wide so the no-show and cancelled chips have rows to find.
+     */
+    const rows = all.filter(
+      (r) =>
+        (chosen ?? LIVE_STATUSES).includes(r.status) &&
+        matchesAnyPaymentChip(payChips, r.payment_status, r.status),
+    );
+    /**
+     * DERIVED FROM THE STRIP, NOT COUNTED AGAIN.
+     *
+     * The day totals already narrow by the same branch, the same dates and
+     * the same live statuses as the list, so their sum IS the week's size. A
+     * separate count() was a second copy of that number: one more query, and
+     * one more place for the strip and `total` to drift apart.
+     */
+    const total = totals.reduce((sum, t) => sum + t.n, 0);
 
     const views = await this.decorate(branchId, rows);
     const byDay = new Map(totals.map((t) => [t.day, t]));
+
+    /**
+     * THE SAME SIX THE DAY GRID PUBLISHES, over seven days.
+     *
+     * Computed from `all`, never `rows`: the strip describes the week and
+     * must not move when a chip is tapped, which is the rule the day grid
+     * already follows.
+     *
+     * UTILISATION COSTS SEVEN ROSTER LOADS, one per day, because sellable
+     * minutes are a per-day fact -- a stylist rostered Monday and off
+     * Tuesday sells nothing on Tuesday, and dividing by a week of full
+     * shifts would report every salon as half empty. They run in parallel
+     * and a day whose roster fails contributes nothing rather than failing
+     * the read.
+     *
+     * WALK-INS ARE A RIGHT-NOW NUMBER: how many people are sitting in the
+     * salon at this moment. Over a week that means nothing, so it is
+     * today's figure when today falls inside the week and zero when it does
+     * not -- never a sum across seven days, which would count the same
+     * person every day they waited.
+     */
+    const live = all.filter((r) =>
+      (LIVE_STATUSES as readonly string[]).includes(r.status),
+    );
+
+    const days = Array.from({ length: 7 }, (_, i) => addDays(from, i));
+
+    /**
+     * THE DENOMINATOR NARROWS WITH THE FILTER, here as on the day grid.
+     *
+     * Counting one stylist's minutes and dividing by the whole salon's
+     * sellable time made Reem read 25% on the day and 1.35% on the week --
+     * the same stylist, the same bookings, two answers. A utilisation whose
+     * numerator and denominator describe different populations is not a low
+     * number, it is a wrong one.
+     */
+    const sellablePerDay = await Promise.all(
+      days.map((d) =>
+        this.context
+          .loadDay(branchId, d)
+          .then((ctx) => {
+            return inViewFor(ctx.professionals, staffIds).reduce(
+              (n, p) =>
+                n +
+                sellableMinutes({
+                  shift: { fromMin: p.shift.startMin, toMin: p.shift.endMin },
+                  timeOff: [],
+                }),
+              0,
+            );
+          })
+          .catch((e: unknown) => {
+            /**
+             * SAID OUT LOUD (CLAUDE.md 9). A dropped day keeps its bookings
+             * and loses its sellable minutes, so utilisation silently rises.
+             * Swallowing that leaves a wrong number with no evidence.
+             */
+            BookingReadHandler.log.warn(
+              `Roster unreachable for ${d}; its sellable minutes are excluded ` +
+                `from the week's utilisation, which will read high. ` +
+                (e instanceof Error ? e.message : String(e)),
+            );
+            return 0;
+          }),
+      ),
+    );
+
+    const sellable = sellablePerDay.reduce((n, m) => n + m, 0);
+    const bookedMin = live.reduce((n, r) => n + r.duration_min, 0);
+
+    const todayIsInside = days.includes(today());
+    const walkIns = todayIsInside
+      ? await this.reads.walkInPressure(branchId, today(), nowMinute())
+      : { waiting: 0, longestWaitMin: 0 };
+
+    const conflicts = (await this.reads.openConflicts(branchId)).filter((c) =>
+      days.includes(c.trading_day.toISOString().slice(0, 10)),
+    ).length;
 
     return {
       days: Array.from({ length: 7 }, (_, i) => {
@@ -582,6 +884,36 @@ export class BookingReadHandler {
           bookings: views.filter((v) => v.date === date),
         };
       }),
+      /**
+       * `total` IS THE WEEK; `returned` IS WHAT THE FILTER LEFT.
+       *
+       * They are different populations and comparing them is meaningless:
+       * `total` is the live count from the day strip, `returned` is the
+       * filtered grid, and with `status=no_show` the second is legitimately
+       * LARGER than the first.
+       */
+      kpis: {
+        booked: live.length,
+        utilisation: Number(utilisation(bookedMin, sellable).toFixed(4)),
+        revenue: wholeAed(live.reduce((n, r) => n + r.price_fils, 0)),
+        pendingDeposits: live.filter((r) => r.status === 'pending_payment')
+          .length,
+        conflicts,
+        walkInsWaiting: walkIns.waiting,
+      },
+      counts: chipCounts(all),
+      total,
+      returned: rows.length,
+      /**
+       * ONE MEANING: the read hit its ceiling and bookings were dropped.
+       *
+       * This compared `total` against the filtered rows, so it read true
+       * whenever a filter hid anything -- eight calls in eighteen, none of
+       * them within two thousand of the limit. A warning that fires on every
+       * filtered view is a warning the desk learns to ignore.
+       */
+      truncated: all.length >= WEEK_LIMIT,
+      limit: WEEK_LIMIT,
     };
   }
 
@@ -592,7 +924,33 @@ export class BookingReadHandler {
     horizonDays: number,
   ): Promise<unknown> {
     const { from, to } = monthBounds(month);
-    const totals = await this.reads.dailyTotals(branchId, from, to);
+
+    /**
+     * FOUR OF THE SIX, AND THE OTHER TWO ABSENT RATHER THAN ZERO.
+     *
+     * `utilisation` needs sellable minutes, which are a PER-DAY fact: a
+     * month would be thirty roster loads, and with STAFF_FROM_PLATFORM on,
+     * thirty gRPC calls to draw the cheapest screen in the product.
+     *
+     * `walkInsWaiting` counts the people sitting in the salon RIGHT NOW.
+     * Over a month it is not a small number or a stale one, it is a
+     * category error.
+     *
+     * Neither is published as 0. The worklist already settled this: a tile
+     * that always reads zero is worse than no tile, because a client cannot
+     * tell "nobody is waiting" from "we do not know".
+     */
+    const [totals, byStatus, openConflicts] = await Promise.all([
+      this.reads.dailyTotals({ branchId, fromDay: from, toDay: to }),
+      this.reads.statusTotals({
+        branchId,
+        fromDay: from,
+        toDay: to,
+        statuses: CHIP_STATUSES,
+      }),
+      this.reads.openConflicts(branchId),
+    ]);
+
     const byDay = new Map(totals.map((t) => [t.day, t]));
 
     const lastBookable = addDays(today(), horizonDays);
@@ -605,7 +963,33 @@ export class BookingReadHandler {
         withinHorizon: d <= lastBookable,
       });
     }
-    return { month, cells };
+    /**
+     * READ WIDE, COUNTED WIDE, SUMMED NARROW.
+     *
+     * The month is read across every status a chip can reach so `counts` can
+     * say how many no-shows and cancellations it holds -- a zero that means
+     * "nobody looked" is a bug this file has already fixed twice. The money
+     * and the booked count narrow back to live, because a cancelled visit
+     * was never earned.
+     *
+     * COUNTED, NOT FETCHED. This read the month's bookings only to count and
+     * sum them, under WEEK_LIMIT -- with no-shows and cancellations spending
+     * the cap. Past 2000 (a salon doing 65 a day) the tiles undercounted
+     * while the cells, which had no cap, stayed right, and nothing in the
+     * payload said why. Postgres now returns one row per status, so there is
+     * no ceiling to hit.
+     */
+    const conflicts = openConflicts.filter((c) => {
+      const d = c.trading_day.toISOString().slice(0, 10);
+      return d >= from && d < to;
+    }).length;
+
+    return {
+      month,
+      cells,
+      kpis: windowKpis(byStatus, conflicts),
+      counts: chipCountsOf(byStatus),
+    };
   }
 
   // ------------------------------------------------------------- summary
@@ -619,7 +1003,7 @@ export class BookingReadHandler {
     const [current, prior, totals] = await Promise.all([
       this.reads.windowStats(branchId, start, end),
       this.reads.windowStats(branchId, priorStart, start),
-      this.reads.dailyTotals(branchId, start, end),
+      this.reads.dailyTotals({ branchId, fromDay: start, toDay: end }),
     ]);
 
     const byDay = new Map(totals.map((t) => [t.day, t]));
@@ -1129,30 +1513,64 @@ export class BookingReadHandler {
   ): Promise<BookingView[]> {
     if (rows.length === 0) return [];
 
-    const day = rows[0]!.trading_day.toISOString().slice(0, 10);
+    /**
+     * THE ROSTER IS PER DAY, AND SO IS THIS.
+     *
+     * This took the date off the FIRST row and loaded one day's roster. The
+     * day grid only ever holds one day, so it looked right; the week grid
+     * holds seven, and everyone was matched against Monday. A stylist off on
+     * Monday lost their name all week -- and worse, the slug lookup missed
+     * too, so their `staff.id` came back as the folded hash while the day
+     * grid published "maya". Two endpoints spelling one stylist two ways is
+     * the trap in CLAUDE.md 8, and a staff filter built on it misses them
+     * silently.
+     *
+     * One load per DISTINCT day, in parallel. A week is seven; a day is one,
+     * exactly as before.
+     */
+    const days = [
+      ...new Set(rows.map((r) => r.trading_day.toISOString().slice(0, 10))),
+    ];
     const staffNames = new Map<string, string>();
     const staffSlugs = new Map<string, string>();
-    try {
-      const ctx = await this.context.loadDay(branchId, day);
-      // THE SLUG/UUID BOUNDARY (CLAUDE.md 8). The roster speaks slugs
-      // ("maya"); booking_item.staff_id holds toUuid("maya"). Keying the
-      // name map by the slug meant every lookup missed and every booking
-      // rendered with a null professional -- silently, because a missing
-      // name is not an error. SlugIndex answers to both spellings.
-      const index = new SlugIndex(ctx.professionals.map((p) => p.id));
-      for (const p of ctx.professionals) staffNames.set(p.id, p.name);
-      for (const r of rows) {
-        for (const raw of r.staff_ids ?? []) {
-          const slug = index.toSlug(raw);
-          const name = staffNames.get(slug);
-          if (name !== undefined) staffNames.set(raw, name);
-          if (slug !== raw) staffSlugs.set(raw, slug);
-        }
+
+    /**
+     * ONE DAY'S FAILURE COSTS ONE DAY'S NAMES.
+     *
+     * A single try around all seven loads would have let a Tuesday blip
+     * blank the names for the whole week -- silently, since a null name is
+     * not an error. Each day is caught on its own, so Tuesday loses its
+     * stylists and the other six keep theirs.
+     */
+    const rosters = await Promise.all(
+      days.map((d) =>
+        this.context
+          .loadDay(branchId, d)
+          .then((c) => c.professionals)
+          .catch(() => {
+            // A name is decoration. Rule 2 -- missing data removes capacity,
+            // never adds it -- is about AVAILABILITY; refusing to render the
+            // diary because the roster service blinked would help nobody.
+            return [];
+          }),
+      ),
+    );
+
+    // THE SLUG/UUID BOUNDARY (CLAUDE.md 8). The roster speaks slugs
+    // ("maya"); booking_item.staff_id holds toUuid("maya"). Keying the
+    // name map by the slug meant every lookup missed and every booking
+    // rendered with a null professional -- silently, because a missing
+    // name is not an error. SlugIndex answers to both spellings.
+    const everyone = rosters.flat();
+    const index = new SlugIndex(everyone.map((p) => p.id));
+    for (const p of everyone) staffNames.set(p.id, p.name);
+    for (const r of rows) {
+      for (const raw of r.staff_ids ?? []) {
+        const slug = index.toSlug(raw);
+        const name = staffNames.get(slug);
+        if (name !== undefined) staffNames.set(raw, name);
+        if (slug !== raw) staffSlugs.set(raw, slug);
       }
-    } catch {
-      // A name is decoration. Rule 2 -- missing data removes capacity, never
-      // adds it -- is about AVAILABILITY; refusing to render the diary
-      // because the roster service blinked would help nobody.
     }
 
     const ids = [...new Set(rows.map((r) => r.customer_id))];
@@ -1259,6 +1677,72 @@ function eventOutcome(p: PaymentStatus): string {
 
 function nowMinute(): number {
   return branchNowMinute();
+}
+
+/**
+ * How many bookings sit behind each chip.
+ *
+ * Over the WHOLE window, never the filtered set: a chip showing the size of
+ * what you are already looking at reads the same number every time.
+ */
+function chipCounts(rows: readonly BookingRow[]): Record<string, number> {
+  return chipCountsOf(rows.map((r) => ({ status: r.status, n: 1 })));
+}
+
+/**
+ * The same, from per-status totals, for a window too wide to read row by row.
+ *
+ * ONE LOOP FOR BOTH. chipCounts is this with every row a total of one, so the
+ * day grid and the month strip cannot disagree about what a chip holds, and
+ * which statuses a chip means is still asked of screen-view.ts alone.
+ */
+function chipCountsOf(
+  totals: readonly { status: BookingStatus; n: number }[],
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const chip of CALENDAR_CHIPS) {
+    const statuses = statusesForChips([chip]) ?? [];
+    out[chip] = totals
+      .filter((t) => statuses.includes(t.status))
+      .reduce((n, t) => n + t.n, 0);
+  }
+  return out;
+}
+
+/**
+ * The four tiles a window can publish from per-status totals.
+ *
+ * SHARED by the month and the agenda list, so the two cannot disagree about
+ * what "booked" or "revenue" means (CLAUDE.md 4). Live statuses only: a
+ * cancelled visit was never earned. `conflicts` is the caller's, because each
+ * view counts it over its own population.
+ *
+ * `utilisation` and `walkInsWaiting` are not here, and a caller must not add
+ * them as zero -- see month() for why they are absent.
+ */
+function windowKpis(
+  totals: readonly { status: BookingStatus; n: number; revenueFils: number }[],
+  conflicts: number,
+): {
+  booked: number;
+  revenue: number;
+  pendingDeposits: number;
+  conflicts: number;
+} {
+  const live = totals.filter((t) =>
+    (LIVE_STATUSES as readonly string[]).includes(t.status),
+  );
+  const bookingsIn = (ts: readonly { n: number }[]) =>
+    ts.reduce((n, t) => n + t.n, 0);
+
+  return {
+    booked: bookingsIn(live),
+    revenue: wholeAed(live.reduce((n, t) => n + t.revenueFils, 0)),
+    pendingDeposits: bookingsIn(
+      live.filter((t) => t.status === 'pending_payment'),
+    ),
+    conflicts,
+  };
 }
 
 export { LIVE_STATUSES };
