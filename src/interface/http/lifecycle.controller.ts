@@ -1,4 +1,11 @@
-import { Body, Controller, Param, Post, UseInterceptors } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  NotFoundException,
+  Param,
+  Post,
+  UseInterceptors,
+} from '@nestjs/common';
 import { IdempotentInterceptor } from './idempotent.interceptor';
 import {
   ApiConflictResponse,
@@ -30,6 +37,12 @@ import {
   type RescheduleView,
 } from '@application/commands/reschedule.handler';
 import { ApiGoneResponse, ApiProperty } from '@nestjs/swagger';
+import { LifecycleRepository } from '@infrastructure/persistence/lifecycle.repository';
+import { toUuid } from '@infrastructure/persistence/hold.repository';
+import { clockFor, mayActOn } from '@domain/booking/customer-ownership';
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The domain words the shouted request enum folds back down to. */
 const CANCEL_INITIATORS = ['customer', 'salon'] as const;
@@ -171,7 +184,30 @@ export class LifecycleController {
   constructor(
     private readonly handler: LifecycleHandler,
     private readonly reschedules: RescheduleHandler,
+    // Read only for a CUSTOMER token, to ask whose booking this is.
+    private readonly bookings: LifecycleRepository,
   ) {}
+
+  /**
+   * A customer acts only on their own booking; staff exactly as before.
+   *
+   * 404, NEVER 403, and the same sentence the handler gives for a booking
+   * that does not exist: "not yours" must not confirm that the id is real.
+   * See domain/booking/customer-ownership.ts.
+   */
+  private async refuseIfNotTheirs(id: string, actor: Actor): Promise<void> {
+    if (actor.kind !== 'customer') return;
+    const owner = UUID_RE.test(id) ? await this.bookings.timingFor(id) : null;
+    if (
+      !mayActOn({
+        actorKind: actor.kind,
+        actorId: toUuid(actor.id),
+        bookingCustomerId: owner?.customerId ?? null,
+      })
+    ) {
+      throw new NotFoundException('No such booking');
+    }
+  }
 
   @Post('reschedule')
   @ApiOperation({
@@ -187,11 +223,13 @@ export class LifecycleController {
     description: 'The new slot went while they were deciding.',
   })
   @ApiConflictResponse({ description: 'This booking cannot be moved.' })
-  reschedule(
+  async reschedule(
     @Param('id') id: string,
     @Body() dto: RescheduleDto,
     @CurrentActor() actor: Actor,
   ): Promise<RescheduleView> {
+    await this.refuseIfNotTheirs(id, actor);
+    const nowMs = clockFor(actor.kind, dto.nowMs);
     return this.reschedules.execute({
       bookingId: id,
       holdId: dto.holdId,
@@ -199,7 +237,7 @@ export class LifecycleController {
       reason: dto.reason,
       actor: actor.kind,
       actorId: actor.id,
-      ...(dto.nowMs !== undefined ? { nowMs: dto.nowMs } : {}),
+      ...(nowMs !== undefined ? { nowMs } : {}),
     });
   }
 
@@ -280,12 +318,14 @@ export class LifecycleController {
     return this.run(id, 'no_show', dto, actor);
   }
 
-  private run(
+  private async run(
     id: string,
     to: Parameters<LifecycleHandler['execute']>[0]['to'],
     dto: LifecycleDto,
     actor: Actor,
   ): Promise<LifecycleView> {
+    await this.refuseIfNotTheirs(id, actor);
+    const nowMs = clockFor(actor.kind, dto.nowMs);
     return this.handler.execute({
       bookingId: id,
       to,
@@ -304,7 +344,7 @@ export class LifecycleController {
       ...(dto.vipStandingReservation !== undefined
         ? { vipStandingReservation: dto.vipStandingReservation }
         : {}),
-      ...(dto.nowMs !== undefined ? { nowMs: dto.nowMs } : {}),
+      ...(nowMs !== undefined ? { nowMs } : {}),
       checkout: {
         ...(dto.retailMinor !== undefined
           ? { retailFils: dto.retailMinor }
