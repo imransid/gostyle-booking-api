@@ -39,6 +39,7 @@ import {
   toRoutineStatus,
   type RoutineWireStatus,
 } from '@domain/booking/mobile-series-contract';
+import { routineRow, sortRoutines } from '@domain/booking/mobile-series-list';
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -218,6 +219,45 @@ export class MobileSeriesReadHandler {
     const series = await this.load(seriesId);
     if (series === null) throw MobileContractError.notFoundBooking();
     return this.present(series, nowMs);
+  }
+
+  /**
+   * The Recurring tab (step 5): every routine this customer made in the
+   * app, as list rows. The same routines `read` shows this customer (theirs,
+   * source 'mobile'), each built by the same `present`, so a row and the hub
+   * it opens never disagree.
+   *
+   * ALL of them are read, then sorted and paged here, not in SQL: a customer
+   * has a handful, and the order (live ones by their next visit, then ended
+   * ones newest first) needs each routine's next visit, which only `present`
+   * works out.
+   */
+  async listForCustomer(
+    customerId: string,
+    paging: { readonly page: number; readonly pageSize: number },
+    nowMs = Date.now(),
+  ): Promise<{ count: number; results: unknown[] }> {
+    const rows = await this.prisma.bookingSeries.findMany({
+      where: { source: 'mobile', customerId: toUuid(customerId) },
+      include: { occurrences: { orderBy: { index: 'asc' } } },
+    });
+    const views = await Promise.all(
+      rows.map((row) => this.present(row, nowMs)),
+    );
+    const start = (paging.page - 1) * paging.pageSize;
+    return {
+      count: views.length,
+      results: sortRoutines(views)
+        .slice(start, start + paging.pageSize)
+        .map((view) => routineRow(view)),
+    };
+  }
+
+  /** The Recurring badge: exactly the routines `listForCustomer` pages. */
+  countForCustomer(customerId: string): Promise<number> {
+    return this.prisma.bookingSeries.count({
+      where: { source: 'mobile', customerId: toUuid(customerId) },
+    });
   }
 
   private async load(seriesId: string): Promise<SeriesRowLoaded | null> {
