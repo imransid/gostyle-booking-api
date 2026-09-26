@@ -46,6 +46,10 @@ import { IdempotentInterceptor } from './idempotent.interceptor';
 import { mobileValidationPipe } from './mobile-validation.pipe';
 import type { MobilePaymentMethod } from '@domain/booking/mobile-contract';
 import { parseFilter } from '@domain/booking/booking-shelf';
+import {
+  bookingIdsOf,
+  withSeriesIds,
+} from '@domain/booking/mobile-series-list';
 import { MobileSeriesReadHandler } from '@application/queries/mobile-series-read.handler';
 import { MOBILE_SERIES_BOOKING } from './mobile-series.flag';
 import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
@@ -424,8 +428,20 @@ export class MobileBookingController {
         : {};
 
     if (shelf !== 'recurring') {
-      const recurring = await this.series.countForCustomer(customerId);
-      return { ...current, counts: { ...counts, recurring } };
+      // Upcoming and Archive: the badge, and each visit of an app routine
+      // names its routine (`series_id`), so the app can open the hub.
+      const rows: readonly unknown[] = Array.isArray(current.results)
+        ? (current.results as unknown[])
+        : [];
+      const [recurring, byBooking] = await Promise.all([
+        this.series.countForCustomer(customerId),
+        this.series.appRoutinesOf(bookingIdsOf(rows)),
+      ]);
+      return {
+        ...current,
+        counts: { ...counts, recurring },
+        results: withSeriesIds(rows, byBooking),
+      };
     }
 
     const routines = await this.series.listForCustomer(customerId, paging);

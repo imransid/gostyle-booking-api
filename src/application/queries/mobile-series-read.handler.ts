@@ -260,6 +260,38 @@ export class MobileSeriesReadHandler {
     });
   }
 
+  /**
+   * Upcoming and Archive (step 5): which of these bookings are visits of an
+   * app routine, as booking id to routine id. A desk series is left out:
+   * the hub answers only for routines the app made, so its id would open
+   * a 404.
+   */
+  async appRoutinesOf(
+    bookingIds: readonly string[],
+  ): Promise<Map<string, string>> {
+    if (bookingIds.length === 0) return new Map();
+    const bookings = await this.prisma.booking.findMany({
+      where: { id: { in: [...bookingIds] }, seriesId: { not: null } },
+      select: { id: true, seriesId: true },
+    });
+    const seriesIds = [
+      ...new Set(bookings.flatMap((b) => (b.seriesId ? [b.seriesId] : []))),
+    ];
+    if (seriesIds.length === 0) return new Map();
+    const app = await this.prisma.bookingSeries.findMany({
+      where: { id: { in: seriesIds }, source: 'mobile' },
+      select: { id: true },
+    });
+    const appIds = new Set(app.map((s) => s.id));
+    return new Map(
+      bookings.flatMap((b) =>
+        b.seriesId && appIds.has(b.seriesId)
+          ? [[b.id, b.seriesId] as [string, string]]
+          : [],
+      ),
+    );
+  }
+
   private async load(seriesId: string): Promise<SeriesRowLoaded | null> {
     // A malformed id is 404, not a 500 from the uuid cast.
     if (!UUID_RE.test(seriesId)) return null;

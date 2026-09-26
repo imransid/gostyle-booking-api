@@ -75,3 +75,41 @@ export function routineRow<T extends Record<RoutineRowField, unknown>>(
     ROUTINE_ROW_FIELDS.map((field) => [field, routine[field]]),
   ) as Pick<T, RoutineRowField>;
 }
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The booking ids on a page worth asking the database about. Uuids only: a
+ * row id that is not one would fail the uuid cast in SQL and turn the whole
+ * list into a 500.
+ */
+export function bookingIdsOf(rows: readonly unknown[]): string[] {
+  return rows.flatMap((row) => {
+    const id =
+      typeof row === 'object' && row !== null
+        ? (row as { id?: unknown }).id
+        : undefined;
+    return typeof id === 'string' && UUID.test(id) ? [id] : [];
+  });
+}
+
+/**
+ * Upcoming and Archive (step 5): every row gets `series_id`, the app routine
+ * its visit belongs to, or null, so the app can open the routine from one
+ * of its visits. `byBooking` maps a booking id to its app routine.
+ *
+ * New rows: the page it was given is left as it was.
+ */
+export function withSeriesIds(
+  rows: readonly unknown[],
+  byBooking: ReadonlyMap<string, string>,
+): unknown[] {
+  return rows.map((row) => {
+    if (typeof row !== 'object' || row === null) return row;
+    const id = (row as { id?: unknown }).id;
+    return {
+      ...row,
+      series_id: typeof id === 'string' ? (byBooking.get(id) ?? null) : null,
+    };
+  });
+}
