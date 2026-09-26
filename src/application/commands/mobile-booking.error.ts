@@ -55,7 +55,32 @@ export type MobileErrorCode =
   | 'stylist_repeated'
   | 'cannot_cancel'
   // booking-list.md §5
-  | 'invalid_filter';
+  | 'invalid_filter'
+  // Routine (series) booking, gostyle-customer-api
+  // docs/SERIES_BOOKING_AUDIT.md E.3. The list lives in
+  // domain/booking/mobile-series-contract.ts (SERIES_REFUSAL_CODES).
+  | 'invalid_frequency'
+  | 'invalid_session_count'
+  | 'invalid_date'
+  | 'date_out_of_range'
+  | 'time_required'
+  | 'invalid_time'
+  | 'invalid_payment_plan'
+  | 'payment_plan_not_available'
+  | 'invalid_pick'
+  | 'session_not_free'
+  | 'invalid_action'
+  | 'invalid_sessions'
+  | 'session_locked'
+  | 'session_not_changeable'
+  | 'routine_not_active'
+  | 'invalid_pause'
+  | 'pause_too_long'
+  | 'invalid_pause_reason'
+  | 'invalid_extend'
+  | 'too_many_sessions'
+  | 'reschedule_out_of_range'
+  | 'session_day_taken';
 
 export interface MobileFieldError {
   readonly field: string;
