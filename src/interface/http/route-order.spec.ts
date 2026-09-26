@@ -219,6 +219,27 @@ describe('route registration order', () => {
     ]);
   });
 
+  it('keeps the mobile series routes ahead of MobileBookingController', () => {
+    // Same reason as the group: /mobile-booking/:id is one segment and the
+    // series routes are deeper, and they are registered first anyway.
+    const order = registrationOrder();
+    const single = order.indexOf('MobileBookingController');
+    expect(order.indexOf('MobileSeriesController')).toBeGreaterThan(-1);
+    expect(order.indexOf('MobileSeriesController')).toBeLessThan(single);
+  });
+
+  it('the mobile series routes are where the plan puts them (step 2)', () => {
+    // PATCH :seriesId and POST :seriesId/cancel join in steps 6 and 7.
+    const routine = routeTable()
+      .filter((r) => r.controller === 'MobileSeriesController')
+      .map((r) => `${r.method} ${r.path}`)
+      .sort();
+    expect(routine).toEqual([
+      'Get mobile-booking/series/:seriesId',
+      'Post mobile-booking/series',
+    ]);
+  });
+
   it('the two literals really are under /bookings', () => {
     const table = routeTable();
     // The decorator's own casing, so a failure prints what the source says.

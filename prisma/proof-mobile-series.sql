@@ -77,7 +77,7 @@ VALUES ('5e1e5000-0000-4000-8000-000000000003', gen_random_uuid(), gen_random_uu
         'mobile', 'weekly',
         ARRAY['aaaaaaaa-0000-4000-8000-000000000001',
               'aaaaaaaa-0000-4000-8000-000000000002']::uuid[],
-        'pay_at_salon', current_date + 17);
+        'pay_at_salon', DATE '9999-12-31');
 
 \echo ''
 \echo '=== CHECK 3: what is stored (three rows) ==='

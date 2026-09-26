@@ -677,6 +677,82 @@ export function actionRefusal(
   );
 }
 
+/**
+ * One session's state in the app's words. DERIVED from the rows and the
+ * clock on every read, never stored.
+ *
+ *   SCHEDULED / CONFIRMED  booked and still to come: before / inside the lock
+ *   PLANNED                past the 90 day horizon, not booked yet
+ *   NEEDS_ACTION           could not be booked; the customer must choose
+ *   CHECKED_IN, COMPLETED  the visit happened (or is happening)
+ *   MISSED                 a no-show
+ *   SKIPPED                skipped through the routine
+ *   CANCELLED              cancelled any other way (the desk, for example)
+ */
+export type SessionWord =
+  | 'SCHEDULED'
+  | 'CONFIRMED'
+  | 'PLANNED'
+  | 'NEEDS_ACTION'
+  | 'CHECKED_IN'
+  | 'COMPLETED'
+  | 'MISSED'
+  | 'SKIPPED'
+  | 'CANCELLED';
+
+export function sessionWord(s: SessionFacts, nowMs: number): SessionWord {
+  switch (sessionBucket(s)) {
+    case 'skipped':
+      return 'SKIPPED';
+    case 'cancelled':
+      return 'CANCELLED';
+    case 'done':
+      if (s.bookingStatus === 'no_show') return 'MISSED';
+      return s.bookingStatus === 'checked_in' ||
+        s.bookingStatus === 'in_service'
+        ? 'CHECKED_IN'
+        : 'COMPLETED';
+    case 'remaining':
+      if (s.state === 'needs_attention') return 'NEEDS_ACTION';
+      if (s.bookingStatus === null) return 'PLANNED';
+      return sessionPhase(s.startAtMs, nowMs);
+  }
+}
+
+/** What the customer may do right now, for the hub's buttons. */
+export interface RoutineCan {
+  readonly skip: boolean;
+  readonly reschedule: boolean;
+  readonly extend: boolean;
+  readonly pause: boolean;
+  readonly resume: boolean;
+  readonly cancel: boolean;
+}
+
+/**
+ * The hub's buttons, from the same rules the PATCH applies, so a button is
+ * never shown for an action the server would refuse.
+ */
+export function routineCan(
+  status: RoutineStatus,
+  sessions: readonly SessionFacts[],
+  nowMs: number,
+): RoutineCan {
+  const active = status === 'active';
+  const changeable = sessions.some((s) => changeRefusal(s, nowMs) === null);
+  const future = sessions.filter(
+    (s) => sessionBucket(s) === 'remaining' && s.startAtMs > nowMs,
+  ).length;
+  return {
+    skip: active && changeable,
+    reschedule: active && changeable,
+    extend: active && future < MAX_FUTURE_SESSIONS,
+    pause: active,
+    resume: status === 'paused',
+    cancel: (active || status === 'paused') && future > 0,
+  };
+}
+
 /** SKIP: every id is a session of this routine that may still change. */
 export function checkSkip(
   sessions: readonly SessionFacts[],

@@ -8,6 +8,8 @@ import {
   ROUTINE_RULES,
   actionRefusal,
   applyPicks,
+  routineCan,
+  sessionWord,
   beyondHorizon,
   cancelSummary,
   changeRefusal,
@@ -715,6 +717,78 @@ describe('actionRefusal', () => {
     expect(actionRefusal('RESUME', 'paused')).toBeNull();
     expect(actionRefusal('RESUME', 'active')?.code).toBe('routine_not_active');
     expect(actionRefusal('RESUME', 'ended')?.code).toBe('routine_not_active');
+  });
+});
+
+describe('sessionWord (what the hub shows)', () => {
+  it.each<[string, Partial<SessionFacts>, string]>([
+    ['booked, past the lock', { startAtMs: NOW + 3 * DAY }, 'SCHEDULED'],
+    ['booked, inside the lock', { startAtMs: NOW + 3 * HOUR }, 'CONFIRMED'],
+    ['past the horizon', { state: 'planned', bookingStatus: null }, 'PLANNED'],
+    [
+      'stuck',
+      { state: 'needs_attention', bookingStatus: null },
+      'NEEDS_ACTION',
+    ],
+    ['checked in', { bookingStatus: 'checked_in' }, 'CHECKED_IN'],
+    ['in the chair', { bookingStatus: 'in_service' }, 'CHECKED_IN'],
+    ['done', { bookingStatus: 'completed' }, 'COMPLETED'],
+    ['paid and done', { bookingStatus: 'settled' }, 'COMPLETED'],
+    ['a no-show', { bookingStatus: 'no_show', noShowBy: 'staff' }, 'MISSED'],
+    ['skipped', { state: 'skipped', bookingStatus: 'cancelled' }, 'SKIPPED'],
+    ['cancelled at the desk', { bookingStatus: 'cancelled' }, 'CANCELLED'],
+  ])('%s: %s', (_, over, word) => {
+    expect(sessionWord(session(over), NOW)).toBe(word);
+  });
+});
+
+describe('routineCan (the hub buttons follow the PATCH rules)', () => {
+  const future = session({ day: '2026-10-10' });
+  const locked = session({ day: TODAY, startAtMs: NOW + 3 * HOUR });
+
+  it('active, with a session that may change: everything but resume', () => {
+    expect(routineCan('active', [future], NOW)).toEqual({
+      skip: true,
+      reschedule: true,
+      extend: true,
+      pause: true,
+      resume: false,
+      cancel: true,
+    });
+  });
+
+  it('only a locked session left: no skip or move, cancel still possible', () => {
+    expect(routineCan('active', [locked], NOW)).toMatchObject({
+      skip: false,
+      reschedule: false,
+      cancel: true,
+    });
+  });
+
+  it('6 sessions to come: no extend', () => {
+    const six = Array.from({ length: 6 }, (_, i) =>
+      session({ day: `2026-10-1${i}` }),
+    );
+    expect(routineCan('active', six, NOW).extend).toBe(false);
+  });
+
+  it('paused: resume and cancel only', () => {
+    expect(routineCan('paused', [future], NOW)).toEqual({
+      skip: false,
+      reschedule: false,
+      extend: false,
+      pause: false,
+      resume: true,
+      cancel: true,
+    });
+  });
+
+  it('ended or completed: nothing', () => {
+    for (const status of ['ended', 'completed'] as const) {
+      expect(Object.values(routineCan(status, [future], NOW))).toEqual(
+        Array(6).fill(false),
+      );
+    }
   });
 });
 
