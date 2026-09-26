@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   PAUSE_NOTE_MAX,
   SERIES_REFUSAL_CODES,
+  cancelHistoryReason,
+  cancelReasonFromHistory,
+  checkCancel,
   checkManage,
   checkRoutine,
   checkRoutineMoney,
@@ -15,7 +18,7 @@ import {
   type RoutineClaim,
 } from './mobile-series-contract';
 import { NO_PRODUCTS } from './mobile-products';
-import { routineMoney } from './mobile-series';
+import { CANCEL_REASONS, PAUSE_REASONS, routineMoney } from './mobile-series';
 
 const TODAY = '2026-10-01';
 
@@ -80,8 +83,21 @@ describe('words', () => {
     expect(toRoutineStatus('completed')).toBe('COMPLETED');
   });
 
+  it('the Figma five pause reasons ("Busy Period" is BUSY)', () => {
+    expect(PAUSE_REASONS).toEqual([
+      'TRAVEL',
+      'HEALTH',
+      'BUSY',
+      'BUDGET',
+      'OTHER',
+    ]);
+  });
+
   it('pause reasons round trip; missed_twice is the server word', () => {
-    expect(pauseReasonColumn('TRAVEL')).toBe('travel');
+    for (const r of PAUSE_REASONS) {
+      expect(pauseReasonFromColumn(pauseReasonColumn(r))).toBe(r);
+    }
+    expect(pauseReasonColumn('BUSY')).toBe('busy');
     expect(pauseReasonFromColumn('travel')).toBe('TRAVEL');
     expect(pauseReasonFromColumn('missed_twice')).toBe('MISSED_TWICE');
     expect(pauseReasonFromColumn(null)).toBeNull();
@@ -443,6 +459,7 @@ const manage = (over: Partial<ManageClaim> = {}): ManageClaim => ({
   until: null,
   reason: null,
   note: null,
+  frequency: null,
   ...over,
 });
 
@@ -590,6 +607,15 @@ describe('checkManage', () => {
       });
     });
 
+    it.each(['TRAVEL', 'HEALTH', 'BUSY', 'BUDGET', 'OTHER'])(
+      'takes the reason %s',
+      (reason) => {
+        expect(
+          manageCode(manage({ action: 'PAUSE', until: '2026-10-30', reason })),
+        ).toBeNull();
+      },
+    );
+
     it('reason and note are optional; a blank note is no note', () => {
       const r = checkManage(
         manage({ action: 'PAUSE', until: '2026-10-30', note: '   ' }),
@@ -607,6 +633,7 @@ describe('checkManage', () => {
       [{ until: null }, 'invalid_pause'],
       [{ until: 'next week' }, 'invalid_pause'],
       [{ until: '2026-10-30', reason: 'BORED' }, 'invalid_pause_reason'],
+      [{ until: '2026-10-30', reason: 'busy' }, 'invalid_pause_reason'],
       [{ until: '2026-10-30', reason: 'MISSED_TWICE' }, 'invalid_pause_reason'],
       [
         { until: '2026-10-30', note: 'x'.repeat(PAUSE_NOTE_MAX + 1) },
@@ -629,10 +656,133 @@ describe('checkManage', () => {
     });
   });
 
-  it('RESUME needs nothing else', () => {
-    expect(checkManage(manage({ action: 'RESUME' }), 'WEEKLY')).toEqual({
-      kind: 'ok',
-      value: { action: 'RESUME' },
+  describe('RESUME', () => {
+    it('with nothing sent, is a plain resume', () => {
+      expect(checkManage(manage({ action: 'RESUME' }), 'WEEKLY')).toEqual({
+        kind: 'ok',
+        value: {
+          action: 'RESUME',
+          frequency: null,
+          startMin: null,
+          stylistId: null,
+        },
+      });
     });
+
+    it('"Customize first": a new frequency, time and stylist, together', () => {
+      expect(
+        checkManage(
+          manage({
+            action: 'RESUME',
+            frequency: 'EVERY_2_WEEKS',
+            time: '11:30',
+            stylistId: 'rana',
+          }),
+          'WEEKLY',
+        ),
+      ).toEqual({
+        kind: 'ok',
+        value: {
+          action: 'RESUME',
+          frequency: 'EVERY_2_WEEKS',
+          startMin: 690,
+          stylistId: 'rana',
+        },
+      });
+    });
+
+    it('any one of the three alone', () => {
+      expect(
+        manageCode(manage({ action: 'RESUME', frequency: 'DAILY' })),
+      ).toBeNull();
+      expect(
+        manageCode(manage({ action: 'RESUME', time: '10:00' })),
+      ).toBeNull();
+      expect(
+        manageCode(manage({ action: 'RESUME', stylistId: 'rana' })),
+      ).toBeNull();
+    });
+
+    it('a CUSTOM routine may resume on a cadence', () => {
+      expect(
+        manageCode(
+          manage({ action: 'RESUME', frequency: 'MONTHLY' }),
+          'CUSTOM',
+        ),
+      ).toBeNull();
+    });
+
+    it.each<[Partial<ManageClaim>, string, string]>([
+      [{ frequency: 'CUSTOM' }, 'invalid_frequency', 'frequency'],
+      [{ frequency: 'YEARLY' }, 'invalid_frequency', 'frequency'],
+      [{ frequency: 'weekly' }, 'invalid_frequency', 'frequency'],
+      [{ time: '09:00' }, 'invalid_time', 'time'],
+      [{ time: '18:03' }, 'invalid_time', 'time'],
+      [{ stylistId: '  ' }, 'stylist_required', 'stylist_id'],
+    ])('checks %j like the create', (over, code, field) => {
+      const r = checkManage(manage({ action: 'RESUME', ...over }), 'WEEKLY');
+      expect(r.kind === 'refused' && r.refusal).toMatchObject({ code, field });
+    });
+  });
+});
+
+// ------------------------------------------------------------ cancel
+
+describe('checkCancel', () => {
+  it('the reason is optional', () => {
+    expect(checkCancel({ dryRun: true, reason: null })).toEqual({
+      kind: 'ok',
+      value: { dryRun: true, reason: null },
+    });
+  });
+
+  it.each(['NOT_SATISFIED', 'TOO_EXPENSIVE', 'MOVING', 'OTHER'])(
+    'takes %s',
+    (reason) => {
+      expect(checkCancel({ dryRun: false, reason })).toEqual({
+        kind: 'ok',
+        value: { dryRun: false, reason },
+      });
+    },
+  );
+
+  it.each(['BORED', 'moving', ''])('refuses %j', (reason) => {
+    expect(checkCancel({ dryRun: false, reason })).toEqual({
+      kind: 'refused',
+      refusal: {
+        field: 'reason',
+        code: 'invalid_cancel_reason',
+        message:
+          'reason must be NOT_SATISFIED, TOO_EXPENSIVE, MOVING or OTHER.',
+      },
+    });
+  });
+
+  it('is a 422', () => {
+    expect(refusalStatus('invalid_cancel_reason')).toBe(422);
+  });
+});
+
+describe('the cancel reason in booking_status_history.reason', () => {
+  it('is never empty, so the history CHECK for a cancel is met', () => {
+    expect(cancelHistoryReason(null)).toBe('Routine cancelled in the app.');
+    expect(cancelHistoryReason('TOO_EXPENSIVE')).toBe(
+      'Routine cancelled in the app. Reason: TOO_EXPENSIVE.',
+    );
+  });
+
+  it('reads back exactly what it wrote', () => {
+    for (const r of CANCEL_REASONS) {
+      expect(cancelReasonFromHistory(cancelHistoryReason(r))).toBe(r);
+    }
+    expect(cancelReasonFromHistory(cancelHistoryReason(null))).toBeNull();
+  });
+
+  it('reads nothing from a reason it did not write', () => {
+    expect(cancelReasonFromHistory(null)).toBeNull();
+    expect(cancelReasonFromHistory('Customer called the desk.')).toBeNull();
+    expect(
+      cancelReasonFromHistory('Routine cancelled in the app. Reason: BORED.'),
+    ).toBeNull();
   });
 });

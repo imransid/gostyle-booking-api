@@ -1,5 +1,6 @@
 import { aedToFils, amountsAgree, filsToAed } from './mobile-contract';
 import {
+  CANCEL_REASONS,
   EXTEND_MAX,
   EXTEND_MIN,
   FREQUENCIES,
@@ -9,6 +10,8 @@ import {
   PAYMENT_PLANS,
   ROUTINE_ACTIONS,
   V1_PAYMENT_PLANS,
+  type Cadence,
+  type CancelReason,
   type Frequency,
   type PauseReason,
   type PaymentPlan,
@@ -58,6 +61,7 @@ export type SeriesRefusalCode =
   | 'session_not_free'
   | 'invalid_action'
   | 'invalid_pause_reason'
+  | 'invalid_cancel_reason'
   | 'not_found'
   | 'cannot_cancel';
 
@@ -89,6 +93,7 @@ export const SERIES_REFUSAL_CODES: readonly SeriesRefusalCode[] = [
   'invalid_pause',
   'pause_too_long',
   'invalid_pause_reason',
+  'invalid_cancel_reason',
   'invalid_extend',
   'too_many_sessions',
   'reschedule_out_of_range',
@@ -149,8 +154,8 @@ export function toRoutineStatus(status: RoutineStatus): RoutineWireStatus {
 /** booking_series.pause_reason, CHECK series_pause_reason_known. */
 export function pauseReasonColumn(
   r: PauseReason,
-): 'travel' | 'health' | 'budget' | 'other' {
-  return r.toLowerCase() as 'travel' | 'health' | 'budget' | 'other';
+): 'travel' | 'health' | 'busy' | 'budget' | 'other' {
+  return r.toLowerCase() as 'travel' | 'health' | 'busy' | 'budget' | 'other';
 }
 
 /** The column back to the app's word. `missed_twice` is the server's (D5). */
@@ -162,6 +167,37 @@ export function pauseReasonFromColumn(
   if (word === 'MISSED_TWICE') return word;
   return (PAUSE_REASONS as readonly string[]).includes(word)
     ? (word as PauseReason)
+    : null;
+}
+
+/**
+ * Where the cancel reason is kept, WITHOUT A NEW COLUMN.
+ *
+ * Each session the cancel cancels goes through the single booking's
+ * lifecycle, which must write a reason on booking_status_history for a
+ * cancel (bsh_destructive_needs_reason). This is that reason: plain enough
+ * for the desk to read in the booking's history, fixed enough to be read
+ * back. The routine's own outbox event carries the same word, for a routine
+ * with nothing booked yet (plan E.3).
+ */
+const ROUTINE_CANCEL_TEXT = 'Routine cancelled in the app';
+
+export function cancelHistoryReason(reason: CancelReason | null): string {
+  return reason === null
+    ? `${ROUTINE_CANCEL_TEXT}.`
+    : `${ROUTINE_CANCEL_TEXT}. Reason: ${reason}.`;
+}
+
+/** The reason back from a history row, or null (none given, or not ours). */
+export function cancelReasonFromHistory(
+  text: string | null,
+): CancelReason | null {
+  const m = /^Routine cancelled in the app\. Reason: ([A-Z_]+)\.$/.exec(
+    text ?? '',
+  );
+  const word = m?.[1] ?? '';
+  return (CANCEL_REASONS as readonly string[]).includes(word)
+    ? (word as CancelReason)
     : null;
 }
 
@@ -516,8 +552,12 @@ export interface ManageClaim {
   /** RESCHEDULE. */
   readonly sessionId: string | null;
   readonly date: string | null;
+  /** RESCHEDULE, and RESUME's optional new time. */
   readonly time: string | null;
+  /** RESCHEDULE, and RESUME's optional new stylist. */
   readonly stylistId: string | null;
+  /** RESUME's optional new frequency (never CUSTOM). */
+  readonly frequency: string | null;
   /** EXTEND: how many (not CUSTOM), or the days (CUSTOM). */
   readonly sessions: number | null;
   readonly dates: readonly string[] | null;
@@ -548,7 +588,13 @@ export type CheckedManage =
       readonly reason: PauseReason | null;
       readonly note: string | null;
     }
-  | { readonly action: 'RESUME' };
+  | {
+      readonly action: 'RESUME';
+      /** Null keeps what the routine has, for each of the three. */
+      readonly frequency: Cadence | null;
+      readonly startMin: number | null;
+      readonly stylistId: string | null;
+    };
 
 /** What a pause note may be: 1 to 200 characters, as the column's CHECK. */
 export const PAUSE_NOTE_MAX = 200;
@@ -687,7 +733,7 @@ export function checkManage(
             refuse(
               'reason',
               'invalid_pause_reason',
-              'reason must be TRAVEL, HEALTH, BUDGET or OTHER.',
+              'reason must be TRAVEL, HEALTH, BUSY, BUDGET or OTHER.',
             ),
           );
         }
@@ -712,6 +758,90 @@ export function checkManage(
     }
 
     default:
-      return ok({ action: 'RESUME' });
+      return checkResume(claim);
   }
+}
+
+/**
+ * RESUME, with the Figma's "Customize first": an optional new frequency,
+ * time or stylist, each checked as the create checks it. Nothing sent is a
+ * plain resume. The switch itself is all or nothing when it is booked.
+ */
+function checkResume(claim: ManageClaim): Checked<CheckedManage> {
+  let frequency: Cadence | null = null;
+  if (claim.frequency !== null) {
+    if (
+      claim.frequency === 'CUSTOM' ||
+      !(FREQUENCIES as readonly string[]).includes(claim.frequency)
+    ) {
+      return no(
+        refuse(
+          'frequency',
+          'invalid_frequency',
+          'A routine resumes on DAILY, WEEKLY, EVERY_2_WEEKS or MONTHLY.',
+        ),
+      );
+    }
+    frequency = claim.frequency as Cadence;
+  }
+
+  let startMin: number | null = null;
+  if (claim.time !== null) {
+    startMin = parseRoutineTime(claim.time);
+    if (startMin === null) {
+      return no(refuse('time', 'invalid_time', TIME_MESSAGE));
+    }
+  }
+
+  if (claim.stylistId !== null && claim.stylistId.trim() === '') {
+    // Sent but blank, as the create refuses it. Leave it out to keep the
+    // routine's stylist.
+    return no(
+      refuse(
+        'stylist_id',
+        'stylist_required',
+        'A routine keeps one regular stylist. Choose one, or leave it out.',
+      ),
+    );
+  }
+
+  return ok({
+    action: 'RESUME',
+    frequency,
+    startMin,
+    stylistId: claim.stylistId,
+  });
+}
+
+// ------------------------------------------------------------ cancel
+
+/** POST /v1/mobile-booking/series/:id/cancel, as the app sent it. */
+export interface CancelClaim {
+  readonly dryRun: boolean;
+  /** The Figma's "Why are you cancelling?". Optional. */
+  readonly reason: string | null;
+}
+
+export interface CheckedCancel {
+  readonly dryRun: boolean;
+  readonly reason: CancelReason | null;
+}
+
+export function checkCancel(claim: CancelClaim): Checked<CheckedCancel> {
+  if (
+    claim.reason !== null &&
+    !(CANCEL_REASONS as readonly string[]).includes(claim.reason)
+  ) {
+    return no(
+      refuse(
+        'reason',
+        'invalid_cancel_reason',
+        'reason must be NOT_SATISFIED, TOO_EXPENSIVE, MOVING or OTHER.',
+      ),
+    );
+  }
+  return ok({
+    dryRun: claim.dryRun,
+    reason: claim.reason as CancelReason | null,
+  });
 }

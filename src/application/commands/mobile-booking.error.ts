@@ -77,6 +77,7 @@ export type MobileErrorCode =
   | 'invalid_pause'
   | 'pause_too_long'
   | 'invalid_pause_reason'
+  | 'invalid_cancel_reason'
   | 'invalid_extend'
   | 'too_many_sessions'
   | 'reschedule_out_of_range'

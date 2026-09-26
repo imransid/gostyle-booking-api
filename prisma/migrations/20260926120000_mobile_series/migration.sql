@@ -83,13 +83,15 @@ END
 $$;
 
 -- Why a routine is paused. `missed_twice` is the server's own (D5); the rest
--- are the app's picker. A word nobody reads is refused.
+-- are the app's picker, as the Figma lists it ('busy' is "Busy Period"). A
+-- word nobody reads is refused.
 DO $$
 BEGIN
   ALTER TABLE booking_series
     ADD CONSTRAINT series_pause_reason_known
       CHECK (pause_reason IS NULL
-             OR pause_reason IN ('travel', 'health', 'budget', 'other', 'missed_twice'));
+             OR pause_reason IN ('travel', 'health', 'busy', 'budget', 'other',
+                                 'missed_twice'));
 EXCEPTION
   WHEN duplicate_object THEN NULL;
 END

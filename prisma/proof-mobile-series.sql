@@ -117,6 +117,23 @@ UPDATE booking_series SET pause_reason = 'bored'
 ROLLBACK TO SAVEPOINT t4;
 
 \echo ''
+\echo '=== WORK 0: each of the Figma five reasons, busy included, and missed_twice. MUST WORK (6 x UPDATE 1) ==='
+SAVEPOINT w0;
+UPDATE booking_series SET pause_reason = 'travel'
+ WHERE id = '5e1e5000-0000-4000-8000-000000000003';
+UPDATE booking_series SET pause_reason = 'health'
+ WHERE id = '5e1e5000-0000-4000-8000-000000000003';
+UPDATE booking_series SET pause_reason = 'busy'
+ WHERE id = '5e1e5000-0000-4000-8000-000000000003';
+UPDATE booking_series SET pause_reason = 'budget'
+ WHERE id = '5e1e5000-0000-4000-8000-000000000003';
+UPDATE booking_series SET pause_reason = 'other'
+ WHERE id = '5e1e5000-0000-4000-8000-000000000003';
+UPDATE booking_series SET pause_reason = 'missed_twice'
+ WHERE id = '5e1e5000-0000-4000-8000-000000000003';
+ROLLBACK TO SAVEPOINT w0;
+
+\echo ''
 \echo '=== TEST 5: a pause note of 201 characters. MUST FAIL (series_pause_note_length) ==='
 SAVEPOINT t5;
 UPDATE booking_series SET pause_note = repeat('x', 201)
@@ -155,7 +172,7 @@ ROLLBACK TO SAVEPOINT t9;
 \echo '=== WORK 1: the app pauses the routine until a date, with a reason and a note. MUST WORK ==='
 UPDATE booking_series
    SET status = 'paused', paused_until = current_date + 30,
-       pause_reason = 'travel', pause_note = 'Away for work', updated_at = now()
+       pause_reason = 'busy', pause_note = 'Busy at work', updated_at = now()
  WHERE id = '5e1e5000-0000-4000-8000-000000000003';
 
 \echo ''

@@ -897,7 +897,7 @@ model BookingSeries {
   /// on any other status (no CHECK, or the desk's resume would fail).
   pausedUntil DateTime? @map("paused_until") @db.Date
 
-  /// + MOBILE. travel, health, budget, other, or missed_twice (D5).
+  /// + MOBILE. travel, health, busy, budget, other, or missed_twice (D5).
   pauseReason String? @map("pause_reason")
 
   /// + MOBILE. The customer's own words, 1 to 200 characters.

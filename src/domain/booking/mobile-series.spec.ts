@@ -24,6 +24,7 @@ import {
   pickAlternatives,
   planDays,
   replanFrom,
+  resumeDays,
   routineMoney,
   sessionBucket,
   sessionPhase,
@@ -385,6 +386,64 @@ describe('replanFrom (D6: pause moves the sessions, the count is kept)', () => {
         isOpen: allOpen,
       }),
     ).toEqual([]);
+  });
+});
+
+describe('resumeDays (RESUME, "Customize first")', () => {
+  const weeklyTuesdays = {
+    frequency: 'WEEKLY' as const,
+    anchor: '2026-10-06',
+    remaining: ['2026-10-20', '2026-10-27', '2026-11-03'],
+    from: '2026-11-05',
+    isOpen: allOpen,
+  };
+
+  it('nothing switched: the same days as the pause re-plan', () => {
+    const plain = resumeDays({ ...weeklyTuesdays, newFrequency: null });
+    expect(days(plain)).toEqual(['2026-11-10', '2026-11-17', '2026-11-24']);
+    expect(plain).toEqual(replanFrom(weeklyTuesdays));
+  });
+
+  it('switching to the frequency it already has is no switch', () => {
+    expect(resumeDays({ ...weeklyTuesdays, newFrequency: 'WEEKLY' })).toEqual(
+      resumeDays({ ...weeklyTuesdays, newFrequency: null }),
+    );
+  });
+
+  it('a new frequency restarts its cadence on the resume day itself', () => {
+    expect(
+      days(resumeDays({ ...weeklyTuesdays, newFrequency: 'EVERY_2_WEEKS' })),
+    ).toEqual(['2026-11-05', '2026-11-19', '2026-12-03']);
+    expect(
+      days(resumeDays({ ...weeklyTuesdays, newFrequency: 'MONTHLY' })),
+    ).toEqual(['2026-11-05', '2026-12-05', '2027-01-05']);
+  });
+
+  it('a CUSTOM routine may switch to DAILY, which skips closed days (D3)', () => {
+    expect(
+      days(
+        resumeDays({
+          frequency: 'CUSTOM',
+          anchor: '2026-10-02',
+          newFrequency: 'DAILY',
+          remaining: ['2026-10-09', '2026-10-30'],
+          from: '2026-10-05',
+          isOpen: closedMondays,
+        }),
+      ),
+    ).toEqual(['2026-10-06', '2026-10-07']);
+  });
+
+  it('keeps the count whatever is switched (D6)', () => {
+    for (const newFrequency of [
+      null,
+      'DAILY',
+      'WEEKLY',
+      'EVERY_2_WEEKS',
+      'MONTHLY',
+    ] as const) {
+      expect(resumeDays({ ...weeklyTuesdays, newFrequency })).toHaveLength(3);
+    }
   });
 });
 

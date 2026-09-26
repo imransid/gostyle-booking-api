@@ -159,13 +159,28 @@ export const ROUTINE_ACTIONS: readonly RoutineAction[] = [
   'RESUME',
 ];
 
-/** The app's picker. `missed_twice` is the server's own (D5), never sent. */
-export type PauseReason = 'TRAVEL' | 'HEALTH' | 'BUDGET' | 'OTHER';
+/**
+ * The app's pause picker, as the Figma lists it ("Busy Period" is BUSY).
+ * `missed_twice` is the server's own (D5), never sent.
+ */
+export type PauseReason = 'TRAVEL' | 'HEALTH' | 'BUSY' | 'BUDGET' | 'OTHER';
 
 export const PAUSE_REASONS: readonly PauseReason[] = [
   'TRAVEL',
   'HEALTH',
+  'BUSY',
   'BUDGET',
+  'OTHER',
+];
+
+/** The Figma's "Why are you cancelling?". Optional on a cancel. */
+export type CancelReason =
+  'NOT_SATISFIED' | 'TOO_EXPENSIVE' | 'MOVING' | 'OTHER';
+
+export const CANCEL_REASONS: readonly CancelReason[] = [
+  'NOT_SATISFIED',
+  'TOO_EXPENSIVE',
+  'MOVING',
   'OTHER',
 ];
 
@@ -207,7 +222,8 @@ export interface PlannedDay {
 /** Is the salon open on this day? From the booking context, by the caller. */
 export type IsOpen = (day: TradingDay) => boolean;
 
-type Cadence = Exclude<Frequency, 'CUSTOM'>;
+/** Every frequency with a cadence: all but CUSTOM. */
+export type Cadence = Exclude<Frequency, 'CUSTOM'>;
 
 /** 'YYYY-MM-DD' to its day of the month. */
 function dayOfMonth(day: TradingDay): number {
@@ -370,6 +386,39 @@ export function replanFrom(input: {
       }));
     }
   }
+}
+
+/**
+ * RESUME: the remaining sessions, planned again from the first bookable day.
+ *
+ * The Figma's "Customize first" may switch the frequency (never to CUSTOM,
+ * which needs its own dates). With no switch, or a switch to the same
+ * frequency, this is replanFrom as it is. With a new frequency the cadence
+ * restarts on `from` itself: the old weekday or day of the month belonged
+ * to the old cadence, and the customer is choosing a new one now.
+ *
+ * The count is kept either way (D6). A new time or stylist does not change
+ * the days, so it is not an input here: the caller books every session at
+ * the new time with the new stylist, all or nothing.
+ */
+export function resumeDays(input: {
+  readonly frequency: Frequency;
+  readonly anchor: TradingDay;
+  /** Null keeps the routine's frequency. */
+  readonly newFrequency: Cadence | null;
+  readonly remaining: readonly TradingDay[];
+  readonly from: TradingDay;
+  readonly isOpen: IsOpen;
+}): PlannedDay[] {
+  const switched =
+    input.newFrequency !== null && input.newFrequency !== input.frequency;
+  return replanFrom({
+    frequency: switched ? input.newFrequency : input.frequency,
+    anchor: switched ? input.from : input.anchor,
+    remaining: input.remaining,
+    from: input.from,
+    isOpen: input.isOpen,
+  });
 }
 
 /**
