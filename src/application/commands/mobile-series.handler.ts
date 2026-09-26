@@ -67,6 +67,7 @@ import {
   type RoutineMoneyClaims,
   type SeriesRefusal,
 } from '@domain/booking/mobile-series-contract';
+import { RELEASED_SESSION_REASON } from '@domain/booking/mobile-series-list';
 
 /** POST /v1/mobile-booking/series, in our words. */
 export interface MobileSeriesCommand {
@@ -147,8 +148,7 @@ export interface MobileSeriesPreview {
 const DAILY_SEARCH_DAYS = 60;
 /** D4: the days either side of a busy session searched for alternatives. */
 const ALTERNATIVE_DAYS = [-2, -1, 0, 1, 2];
-const RELEASE_REASON =
-  'The routine could not be booked in full, so this session was released.';
+const RELEASE_REASON = RELEASED_SESSION_REASON;
 
 const snake = (key: string): string =>
   key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);

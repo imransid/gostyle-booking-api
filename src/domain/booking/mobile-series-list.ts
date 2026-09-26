@@ -113,3 +113,11 @@ export function withSeriesIds(
     };
   });
 }
+
+/**
+ * Why a session was cancelled when its routine could not be booked in full
+ * (the create's rollback). Shared, not copied: the list leaves those visits
+ * out by this exact text (step 5), so the two can never drift apart.
+ */
+export const RELEASED_SESSION_REASON =
+  'The routine could not be booked in full, so this session was released.';
