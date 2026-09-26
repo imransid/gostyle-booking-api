@@ -50,6 +50,10 @@ const FOREIGN_CONTRACT = new Set([
   // docs/APP_GROUP_BOOKING_SPEC.md): the same snake_case dialect, translated
   // in domain/booking/mobile-group-contract.ts and stopped at the controller.
   'mobile-group-booking.controller.ts',
+  // The app's routine (gostyle-customer-api docs/SERIES_BOOKING_AUDIT.md
+  // E.3): the same snake_case dialect, translated in
+  // domain/booking/mobile-series-contract.ts and stopped at the controller.
+  'mobile-series.controller.ts',
 ]);
 
 function stripComments(src: string): string {
@@ -78,7 +82,9 @@ describe('request DTO vocabulary', () => {
 
   it('keeps the foreign-contract list small and deliberate', () => {
     // If this grows, our own vocabulary has stopped being the default.
-    expect(FOREIGN_CONTRACT.size).toBeLessThanOrEqual(2);
+    // Three, on purpose: the app's single, group and routine booking, all
+    // one dialect (gostyle-customer-api's), translated in domain/booking.
+    expect(FOREIGN_CONTRACT.size).toBeLessThanOrEqual(3);
   });
 
   for (const file of contractFiles) {

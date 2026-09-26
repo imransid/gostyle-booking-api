@@ -874,6 +874,40 @@ model BookingSeries {
   courseVisits       Int? @map("course_visits") @db.SmallInt
   courseDrawn        Int  @default(0) @map("course_drawn") @db.SmallInt
 
+  /// + MOBILE. Who made this routine: null for the desk (every row written
+  /// before this column existed), 'mobile' for POST /v1/mobile-booking/series.
+  /// The mobile read and list only see 'mobile' series.
+  source String?
+
+  /// + MOBILE. What the customer chose: daily, weekly, every_2_weeks, monthly
+  /// or custom. The stored pattern of a mobile routine is always CUSTOM
+  /// (explicit dates), so the choice lives only here.
+  frequency String?
+
+  /// + MOBILE. Every service of a session (D1). serviceId stays the first one,
+  /// for the desk board. Null for a desk series. A mobile routine always has
+  /// at least one (CHECK series_mobile_has_services).
+  serviceIds String[] @map("service_ids") @db.Uuid
+
+  /// + MOBILE. pay_at_salon, pay_as_you_go or upfront. v1 writes pay_at_salon.
+  paymentPlan String? @map("payment_plan")
+
+  /// + MOBILE. The resume date of a paused routine (D6). Only meaningful while
+  /// status = paused: the desk's resume does not clear it, so reads ignore it
+  /// on any other status (no CHECK, or the desk's resume would fail).
+  pausedUntil DateTime? @map("paused_until") @db.Date
+
+  /// + MOBILE. travel, health, busy, budget, other, or missed_twice (D5).
+  pauseReason String? @map("pause_reason")
+
+  /// + MOBILE. The customer's own words, 1 to 200 characters.
+  pauseNote String? @map("pause_note")
+
+  /// + MOBILE. D5: only sessions after this day count toward two no-shows in
+  /// a row. Set when the routine is paused for two misses, so a resume does
+  /// not pause it again at once.
+  missStreakAfter DateTime? @map("miss_streak_after") @db.Date
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
