@@ -10,6 +10,7 @@ import {
   Query,
   UsePipes,
   UseInterceptors,
+  Optional,
 } from '@nestjs/common';
 import {
   ApiCreatedResponse,
@@ -45,6 +46,12 @@ import { IdempotentInterceptor } from './idempotent.interceptor';
 import { mobileValidationPipe } from './mobile-validation.pipe';
 import type { MobilePaymentMethod } from '@domain/booking/mobile-contract';
 import { parseFilter } from '@domain/booking/booking-shelf';
+import {
+  bookingIdsOf,
+  withSeriesIds,
+} from '@domain/booking/mobile-series-list';
+import { MobileSeriesReadHandler } from '@application/queries/mobile-series-read.handler';
+import { MOBILE_SERIES_BOOKING } from './mobile-series.flag';
 import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
 import { BookingRepository } from '@infrastructure/persistence/booking.repository';
 import { MobileContractError } from '@application/commands/mobile-booking.error';
@@ -264,6 +271,7 @@ export class MobileBookingController {
     private readonly handler: MobileBookingHandler,
     private readonly bookings: BookingRepository,
     private readonly groups: MobileGroupReadHandler,
+    @Optional() private readonly series?: MobileSeriesReadHandler,
   ) {}
 
   @Post()
@@ -373,9 +381,76 @@ export class MobileBookingController {
 
     // Behind MOBILE_GROUP_BOOKING: a member of a mobile party is shown as
     // one GROUP row for the party. Off, the page is exactly what it was.
-    return MOBILE_GROUP_BOOKING()
+    const decorated: unknown = MOBILE_GROUP_BOOKING()
       ? this.groups.decorateList(shelfPage)
       : shelfPage;
+
+    // Behind MOBILE_SERIES_BOOKING (step 5): the Recurring tab lists this
+    // customer's app routines, and every tab's `counts.recurring` counts
+    // them. Off, the page is exactly what it was.
+    return this.withRoutines(decorated, actor.id, shelf, {
+      page: clampInt(page, 1, 1, 10_000),
+      pageSize: clampInt(pageSize, 20, 1, 50),
+    });
+  }
+
+  /**
+   * The Recurring tab and its badge, from the routines the app made.
+   *
+   * ONLY WITH THE SWITCH ON. Off, the page goes back untouched: the empty
+   * Recurring page and `recurring: 0` the handler has always answered.
+   *
+   * The handler still answers `recurring` with an empty page (it never
+   * queries bookings for it). This fills that page with routine rows and
+   * puts the real number on every tab's badge, so a badge and the tab it
+   * opens always agree.
+   */
+  private async withRoutines(
+    page: unknown,
+    customerId: string | null | undefined,
+    shelf: string,
+    paging: { readonly page: number; readonly pageSize: number },
+  ): Promise<unknown> {
+    const body: unknown = await Promise.resolve(page);
+    if (
+      !MOBILE_SERIES_BOOKING() ||
+      this.series === undefined ||
+      !customerId ||
+      typeof body !== 'object' ||
+      body === null
+    ) {
+      return body;
+    }
+    const current = body as Record<string, unknown>;
+    const counts =
+      typeof current.counts === 'object' && current.counts !== null
+        ? (current.counts as Record<string, unknown>)
+        : {};
+
+    if (shelf !== 'recurring') {
+      // Upcoming and Archive: the badge, and each visit of an app routine
+      // names its routine (`series_id`), so the app can open the hub.
+      const rows: readonly unknown[] = Array.isArray(current.results)
+        ? (current.results as unknown[])
+        : [];
+      const [recurring, byBooking] = await Promise.all([
+        this.series.countForCustomer(customerId),
+        this.series.appRoutinesOf(bookingIdsOf(rows)),
+      ]);
+      return {
+        ...current,
+        counts: { ...counts, recurring },
+        results: withSeriesIds(rows, byBooking),
+      };
+    }
+
+    const routines = await this.series.listForCustomer(customerId, paging);
+    return {
+      ...current,
+      count: routines.count,
+      counts: { ...counts, recurring: routines.count },
+      results: routines.results,
+    };
   }
 
   /**

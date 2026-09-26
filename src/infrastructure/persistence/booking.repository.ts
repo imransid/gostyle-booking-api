@@ -13,6 +13,7 @@ import {
   NEVER_LISTED_STATES,
 } from '@domain/booking/booking-shelf';
 import { BLOCKING_STATES } from '@domain/booking/lifecycle';
+import { RELEASED_SESSION_REASON } from '@domain/booking/mobile-series-list';
 
 export type PaymentRail =
   'wallet' | 'card' | 'apple_pay' | 'cash' | 'link' | 'internal';
@@ -522,10 +523,23 @@ export class BookingRepository {
     const listable = {
       customerId,
       status: { notIn: [...NEVER_LISTED_STATES] },
-      // The one exclusion left, and it mirrors `isListable`: an ABANDONED
+      // Two exclusions. The first mirrors `isListable`: an ABANDONED
       // checkout -- unpaid and already run out -- is litter, not history. A
       // LIVE draft is listed, so an interrupted checkout can be found again.
-      NOT: { paymentStatus: 'unpaid' as const, status: 'expired' as const },
+      //
+      // The second (step 5): a visit released when a routine could not be
+      // booked in full. It was cancelled at once, never by the customer, and
+      // never joined a routine, so it is not history either. It can only
+      // match visits the routine create made, so every other list is as
+      // before.
+      NOT: [
+        { paymentStatus: 'unpaid' as const, status: 'expired' as const },
+        {
+          status: 'cancelled' as const,
+          seriesId: null,
+          statusHistory: { some: { reason: RELEASED_SESSION_REASON } },
+        },
+      ],
     };
 
     const upcoming = {
