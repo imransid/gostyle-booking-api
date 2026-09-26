@@ -449,16 +449,51 @@ export function checkRoutine(
   }
 
   // ---- the picks (D4)
+  const picks = checkPicks(claim.picks, today, count);
+  if (picks.kind === 'refused') return picks;
+
+  return ok({
+    dryRun: claim.dryRun,
+    frequency,
+    count,
+    first,
+    days,
+    startMin,
+    paymentPlan,
+    picks: picks.value,
+  });
+}
+
+/**
+ * D4: the alternatives the customer chose, one per busy session.
+ *
+ * Used by the create and by EXTEND, PAUSE and RESUME, the three actions
+ * that plan new dates. `index` is the session's number in the routine (as
+ * the dry_run and the hub show it). The create knows its range (`count`);
+ * an action does not until it has read the routine, so it passes null here
+ * and the rules check the index against what it plans (applyPicks).
+ */
+export function checkPicks(
+  claims: readonly PickClaim[],
+  today: TradingDay,
+  count: number | null,
+): Checked<readonly CheckedPick[]> {
   const picks: CheckedPick[] = [];
   const seen = new Set<number>();
-  for (const [i, p] of claim.picks.entries()) {
+  for (const [i, p] of claims.entries()) {
     const field = `picks[${i}]`;
-    if (!Number.isInteger(p.index) || p.index < 0 || p.index >= count) {
+    if (
+      !Number.isInteger(p.index) ||
+      p.index < 0 ||
+      (count !== null && p.index >= count)
+    ) {
       return no(
         refuse(
           `${field}.index`,
           'invalid_pick',
-          `index is a session number from 0 to ${count - 1}.`,
+          count === null
+            ? 'index is a session number, 0 or more.'
+            : `index is a session number from 0 to ${count - 1}.`,
         ),
       );
     }
@@ -477,29 +512,19 @@ export function checkRoutine(
         ),
       );
     }
-    const pickMin = parseRoutineTime(p.time);
-    if (pickMin === null) {
+    const startMin = parseRoutineTime(p.time);
+    if (startMin === null) {
       return no(refuse(`${field}.time`, 'invalid_pick', TIME_MESSAGE));
     }
     picks.push({
       index: p.index,
       day: p.date,
-      startMin: pickMin,
+      startMin,
       stylistId:
         p.stylistId === null || p.stylistId.trim() === '' ? null : p.stylistId,
     });
   }
-
-  return ok({
-    dryRun: claim.dryRun,
-    frequency,
-    count,
-    first,
-    days,
-    startMin,
-    paymentPlan,
-    picks,
-  });
+  return ok(picks);
 }
 
 // ------------------------------------------------------------ money
@@ -558,6 +583,8 @@ export interface ManageClaim {
   readonly stylistId: string | null;
   /** RESUME's optional new frequency (never CUSTOM). */
   readonly frequency: string | null;
+  /** EXTEND, PAUSE and RESUME: the alternatives chosen for busy sessions. */
+  readonly picks: readonly PickClaim[];
   /** EXTEND: how many (not CUSTOM), or the days (CUSTOM). */
   readonly sessions: number | null;
   readonly dates: readonly string[] | null;
@@ -581,12 +608,14 @@ export type CheckedManage =
       readonly count: number;
       /** CUSTOM only. */
       readonly days: readonly TradingDay[] | null;
+      readonly picks: readonly CheckedPick[];
     }
   | {
       readonly action: 'PAUSE';
       readonly until: TradingDay;
       readonly reason: PauseReason | null;
       readonly note: string | null;
+      readonly picks: readonly CheckedPick[];
     }
   | {
       readonly action: 'RESUME';
@@ -594,6 +623,7 @@ export type CheckedManage =
       readonly frequency: Cadence | null;
       readonly startMin: number | null;
       readonly stylistId: string | null;
+      readonly picks: readonly CheckedPick[];
     };
 
 /** What a pause note may be: 1 to 200 characters, as the column's CHECK. */
@@ -601,7 +631,8 @@ export const PAUSE_NOTE_MAX = 200;
 
 /**
  * The PATCH body on its own. `frequency` is the routine's, from its row: it
- * decides whether EXTEND takes a count or days.
+ * decides whether EXTEND takes a count or days. `today` is the branch's day,
+ * for the picks.
  *
  * Only the shape is checked here. Whether the session is locked, the routine
  * active, the pause short enough or the extend small enough depends on the
@@ -610,6 +641,7 @@ export const PAUSE_NOTE_MAX = 200;
 export function checkManage(
   claim: ManageClaim,
   frequency: Frequency,
+  today: TradingDay,
 ): Checked<CheckedManage> {
   if (!(ROUTINE_ACTIONS as readonly string[]).includes(claim.action)) {
     return no(
@@ -620,6 +652,24 @@ export function checkManage(
       ),
     );
   }
+
+  // Only the actions that plan new dates take picks (D4).
+  const plansDates =
+    claim.action === 'EXTEND' ||
+    claim.action === 'PAUSE' ||
+    claim.action === 'RESUME';
+  if (!plansDates && claim.picks.length > 0) {
+    return no(
+      refuse(
+        'picks',
+        'invalid_pick',
+        'Only EXTEND, PAUSE and RESUME take picks.',
+      ),
+    );
+  }
+  const checkedPicks = checkPicks(claim.picks, today, null);
+  if (checkedPicks.kind === 'refused') return checkedPicks;
+  const picks = checkedPicks.value;
 
   switch (claim.action) {
     case 'SKIP': {
@@ -700,6 +750,7 @@ export function checkManage(
           action: 'EXTEND',
           count: dates.length,
           days: [...dates].sort(),
+          picks,
         });
       }
       if (claim.dates !== null || claim.sessions === null) {
@@ -713,7 +764,12 @@ export function checkManage(
       }
       // The range (1 to 6, and 6 still to come at most) is checkExtend's,
       // because the second half needs the rows.
-      return ok({ action: 'EXTEND', count: claim.sessions, days: null });
+      return ok({
+        action: 'EXTEND',
+        count: claim.sessions,
+        days: null,
+        picks,
+      });
     }
 
     case 'PAUSE': {
@@ -754,11 +810,12 @@ export function checkManage(
         until: claim.until,
         reason,
         note: note === '' ? null : note,
+        picks,
       });
     }
 
     default:
-      return checkResume(claim);
+      return checkResume(claim, picks);
   }
 }
 
@@ -767,7 +824,10 @@ export function checkManage(
  * time or stylist, each checked as the create checks it. Nothing sent is a
  * plain resume. The switch itself is all or nothing when it is booked.
  */
-function checkResume(claim: ManageClaim): Checked<CheckedManage> {
+function checkResume(
+  claim: ManageClaim,
+  picks: readonly CheckedPick[],
+): Checked<CheckedManage> {
   let frequency: Cadence | null = null;
   if (claim.frequency !== null) {
     if (
@@ -810,6 +870,7 @@ function checkResume(claim: ManageClaim): Checked<CheckedManage> {
     frequency,
     startMin,
     stylistId: claim.stylistId,
+    picks,
   });
 }
 

@@ -195,7 +195,8 @@ export type RuleRefusalCode =
   | 'invalid_extend'
   | 'too_many_sessions'
   | 'reschedule_out_of_range'
-  | 'session_day_taken';
+  | 'session_day_taken'
+  | 'invalid_pick';
 
 export interface RuleRefusal {
   readonly field: string;
@@ -388,14 +389,24 @@ export function replanFrom(input: {
   }
 }
 
+/** The two cadences that live on a weekday. */
+const WEEK_CADENCES: ReadonlySet<Frequency> = new Set<Frequency>([
+  'WEEKLY',
+  'EVERY_2_WEEKS',
+]);
+
 /**
  * RESUME: the remaining sessions, planned again from the first bookable day.
  *
  * The Figma's "Customize first" may switch the frequency (never to CUSTOM,
  * which needs its own dates). With no switch, or a switch to the same
- * frequency, this is replanFrom as it is. With a new frequency the cadence
- * restarts on `from` itself: the old weekday or day of the month belonged
- * to the old cadence, and the customer is choosing a new one now.
+ * frequency, this is replanFrom as it is.
+ *
+ * A switch between WEEKLY and EVERY_2_WEEKS KEEPS THE ROUTINE'S WEEKDAY, as
+ * a plain resume does: the Figma shows "Same time slot: 4:30 PM, Sunday",
+ * so a Sunday routine every 2 weeks is still on Sundays. Any other switch
+ * starts its cadence on `from` itself: a daily or monthly cadence has no
+ * weekday to keep, and the customer is choosing a new one now.
  *
  * The count is kept either way (D6). A new time or stylist does not change
  * the days, so it is not an input here: the caller books every session at
@@ -412,9 +423,13 @@ export function resumeDays(input: {
 }): PlannedDay[] {
   const switched =
     input.newFrequency !== null && input.newFrequency !== input.frequency;
+  const keepsWeekday =
+    switched &&
+    WEEK_CADENCES.has(input.frequency) &&
+    WEEK_CADENCES.has(input.newFrequency);
   return replanFrom({
     frequency: switched ? input.newFrequency : input.frequency,
-    anchor: switched ? input.from : input.anchor,
+    anchor: switched && !keepsWeekday ? input.from : input.anchor,
     remaining: input.remaining,
     from: input.from,
     isOpen: input.isOpen,
@@ -427,6 +442,91 @@ export function resumeDays(input: {
  */
 export function beyondHorizon(day: TradingDay, today: TradingDay): boolean {
   return daysBetween(today, day) > BOOKING_HORIZON_DAYS;
+}
+
+// ------------------------------------------------------------ picks
+
+/** One session as it will be booked: its day, its time, its stylist. */
+export interface SessionSlot {
+  /** The session's number in the routine (series_occurrence.index). */
+  readonly index: number;
+  readonly day: TradingDay;
+  readonly startMin: number;
+  readonly staffId: string;
+  /** The customer chose this one from the alternatives (D4). */
+  readonly picked: boolean;
+}
+
+/** A checked pick, as the contract hands it over. */
+export interface PickChoice {
+  readonly index: number;
+  readonly day: TradingDay;
+  readonly startMin: number;
+  /** Null keeps the session's stylist. */
+  readonly stylistId: string | null;
+}
+
+/**
+ * D4: the customer's chosen alternatives, laid over what the action plans.
+ *
+ * Every pick must name a session this action plans (the create's sessions,
+ * EXTEND's new ones, the ones PAUSE and RESUME move); anything else is
+ * invalid_pick. Two sessions of a routine never share a day, so a pick onto
+ * another session's day is session_day_taken. Whether the picked slot is
+ * really free is the availability engine's answer, asked afterwards like
+ * for every other session.
+ */
+export function applyPicks(
+  planned: readonly SessionSlot[],
+  picks: readonly PickChoice[],
+  /** Days held by sessions this action does not plan (done, locked, kept). */
+  otherDays: readonly TradingDay[] = [],
+):
+  | { readonly kind: 'ok'; readonly slots: SessionSlot[] }
+  | { readonly kind: 'refused'; readonly refusal: RuleRefusal } {
+  const known = new Set(planned.map((s) => s.index));
+  for (const [i, p] of picks.entries()) {
+    if (!known.has(p.index)) {
+      return {
+        kind: 'refused',
+        refusal: refuse(
+          `picks[${i}].index`,
+          'invalid_pick',
+          `Session ${p.index} is not one this change plans.`,
+        ),
+      };
+    }
+  }
+
+  const chosen = new Map(picks.map((p) => [p.index, p]));
+  const slots = planned.map((s): SessionSlot => {
+    const p = chosen.get(s.index);
+    if (p === undefined) return s;
+    return {
+      index: s.index,
+      day: p.day,
+      startMin: p.startMin,
+      staffId: p.stylistId ?? s.staffId,
+      picked: true,
+    };
+  });
+
+  const taken = new Set(otherDays);
+  for (const s of [...slots].sort((a, b) => a.index - b.index)) {
+    if (taken.has(s.day)) {
+      const at = picks.findIndex((p) => p.index === s.index);
+      return {
+        kind: 'refused',
+        refusal: refuse(
+          at === -1 ? 'picks' : `picks[${at}].date`,
+          'session_day_taken',
+          'Another session of this routine is already on that day.',
+        ),
+      };
+    }
+    taken.add(s.day);
+  }
+  return { kind: 'ok', slots };
 }
 
 // ------------------------------------------------------------ the lock

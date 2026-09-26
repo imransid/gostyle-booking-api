@@ -5,7 +5,8 @@ import {
   cancelHistoryReason,
   cancelReasonFromHistory,
   checkCancel,
-  checkManage,
+  checkManage as checkManageOn,
+  checkPicks,
   checkRoutine,
   checkRoutineMoney,
   isTradingDay,
@@ -15,10 +16,16 @@ import {
   refusalStatus,
   toRoutineStatus,
   type ManageClaim,
+  type PickClaim,
   type RoutineClaim,
 } from './mobile-series-contract';
 import { NO_PRODUCTS } from './mobile-products';
-import { CANCEL_REASONS, PAUSE_REASONS, routineMoney } from './mobile-series';
+import {
+  CANCEL_REASONS,
+  PAUSE_REASONS,
+  routineMoney,
+  type Frequency,
+} from './mobile-series';
 
 const TODAY = '2026-10-01';
 
@@ -460,8 +467,13 @@ const manage = (over: Partial<ManageClaim> = {}): ManageClaim => ({
   reason: null,
   note: null,
   frequency: null,
+  picks: [],
   ...over,
 });
+
+/** The PATCH check, on this spec's branch day. */
+const checkManage = (claim: ManageClaim, frequency: Frequency) =>
+  checkManageOn(claim, frequency, TODAY);
 
 const manageCode = (
   claim: ManageClaim,
@@ -537,7 +549,7 @@ describe('checkManage', () => {
         checkManage(manage({ action: 'EXTEND', sessions: 2 }), 'WEEKLY'),
       ).toEqual({
         kind: 'ok',
-        value: { action: 'EXTEND', count: 2, days: null },
+        value: { action: 'EXTEND', count: 2, days: null, picks: [] },
       });
     });
 
@@ -560,6 +572,7 @@ describe('checkManage', () => {
           action: 'EXTEND',
           count: 2,
           days: ['2026-11-02', '2026-11-09'],
+          picks: [],
         },
       });
     });
@@ -603,6 +616,7 @@ describe('checkManage', () => {
           until: '2026-10-30',
           reason: 'TRAVEL',
           note: 'Away',
+          picks: [],
         },
       });
     });
@@ -626,6 +640,7 @@ describe('checkManage', () => {
         until: '2026-10-30',
         reason: null,
         note: null,
+        picks: [],
       });
     });
 
@@ -665,6 +680,7 @@ describe('checkManage', () => {
           frequency: null,
           startMin: null,
           stylistId: null,
+          picks: [],
         },
       });
     });
@@ -687,6 +703,7 @@ describe('checkManage', () => {
           frequency: 'EVERY_2_WEEKS',
           startMin: 690,
           stylistId: 'rana',
+          picks: [],
         },
       });
     });
@@ -722,6 +739,98 @@ describe('checkManage', () => {
     ])('checks %j like the create', (over, code, field) => {
       const r = checkManage(manage({ action: 'RESUME', ...over }), 'WEEKLY');
       expect(r.kind === 'refused' && r.refusal).toMatchObject({ code, field });
+    });
+  });
+});
+
+describe('picks on EXTEND, PAUSE and RESUME (D4)', () => {
+  const pick: PickClaim = {
+    index: 7,
+    date: '2026-11-25',
+    time: '16:30',
+    stylistId: null,
+  };
+  const withPick = (over: Partial<ManageClaim>) =>
+    checkManage(manage({ picks: [pick], ...over }), 'WEEKLY');
+  const want = [
+    { index: 7, day: '2026-11-25', startMin: 990, stylistId: null },
+  ];
+
+  it('EXTEND takes them', () => {
+    const r = withPick({ action: 'EXTEND', sessions: 2 });
+    expect(r.kind === 'ok' && r.value).toMatchObject({ picks: want });
+  });
+
+  it('PAUSE takes them (the moved sessions are booked right away)', () => {
+    const r = withPick({ action: 'PAUSE', until: '2026-11-20' });
+    expect(r.kind === 'ok' && r.value).toMatchObject({ picks: want });
+  });
+
+  it('RESUME takes them, with or without "Customize first"', () => {
+    expect(withPick({ action: 'RESUME' })).toMatchObject({
+      kind: 'ok',
+      value: { picks: want },
+    });
+    expect(
+      withPick({ action: 'RESUME', frequency: 'EVERY_2_WEEKS', time: '16:30' }),
+    ).toMatchObject({ kind: 'ok', value: { picks: want } });
+  });
+
+  it.each(['SKIP', 'RESCHEDULE'])('%s refuses them', (action) => {
+    const r = withPick({
+      action,
+      sessionIds: ['occ-1'],
+      sessionId: 'occ-1',
+      date: '2026-10-12',
+      time: '11:00',
+    });
+    expect(r.kind === 'refused' && r.refusal).toMatchObject({
+      field: 'picks',
+      code: 'invalid_pick',
+    });
+  });
+
+  it.each<[Partial<PickClaim>, string]>([
+    [{ index: -1 }, 'picks[0].index'],
+    [{ index: 1.5 }, 'picks[0].index'],
+    [{ date: '2027-01-15' }, 'picks[0].date'],
+    [{ date: 'tomorrow' }, 'picks[0].date'],
+    [{ time: '08:00' }, 'picks[0].time'],
+  ])('refuses a bad pick %j, like the create', (over, field) => {
+    const r = checkManage(
+      manage({ action: 'EXTEND', sessions: 2, picks: [{ ...pick, ...over }] }),
+      'WEEKLY',
+    );
+    expect(r.kind === 'refused' && r.refusal).toMatchObject({
+      field,
+      code: 'invalid_pick',
+    });
+  });
+
+  it('refuses two picks for one session', () => {
+    const r = checkManage(
+      manage({ action: 'RESUME', picks: [pick, { ...pick, time: '17:00' }] }),
+      'WEEKLY',
+    );
+    expect(r.kind === 'refused' && r.refusal).toMatchObject({
+      field: 'picks[1].index',
+      code: 'invalid_pick',
+    });
+  });
+});
+
+describe('checkPicks', () => {
+  it('the create knows its range; an action checks its range on the rows', () => {
+    const p: PickClaim = {
+      index: 6,
+      date: '2026-10-20',
+      time: '18:00',
+      stylistId: null,
+    };
+    expect(checkPicks([p], TODAY, 6).kind).toBe('refused');
+    expect(checkPicks([p], TODAY, null)).toEqual({
+      kind: 'ok',
+      value: [{ index: 6, day: '2026-10-20', startMin: 1080, stylistId: null }],
     });
   });
 });

@@ -7,6 +7,7 @@ import {
   PAUSE_MAX_DAYS,
   ROUTINE_RULES,
   actionRefusal,
+  applyPicks,
   beyondHorizon,
   cancelSummary,
   changeRefusal,
@@ -410,13 +411,61 @@ describe('resumeDays (RESUME, "Customize first")', () => {
     );
   });
 
-  it('a new frequency restarts its cadence on the resume day itself', () => {
+  it('WEEKLY to EVERY_2_WEEKS keeps the weekday: a Tuesday routine stays on Tuesdays', () => {
+    const planned = resumeDays({
+      ...weeklyTuesdays,
+      newFrequency: 'EVERY_2_WEEKS',
+    });
+    expect(days(planned)).toEqual(['2026-11-10', '2026-11-24', '2026-12-08']);
+    expect(planned.every((p) => weekdayOf(p.day) === 2)).toBe(true);
+  });
+
+  it('the Figma: "Same time slot: 4:30 PM, Sunday" stays on Sundays, both ways', () => {
+    const sundays = {
+      anchor: '2026-10-04',
+      remaining: ['2026-10-18', '2026-11-01'],
+      from: '2026-11-04',
+      isOpen: allOpen,
+    };
     expect(
-      days(resumeDays({ ...weeklyTuesdays, newFrequency: 'EVERY_2_WEEKS' })),
-    ).toEqual(['2026-11-05', '2026-11-19', '2026-12-03']);
+      days(
+        resumeDays({
+          ...sundays,
+          frequency: 'WEEKLY',
+          newFrequency: 'EVERY_2_WEEKS',
+        }),
+      ),
+    ).toEqual(['2026-11-08', '2026-11-22']);
+    expect(
+      days(
+        resumeDays({
+          ...sundays,
+          frequency: 'EVERY_2_WEEKS',
+          newFrequency: 'WEEKLY',
+        }),
+      ),
+    ).toEqual(['2026-11-08', '2026-11-15']);
+  });
+
+  it('any other switch starts its cadence on the resume day itself', () => {
     expect(
       days(resumeDays({ ...weeklyTuesdays, newFrequency: 'MONTHLY' })),
     ).toEqual(['2026-11-05', '2026-12-05', '2027-01-05']);
+    expect(
+      days(resumeDays({ ...weeklyTuesdays, newFrequency: 'DAILY' })),
+    ).toEqual(['2026-11-05', '2026-11-06', '2026-11-07']);
+    expect(
+      days(
+        resumeDays({
+          frequency: 'MONTHLY',
+          anchor: '2026-10-15',
+          newFrequency: 'WEEKLY',
+          remaining: ['2026-11-15', '2026-12-15'],
+          from: '2026-11-05',
+          isOpen: allOpen,
+        }),
+      ),
+    ).toEqual(['2026-11-05', '2026-11-12']);
   });
 
   it('a CUSTOM routine may switch to DAILY, which skips closed days (D3)', () => {
@@ -444,6 +493,91 @@ describe('resumeDays (RESUME, "Customize first")', () => {
     ] as const) {
       expect(resumeDays({ ...weeklyTuesdays, newFrequency })).toHaveLength(3);
     }
+  });
+});
+
+describe('applyPicks (D4)', () => {
+  const slot = (index: number, day: string) => ({
+    index,
+    day,
+    startMin: 1080,
+    staffId: 'maya',
+    picked: false,
+  });
+  const planned = [
+    slot(0, '2026-10-06'),
+    slot(1, '2026-10-13'),
+    slot(2, '2026-10-20'),
+  ];
+
+  it('no picks: the plan as it is', () => {
+    expect(applyPicks(planned, [])).toEqual({ kind: 'ok', slots: planned });
+  });
+
+  it('a pick replaces that session, and keeps its stylist unless it names one', () => {
+    const r = applyPicks(planned, [
+      { index: 1, day: '2026-10-14', startMin: 990, stylistId: null },
+      { index: 2, day: '2026-10-20', startMin: 1080, stylistId: 'rana' },
+    ]);
+    expect(r.kind === 'ok' && r.slots).toEqual([
+      planned[0],
+      {
+        index: 1,
+        day: '2026-10-14',
+        startMin: 990,
+        staffId: 'maya',
+        picked: true,
+      },
+      {
+        index: 2,
+        day: '2026-10-20',
+        startMin: 1080,
+        staffId: 'rana',
+        picked: true,
+      },
+    ]);
+  });
+
+  it('works on the numbers an action plans (EXTEND: sessions 6 and 7)', () => {
+    const extend = [slot(6, '2026-11-17'), slot(7, '2026-11-24')];
+    const r = applyPicks(
+      extend,
+      [{ index: 7, day: '2026-11-25', startMin: 1080, stylistId: null }],
+      ['2026-10-06', '2026-11-10'],
+    );
+    expect(r.kind === 'ok' && r.slots.map((s) => s.day)).toEqual([
+      '2026-11-17',
+      '2026-11-25',
+    ]);
+  });
+
+  it('refuses a pick for a session the action does not plan', () => {
+    const r = applyPicks(planned, [
+      { index: 5, day: '2026-10-21', startMin: 1080, stylistId: null },
+    ]);
+    expect(r.kind === 'refused' && r.refusal).toMatchObject({
+      field: 'picks[0].index',
+      code: 'invalid_pick',
+    });
+  });
+
+  it('refuses a pick onto the day of another session of the routine', () => {
+    const r = applyPicks(planned, [
+      { index: 2, day: '2026-10-13', startMin: 900, stylistId: null },
+    ]);
+    expect(r.kind === 'refused' && r.refusal.code).toBe('session_day_taken');
+  });
+
+  it('refuses a pick onto a day a session outside the action holds', () => {
+    const r = applyPicks(
+      [slot(6, '2026-11-17')],
+      [{ index: 6, day: '2026-11-10', startMin: 1080, stylistId: null }],
+      ['2026-11-10'],
+    );
+    expect(r.kind === 'refused' && r.refusal).toMatchObject({
+      field: 'picks[0].date',
+      code: 'session_day_taken',
+    });
   });
 });
 
