@@ -9,6 +9,8 @@ import {
   UseGuards,
   UseInterceptors,
   UsePipes,
+  Optional,
+  Patch,
 } from '@nestjs/common';
 import {
   ApiConflictResponse,
@@ -51,6 +53,9 @@ import {
   MobileSeriesEnabledGuard,
   seriesDepositPercent,
 } from './mobile-series.flag';
+import { MobileSeriesManageHandler } from '@application/commands/mobile-series-manage.handler';
+import { manageClaimFrom } from '@domain/booking/mobile-series-manage';
+import { MobileContractError } from '@application/commands/mobile-booking.error';
 
 /** One service of a session. `amount` is echoed by the app, never trusted. */
 export class RoutineServiceDto {
@@ -209,6 +214,7 @@ export class MobileSeriesController {
   constructor(
     private readonly handler: MobileSeriesHandler,
     private readonly reads: MobileSeriesReadHandler,
+    @Optional() private readonly manage?: MobileSeriesManageHandler,
   ) {}
 
   @Post()
@@ -303,6 +309,40 @@ export class MobileSeriesController {
       actorId: actor.id ?? 'anonymous',
       actorKind: actor.kind,
       actorBranchId: actor.branchId,
+    });
+  }
+
+  @Patch(':seriesId')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Change a routine',
+    description:
+      'action SKIP with session_ids: each session is cancelled as the ' +
+      "customer's own choice and shown as SKIPPED; the routine goes on. " +
+      'Only sessions still to come and outside the 24 hour lock. dry_run ' +
+      'true checks and changes nothing (answers the routine as it is). ' +
+      'RESCHEDULE, EXTEND, PAUSE and RESUME answer invalid_action for now. ' +
+      'The customer who made the routine only; anyone else is 404.',
+  })
+  @ApiOkResponse({ description: 'The routine, after the change.' })
+  @ApiNotFoundResponse({ description: 'No such routine, or not yours.' })
+  @ApiUnprocessableEntityResponse({ description: 'The contract envelope.' })
+  change(
+    @Param('seriesId') seriesId: string,
+    @Body() body: unknown,
+    @CurrentActor() actor: Actor,
+  ): Promise<MobileSeriesView> {
+    if (this.manage === undefined) {
+      throw MobileContractError.notFoundBooking();
+    }
+    return this.manage.execute({
+      seriesId,
+      who: {
+        actorId: actor.id ?? 'anonymous',
+        actorKind: actor.kind,
+        actorBranchId: actor.branchId,
+      },
+      claim: manageClaimFrom(body),
     });
   }
 }
