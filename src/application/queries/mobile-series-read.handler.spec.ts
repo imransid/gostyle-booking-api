@@ -353,3 +353,121 @@ describe('the hub', () => {
     expect(hub.sessions).toHaveLength(6);
   });
 });
+
+/**
+ * THE BUSINESS WEB MOVES A ROUTINE VISIT.
+ *
+ * Both desk paths change the SAME booking row in place and leave the
+ * series_occurrence as it was (plan K17):
+ *   - drag on the calendar, same stylist, same day: RescheduleRepository
+ *     .shiftInPlace rewrites start_at and start_minute;
+ *   - drag to another day or stylist, and the reschedule route: a hold,
+ *     then RescheduleRepository.move rewrites trading_day, start_at,
+ *     start_minute, the item's staff_id and move_count (and, when a late
+ *     move now needs a deposit, status pending_payment).
+ * The booking id never changes, so the occurrence still points at it.
+ *
+ * So the visit must stay in the routine at its NEW time: the hub reads the
+ * booking's own day, time and stylist, never the occurrence's plan.
+ */
+describe('the desk moves or reschedules a routine visit', () => {
+  /** Session 4 (booked for 2026-10-27 16:30 with maya), as the desk left it. */
+  const moved = (over: Record<string, unknown>) =>
+    harness({
+      bookings: [
+        ...BOOKINGS.slice(0, 4),
+        { ...booking('b-4', '2026-10-27', 'confirmed'), ...over },
+      ],
+    });
+
+  it('dragged to 18:00 the same day: still in the routine, at 18:00', async () => {
+    const { handler } = moved({ startMinute: 1080 });
+    const hub = await handler.read(SERIES, owner, NOW);
+    const s = hub.sessions[4]!;
+    expect(s).toMatchObject({
+      id: 'occ-4',
+      index: 4,
+      booking_id: 'b-4',
+      date: '2026-10-27',
+      start_time: '2026-10-27T18:00:00+06:00',
+      end_time: '2026-10-27T18:45:00+06:00',
+      state: 'SCHEDULED',
+      can_skip: true,
+      can_reschedule: true,
+    });
+    expect(hub.counts).toMatchObject({ total: 5, remaining: 3, cancelled: 0 });
+    // The routine's own time is unchanged: one visit moved, not the routine.
+    expect(hub.time).toBe('16:30');
+  });
+
+  it('rescheduled to another day and another stylist: the new day, the new stylist', async () => {
+    const { handler } = moved({
+      tradingDay: new Date('2026-10-29T00:00:00Z'),
+      startMinute: 900,
+      items: [
+        {
+          serviceId: toUuid('haircut-finish'),
+          serviceName: 'Haircut & finish',
+          staffId: toUuid('rana'),
+        },
+      ],
+    });
+    const hub = await handler.read(SERIES, owner, NOW);
+    expect(hub.sessions[4]).toMatchObject({
+      booking_id: 'b-4',
+      date: '2026-10-29',
+      start_time: '2026-10-29T15:00:00+06:00',
+      state: 'SCHEDULED',
+    });
+    // Rana is not on the fake roster, so her id comes back unresolved; what
+    // matters is that it is hers, not the regular stylist's.
+    expect(hub.sessions[4]!.stylist?.id).toBe(toUuid('rana'));
+    expect(hub.stylist?.id).toBe('maya');
+  });
+
+  it('moved earlier than the session before it: the next session follows the real dates', async () => {
+    // Session 4 moved to the 21st, a day after session 3 (20th, 16:30).
+    // Moving session 3 to the 22nd makes 4 the next one, by date.
+    const { handler } = harness({
+      bookings: [
+        ...BOOKINGS.slice(0, 3),
+        {
+          ...booking('b-3', '2026-10-22', 'confirmed'),
+        },
+        { ...booking('b-4', '2026-10-21', 'confirmed') },
+      ],
+    });
+    const hub = await handler.read(SERIES, owner, NOW);
+    expect(hub.next_session?.index).toBe(4);
+    expect(hub.sessions.map((s) => s.index)).toEqual([0, 1, 2, 3, 4, 5]);
+  });
+
+  it('moved into the next 24 hours: locked, as any session there is', async () => {
+    const { handler } = moved({
+      tradingDay: new Date('2026-10-20T00:00:00Z'),
+      startMinute: 1200,
+    });
+    const hub = await handler.read(SERIES, owner, NOW);
+    expect(hub.sessions[4]).toMatchObject({
+      date: '2026-10-20',
+      state: 'CONFIRMED',
+      locked: true,
+      can_skip: false,
+      can_reschedule: false,
+    });
+  });
+
+  it('a late move that now asks for a deposit (pending_payment) stays a session to come', async () => {
+    const { handler } = moved({ status: 'pending_payment', startMinute: 1080 });
+    const hub = await handler.read(SERIES, owner, NOW);
+    expect(hub.sessions[4]!.state).toBe('SCHEDULED');
+    expect(hub.counts).toMatchObject({ remaining: 3, cancelled: 0 });
+  });
+
+  it("the old booking's plan is never read once the visit is booked", async () => {
+    // The occurrence still says 2026-10-27 16:30. The booking says 18:00.
+    const { handler } = moved({ startMinute: 1080 });
+    const hub = await handler.read(SERIES, owner, NOW);
+    expect(hub.sessions[4]!.start_time).not.toContain('16:30');
+  });
+});
