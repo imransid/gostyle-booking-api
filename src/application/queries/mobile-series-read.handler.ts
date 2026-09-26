@@ -119,7 +119,7 @@ export interface MobileSeriesView {
 }
 
 /** The rows the hub needs, as Prisma answers them. */
-interface SeriesRowLoaded {
+export interface SeriesRowLoaded {
   readonly id: string;
   readonly tenantId: string | null;
   readonly branchId: string;
@@ -292,6 +292,22 @@ export class MobileSeriesReadHandler {
     );
   }
 
+  /**
+   * What a change the app asks for (step 6) is checked against: the routine
+   * and each session's facts, built by the same `factsOf` as the hub, so
+   * what the hub offers and what a change is allowed always agree. Null
+   * when the caller may not see it: the hub's own 404.
+   */
+  async factsFor(
+    seriesId: string,
+    who: SeriesReader,
+  ): Promise<{ series: SeriesRowLoaded; facts: SessionFacts[] } | null> {
+    const series = await this.load(seriesId);
+    if (series === null || !this.visible(series, who)) return null;
+    const { facts } = await this.factsOf(series);
+    return { series, facts };
+  }
+
   private async load(seriesId: string): Promise<SeriesRowLoaded | null> {
     // A malformed id is 404, not a 500 from the uuid cast.
     if (!UUID_RE.test(seriesId)) return null;
@@ -317,10 +333,16 @@ export class MobileSeriesReadHandler {
     return false;
   }
 
-  private async present(
-    series: SeriesRowLoaded,
-    nowMs: number,
-  ): Promise<MobileSeriesView> {
+  /**
+   * Each session's facts, from its rows: its booking when there is one
+   * (with who marked a no-show), else the planned day and minute. ONE
+   * place, so the hub and every change the app asks for (SKIP, step 6)
+   * judge the same facts.
+   */
+  private async factsOf(series: SeriesRowLoaded): Promise<{
+    facts: SessionFacts[];
+    byId: Map<string, BookingLoaded>;
+  }> {
     const bookingIds = series.occurrences
       .map((o) => o.bookingId)
       .filter((id): id is string => id !== null);
@@ -377,6 +399,14 @@ export class MobileSeriesReadHandler {
         noShowBy: b?.status === 'no_show' ? (noShowBy.get(b.id) ?? null) : null,
       };
     });
+    return { facts, byId };
+  }
+
+  private async present(
+    series: SeriesRowLoaded,
+    nowMs: number,
+  ): Promise<MobileSeriesView> {
+    const { facts, byId } = await this.factsOf(series);
 
     const { index, staff, services } = await this.namesFor(
       series,

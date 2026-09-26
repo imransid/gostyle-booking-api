@@ -156,7 +156,7 @@ const RULES_VIEW: Readonly<Record<string, number>> = Object.fromEntries(
   Object.entries(ROUTINE_RULES).map(([k, v]) => [snake(k), v]),
 );
 
-function refused(r: SeriesRefusal): MobileContractError {
+export function refused(r: SeriesRefusal): MobileContractError {
   return new MobileContractError(
     [
       {
