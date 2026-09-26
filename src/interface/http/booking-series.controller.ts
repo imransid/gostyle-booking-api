@@ -27,6 +27,7 @@ import {
   type SeriesPanelView,
 } from '@application/commands/series.handler';
 import { ResourceIdPipe } from './resource-id.pipe';
+import { DeskOnly } from '../../auth/desk-only.decorator';
 import { PatternDto, EndDto, toPattern, toEnd } from './series.controller';
 import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
 import { SERIES_HORIZON_DAYS } from '@domain/booking/recurrence';
@@ -104,9 +105,13 @@ export class SeriesPreviewDto {
  * of the parameterised ones, which is the rule route-order.spec.ts enforces.
  * Here the two do not actually collide — preview is a POST and the panel a
  * GET — but relying on that is relying on nobody ever adding GET preview.
+ *
+ * @DeskOnly, like SeriesController and the board beside it: the panel reads
+ * any series by id, and preview takes a `customerId` from the body.
  */
 @ApiTags('series')
 @Controller('bookings/series')
+@DeskOnly()
 export class BookingSeriesController {
   constructor(
     private readonly preview: SeriesPreviewHandler,

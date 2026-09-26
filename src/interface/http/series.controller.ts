@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { BranchId } from './branch.decorator';
 import { ResourceIdPipe } from './resource-id.pipe';
+import { DeskOnly } from '../../auth/desk-only.decorator';
 import {
   ApiCreatedResponse,
   ApiNotFoundResponse,
@@ -253,8 +254,14 @@ export class ApplyPatternDto {
  * both spellings reach the SAME handlers -- no second controller, no
  * forwarding, nothing to drift. The aggregate path stays because existing
  * clients use it.
+ *
+ * @DeskOnly on all of it. Create took `customerId` from the body and every
+ * other route acted on any series id, so a customer token could make a
+ * series for someone else, or pause, end, skip or re-pattern theirs. The
+ * desk sends staff tokens and is unaffected.
  */
 @Controller(['series', 'bookings/series-admin'])
+@DeskOnly()
 export class SeriesController {
   constructor(
     private readonly create: CreateSeriesHandler,
