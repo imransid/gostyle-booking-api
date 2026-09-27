@@ -505,6 +505,72 @@ export class MobileSeriesRepository {
   }
 
   /**
+   * D5: only visits after this day count toward two misses in a row. Set
+   * by pauseForMisses, so a resume does not pause the routine again at once
+   * for the same two misses. Null: every visit counts.
+   */
+  async missStreakAfter(seriesId: string): Promise<string | null> {
+    const row = await this.prisma.bookingSeries.findUnique({
+      where: { id: seriesId },
+      select: { missStreakAfter: true },
+    });
+    return row === null || row.missStreakAfter === null
+      ? null
+      : row.missStreakAfter.toISOString().slice(0, 10);
+  }
+
+  /**
+   * Plan E.4 step 2 (D5, R11): two misses in a row pause the routine, with
+   * no end date and reason missed_twice, and remember the second miss's
+   * day. CLAIMED IN ONE UPDATE: only an active routine pauses, and only
+   * once, whichever copy of the job gets there first.
+   */
+  async pauseForMisses(
+    seriesId: string,
+    lastMissDay: string,
+  ): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.bookingSeries.updateMany({
+        where: { id: seriesId, source: 'mobile', status: 'active' },
+        data: {
+          status: 'paused',
+          pausedUntil: null,
+          pauseReason: 'missed_twice',
+          pauseNote: null,
+          missStreakAfter: date(lastMissDay),
+        },
+      });
+      if (claimed.count !== 1) return false;
+      await tx.eventOutbox.create({
+        data: {
+          aggregateType: 'series',
+          aggregateId: seriesId,
+          eventType: 'series.paused',
+          payload: {
+            source: 'mobile',
+            by: 'job',
+            reason: 'missed_twice',
+            after: lastMissDay,
+          },
+        },
+      });
+      return true;
+    });
+  }
+
+  /**
+   * A visit the job released (its booking is cancelled): it waits, planned
+   * and with nothing booked, for the resume to book it again. The count is
+   * kept (D6).
+   */
+  async unlinkReleased(seriesId: string, occurrenceId: string): Promise<void> {
+    await this.prisma.seriesOccurrence.updateMany({
+      where: { id: occurrenceId, seriesId },
+      data: { state: 'planned', bookingId: null },
+    });
+  }
+
+  /**
    * EXTEND (step 6): more sessions on an existing app routine, in one
    * transaction, linked exactly as `create` links them (series_id,
    * booking_type and the `recurring` channel, scoped to the customer). The

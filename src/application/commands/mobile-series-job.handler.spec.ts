@@ -1,6 +1,7 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { MobileSeriesJobHandler } from './mobile-series-job.handler';
 import {
+  MISSED_RELEASE_REASON,
   REMINDER_EVENT,
   reminderEventId,
 } from '@domain/booking/mobile-series-job';
@@ -14,6 +15,7 @@ const visit = (
   index: number,
   startAtMs: number,
   bookingStatus: string | null = 'confirmed',
+  noShowBy: 'staff' | 'system' | null = null,
 ) => ({
   id,
   index,
@@ -21,7 +23,7 @@ const visit = (
   startAtMs,
   state: bookingStatus === null ? 'planned' : 'materialised',
   bookingStatus,
-  noShowBy: null,
+  noShowBy,
 });
 
 const routine = (
@@ -31,8 +33,12 @@ const routine = (
 ) => ({ id, customerId: CUSTOMER, status, pausedUntil });
 
 /** What one routine looks like to the job: its rows and its facts. */
-const loaded = (visits: ReturnType<typeof visit>[]) => ({
+const loaded = (
+  visits: ReturnType<typeof visit>[],
+  status: 'active' | 'paused' = 'active',
+) => ({
   series: {
+    status,
     occurrences: visits.map((v) => ({
       id: v.id,
       bookingId: v.bookingStatus === null ? null : `b-${v.id}`,
@@ -50,6 +56,9 @@ function build(
     openRoutines: vi.fn().mockResolvedValue(routines),
     resumeByJob: vi.fn().mockResolvedValue(true),
     completeByJob: vi.fn().mockResolvedValue(true),
+    missStreakAfter: vi.fn().mockResolvedValue(null),
+    pauseForMisses: vi.fn().mockResolvedValue(true),
+    unlinkReleased: vi.fn().mockResolvedValue(undefined),
     writeEvents: vi.fn((...args: [string, readonly unknown[]]) =>
       Promise.resolve(args[1].length),
     ),
@@ -57,8 +66,15 @@ function build(
   const reads = {
     factsForJob: vi.fn((id: string) => Promise.resolve(byId[id] ?? null)),
   };
-  const job = new MobileSeriesJobHandler(repo as never, reads as never);
-  return { job, repo, reads };
+  const lifecycle = {
+    transition: vi.fn().mockResolvedValue({ kind: 'transitioned' }),
+  };
+  const job = new MobileSeriesJobHandler(
+    repo as never,
+    reads as never,
+    lifecycle as never,
+  );
+  return { job, repo, reads, lifecycle };
 }
 
 describe('the hourly job, 8a (step 8)', () => {
@@ -83,7 +99,7 @@ describe('the hourly job, 8a (step 8)', () => {
     const { job, repo } = build([routine('done')], {
       done: loaded([
         visit('o1', 0, NOW - 300 * HOUR, 'completed'),
-        visit('o2', 1, NOW - 100 * HOUR, 'no_show'),
+        visit('o2', 1, NOW - 100 * HOUR, 'no_show', 'staff'),
       ]),
     });
     const report = await job.run(NOW);
@@ -119,9 +135,7 @@ describe('the hourly job, 8a (step 8)', () => {
   });
 
   it('counts a routine that fails, and still runs the others', async () => {
-    const { job, reads, repo } = build([routine('bad'), routine('good')], {
-      good: loaded([visit('o1', 0, NOW + 30 * HOUR)]),
-    });
+    const { job, reads, repo } = build([routine('bad'), routine('good')], {});
     reads.factsForJob.mockImplementation((id: string) =>
       id === 'bad'
         ? Promise.reject(new Error('boom'))
@@ -136,5 +150,111 @@ describe('the hourly job, 8a (step 8)', () => {
     const { job, repo } = build([], {});
     repo.keepDeskAway.mockResolvedValue(2);
     expect((await job.run(NOW)).deskKeptAway).toBe(2);
+  });
+});
+
+describe('the hourly job, 8b: two misses in a row (D5, D9)', () => {
+  const before = process.env.ROUTINE_COUNT_AUTO_NO_SHOWS;
+  afterEach(() => {
+    process.env.ROUTINE_COUNT_AUTO_NO_SHOWS = before;
+  });
+
+  /** Two misses, then a visit in 5 days, one in 12 hours, one far off. */
+  const missedTwice = (by: 'staff' | 'system' = 'staff') =>
+    loaded([
+      visit('m1', 0, NOW - 200 * HOUR, 'no_show', by),
+      visit('m2', 1, NOW - 30 * HOUR, 'no_show', by),
+      visit('next', 2, NOW + 120 * HOUR),
+      visit('locked', 3, NOW + 12 * HOUR),
+      visit('far', 4, NOW + 2200 * HOUR, null),
+    ]);
+
+  it('pauses the routine and releases each booked visit more than 24 hours away', async () => {
+    const { job, repo, lifecycle } = build([routine('r')], {
+      r: missedTwice(),
+    });
+    const report = await job.run(NOW);
+    const secondMiss = new Date(NOW - 30 * HOUR).toISOString().slice(0, 10);
+    expect(repo.pauseForMisses).toHaveBeenCalledWith('r', secondMiss);
+    // Only "next": "locked" stays booked, "far" has nothing booked.
+    expect(lifecycle.transition).toHaveBeenCalledTimes(1);
+    expect(lifecycle.transition).toHaveBeenCalledWith({
+      bookingId: 'b-next',
+      to: 'cancelled',
+      actor: 'customer',
+      actorId: CUSTOMER,
+      reason: MISSED_RELEASE_REASON,
+      initiatedBy: 'salon',
+    });
+    expect(repo.unlinkReleased).toHaveBeenCalledWith('r', 'next');
+    expect(report).toMatchObject({ pausedForMisses: 1, released: 1 });
+  });
+
+  it("the sweeper's own no-shows count only when the switch says so", async () => {
+    process.env.ROUTINE_COUNT_AUTO_NO_SHOWS = 'false';
+    const off = build([routine('r')], { r: missedTwice('system') });
+    await off.job.run(NOW);
+    expect(off.repo.pauseForMisses).not.toHaveBeenCalled();
+
+    process.env.ROUTINE_COUNT_AUTO_NO_SHOWS = 'true';
+    const on = build([routine('r')], { r: missedTwice('system') });
+    await on.job.run(NOW);
+    expect(on.repo.pauseForMisses).toHaveBeenCalledTimes(1);
+  });
+
+  it('a visit that happened breaks the streak', async () => {
+    const { job, repo } = build([routine('r')], {
+      r: loaded([
+        visit('m1', 0, NOW - 300 * HOUR, 'no_show', 'staff'),
+        visit('ok', 1, NOW - 200 * HOUR, 'completed'),
+        visit('m2', 2, NOW - 30 * HOUR, 'no_show', 'staff'),
+        visit('next', 3, NOW + 120 * HOUR),
+      ]),
+    });
+    await job.run(NOW);
+    expect(repo.pauseForMisses).not.toHaveBeenCalled();
+  });
+
+  it('two misses already counted do not pause it again after a resume', async () => {
+    const { job, repo } = build([routine('r')], { r: missedTwice() });
+    repo.missStreakAfter.mockResolvedValue(
+      new Date(NOW - 30 * HOUR).toISOString().slice(0, 10),
+    );
+    await job.run(NOW);
+    expect(repo.pauseForMisses).not.toHaveBeenCalled();
+  });
+
+  it('checks only an active routine', async () => {
+    const { job, repo } = build([routine('r', 'paused', null)], {
+      r: {
+        ...missedTwice(),
+        series: { ...missedTwice().series, status: 'paused' },
+      },
+    });
+    await job.run(NOW);
+    expect(repo.missStreakAfter).not.toHaveBeenCalled();
+  });
+
+  it('releases nothing when the other copy paused it first', async () => {
+    const { job, repo, lifecycle } = build([routine('r')], {
+      r: missedTwice(),
+    });
+    repo.pauseForMisses.mockResolvedValue(false);
+    const report = await job.run(NOW);
+    expect(lifecycle.transition).not.toHaveBeenCalled();
+    expect(report.pausedForMisses).toBe(0);
+  });
+
+  it('a booking that could not be released stays linked', async () => {
+    const { job, repo, lifecycle } = build([routine('r')], {
+      r: missedTwice(),
+    });
+    lifecycle.transition.mockResolvedValue({
+      kind: 'illegal',
+      message: 'already cancelled',
+    });
+    const report = await job.run(NOW);
+    expect(repo.unlinkReleased).not.toHaveBeenCalled();
+    expect(report).toMatchObject({ pausedForMisses: 1, released: 0 });
   });
 });

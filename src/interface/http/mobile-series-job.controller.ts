@@ -29,7 +29,8 @@ export class MobileSeriesJobController {
     description:
       'The hourly job, at once: ends the pauses whose date has come, ' +
       'completes the routines whose visits are all closed, writes the 48 ' +
-      'hour reminders, and keeps the desk job away from app routines. Desk ' +
+      'hour reminders, pauses a routine after 2 missed visits, and keeps ' +
+      'the desk job away from app routines. Desk ' +
       'only. Safe to run again.',
   })
   @ApiOkResponse({ description: 'What the run did, counted.' })
