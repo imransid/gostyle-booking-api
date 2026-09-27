@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   REMINDER_HOURS,
+  beyondHorizon,
   sessionBucket,
   type SessionFacts,
 } from './mobile-series';
@@ -74,3 +75,46 @@ export function resumeDue(pausedUntil: string | null, today: string): boolean {
  */
 export const MISSED_RELEASE_REASON =
   'Released: the routine was paused after 2 missed visits.';
+
+/** The outbox event a far-off visit becomes when its time is not free (8c). */
+export const NEEDS_ACTION_EVENT = 'series.session_needs_action';
+
+/** A UUID shaped like a version 5 one, made from a text: same text, same id. */
+function idFrom(text: string): string {
+  const hex = createHash('sha256').update(text).digest('hex');
+  const variant = ((parseInt(hex.charAt(16), 16) & 0x3) | 0x8).toString(16);
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    `5${hex.slice(13, 16)}`,
+    `${variant}${hex.slice(17, 20)}`,
+    hex.slice(20, 32),
+  ].join('-');
+}
+
+/**
+ * The "needs action" event's own id, made from the visit and its day, as
+ * reminderEventId is: one event per visit and day, whoever writes it.
+ */
+export function needsActionEventId(occurrenceId: string, day: string): string {
+  return idFrom(`${NEEDS_ACTION_EVENT}:${occurrenceId}:${day}`);
+}
+
+/**
+ * A far-off visit the diary now reaches (plan E.4 step 3, R8): planned with
+ * nothing booked, still to come, and no longer past the booking horizon.
+ * The job books it at its own day, time and stylist, or marks it "needs
+ * action" (D4: never moved silently).
+ */
+export function horizonDue(
+  s: SessionFacts,
+  nowMs: number,
+  today: string,
+): boolean {
+  return (
+    s.state === 'planned' &&
+    s.bookingStatus === null &&
+    s.startAtMs > nowMs &&
+    !beyondHorizon(s.day, today)
+  );
+}

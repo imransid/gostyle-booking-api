@@ -6,7 +6,12 @@ import {
 import { MobileSeriesRepository } from '@infrastructure/persistence/mobile-series.repository';
 import { LifecycleRepository } from '@infrastructure/persistence/lifecycle.repository';
 import { branchToday } from '@infrastructure/persistence/hold.repository';
-import { ROUTINE_COUNT_AUTO_NO_SHOWS } from '@interface/http/mobile-series.flag';
+import { TenantContext } from '@infrastructure/tenancy/tenant-context';
+import { MobileSeriesHandler } from './mobile-series.handler';
+import {
+  ROUTINE_COUNT_AUTO_NO_SHOWS,
+  seriesDepositPercent,
+} from '@interface/http/mobile-series.flag';
 import {
   twoMissesInARow,
   type SessionFacts,
@@ -14,8 +19,11 @@ import {
 import { movableSessions } from '@domain/booking/mobile-series-move';
 import {
   MISSED_RELEASE_REASON,
+  NEEDS_ACTION_EVENT,
   REMINDER_EVENT,
   allClosed,
+  horizonDue,
+  needsActionEventId,
   reminderDue,
   reminderEventId,
   resumeDue,
@@ -29,6 +37,8 @@ export interface MobileSeriesJobReport {
   readonly completed: number;
   readonly pausedForMisses: number;
   readonly released: number;
+  readonly booked: number;
+  readonly needsAction: number;
   readonly reminded: number;
   readonly failed: number;
 }
@@ -44,7 +54,9 @@ export interface MobileSeriesJobReport {
  *
  * 8a: the pause that ends on its date, the routine whose visits are all
  * closed, the 48 hour reminders, and the desk's job kept away. 8b: two
- * misses in a row pause the routine. The far-off visits (8c) join it next.
+ * misses in a row pause the routine. 8c: the far-off visits the diary now
+ * reaches are booked, at their own day, time and stylist, or marked "needs
+ * action".
  */
 @Injectable()
 export class MobileSeriesJobHandler {
@@ -54,6 +66,8 @@ export class MobileSeriesJobHandler {
     private readonly repo: MobileSeriesRepository,
     private readonly reads: MobileSeriesReadHandler,
     private readonly lifecycle: LifecycleRepository,
+    private readonly creates: MobileSeriesHandler,
+    private readonly tenants: TenantContext,
   ) {}
 
   async run(nowMs = Date.now()): Promise<MobileSeriesJobReport> {
@@ -66,6 +80,8 @@ export class MobileSeriesJobHandler {
       completed: 0,
       pausedForMisses: 0,
       released: 0,
+      booked: 0,
+      needsAction: 0,
       reminded: 0,
       failed: 0,
     };
@@ -106,6 +122,16 @@ export class MobileSeriesJobHandler {
           if (released !== null) {
             report.pausedForMisses += 1;
             report.released += released;
+          } else {
+            const far = await this.bookFarVisits(
+              routine.id,
+              series,
+              facts,
+              nowMs,
+              today,
+            );
+            report.booked += far.booked;
+            report.needsAction += far.needsAction;
           }
         }
 
@@ -194,5 +220,79 @@ export class MobileSeriesJobHandler {
       }
     }
     return released;
+  }
+
+  /**
+   * Plan E.4 step 3 (R8): each far-off visit the diary now reaches is booked
+   * STRICTLY, at its own day, time and stylist, as the create books (in the
+   * routine's own tenant: no request brings one to the job). It is claimed
+   * first, so the two copies of the job never book it twice. When its time
+   * is not free any more, it stays "needs action", with an event for the
+   * sending team, and the customer picks another time (RESCHEDULE books a
+   * visit that has nothing booked). Never moved silently (D4).
+   */
+  private async bookFarVisits(
+    seriesId: string,
+    series: SeriesRowLoaded,
+    facts: readonly SessionFacts[],
+    nowMs: number,
+    today: string,
+  ): Promise<{ booked: number; needsAction: number }> {
+    const rows = new Map(series.occurrences.map((o) => [o.id, o] as const));
+    let booked = 0;
+    let needsAction = 0;
+    for (const f of facts) {
+      if (!horizonDue(f, nowMs, today)) continue;
+      const row = rows.get(f.id);
+      if (row === undefined) continue;
+      if (!(await this.repo.claimPlanned(seriesId, f.id))) continue;
+
+      const result = await this.tenants
+        .run(series.tenantId, () =>
+          this.creates.bookSession({
+            routine: {
+              id: series.id,
+              branchId: series.branchId,
+              frequency: series.frequency,
+              // Never null for an app routine (CHECK series_mobile_has_services).
+              serviceIds: series.serviceIds ?? [],
+            },
+            occurrenceId: f.id,
+            day: f.day,
+            startMin: row.plannedStartMin,
+            stylistId: series.preferredStaffId ?? '',
+            customerId: series.customerId,
+            dryRun: false,
+            depositPercent: seriesDepositPercent(),
+            nowMs,
+          }),
+        )
+        .catch((e: unknown) => {
+          MobileSeriesJobHandler.log.warn(
+            `far visit ${f.id}: not booked: ${e instanceof Error ? e.message : String(e)}`,
+          );
+          return 'not_free' as const;
+        });
+
+      if (result === 'booked') {
+        booked += 1;
+      } else if (result !== 'changed') {
+        needsAction += 1;
+        await this.repo.writeEvents(seriesId, [
+          {
+            id: needsActionEventId(f.id, f.day),
+            eventType: NEEDS_ACTION_EVENT,
+            payload: {
+              source: 'mobile',
+              occurrenceId: f.id,
+              index: f.index,
+              day: f.day,
+              customerId: series.customerId,
+            },
+          },
+        ]);
+      }
+    }
+    return { booked, needsAction };
   }
 }

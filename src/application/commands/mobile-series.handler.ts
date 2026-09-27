@@ -872,6 +872,107 @@ export class MobileSeriesHandler {
     return null;
   }
 
+  /**
+   * One session of a routine booked where nothing is booked yet (step 8c):
+   * a far-off visit the job books as the diary reaches it (plan E.4 step 3),
+   * or one the customer moves to a new time (RESCHEDULE on a visit with no
+   * booking, "needs action" included). Checked and booked exactly as the
+   * create books a session (the single mobile create), then linked.
+   *
+   * ONLY the slot asked for: nothing here picks another time (D4). The
+   * answer says what happened, and the caller decides: the job marks the
+   * visit "needs action", RESCHEDULE refuses. A dry run checks the slot and
+   * books nothing. Booking needs the salon's tenant in scope: the customer's
+   * request brings it, and the job runs this inside TenantContext.run.
+   */
+  async bookSession(input: {
+    readonly routine: {
+      readonly id: string;
+      readonly branchId: string;
+      readonly frequency: string | null;
+      readonly serviceIds: readonly string[];
+    };
+    readonly occurrenceId: string;
+    readonly day: string;
+    readonly startMin: number;
+    readonly stylistId: string;
+    readonly customerId: string;
+    readonly dryRun: boolean;
+    readonly depositPercent: number;
+    readonly nowMs: number;
+  }): Promise<'booked' | 'free' | 'not_free' | 'changed'> {
+    const today = branchToday(input.nowMs);
+    const serviceIds = [...input.routine.serviceIds];
+    const offers = new DayOffers(
+      this.availability,
+      input.routine.branchId,
+      serviceIds,
+    );
+    const slot = {
+      index: 0,
+      day: input.day,
+      startMin: input.startMin,
+      staffId: input.stylistId,
+      picked: false,
+    };
+    const cmd: MobileSeriesCommand = {
+      salonId: input.routine.branchId,
+      customerId: input.customerId,
+      claim: {
+        dryRun: input.dryRun,
+        serviceIds,
+        stylistId: input.stylistId,
+        frequency: frequencyFromColumn(input.routine.frequency) ?? 'CUSTOM',
+        startDate: null,
+        sessions: null,
+        dates: null,
+        time: formatMinute(input.startMin),
+        paymentPlan: 'PAY_AT_SALON',
+        picks: [],
+      },
+      products: [],
+      money: null,
+      depositPercent: input.depositPercent,
+      nowMs: input.nowMs,
+    };
+    const money = await this.money(cmd, [slot], NO_PRODUCTS);
+    const views = await this.check(
+      [slot],
+      [{ day: input.day, movedFromDayOfMonth: null }],
+      today,
+      offers,
+      money.quotes.map((q) => q.durationMin),
+    );
+    // Null is past the horizon: not bookable yet, so not free either.
+    if (views[0]?.free !== true) return 'not_free';
+    if (input.dryRun) return 'free';
+
+    // A slot lost at the last second throws session_not_free (409), as the
+    // create's does, after giving back what it booked.
+    const booked = await this.bookAll(cmd, [slot], views, money, today);
+    const bookingId = booked.get(0);
+    if (bookingId === undefined) return 'not_free';
+    let linked: boolean;
+    try {
+      linked = await this.repo.linkSession({
+        seriesId: input.routine.id,
+        customerId: input.customerId,
+        occurrenceId: input.occurrenceId,
+        day: input.day,
+        startMin: input.startMin,
+        bookingId,
+      });
+    } catch (e) {
+      await this.release([bookingId], input.customerId);
+      throw e;
+    }
+    if (!linked) {
+      await this.release([bookingId], input.customerId);
+      return 'changed';
+    }
+    return 'booked';
+  }
+
   // ------------------------------------------------------------ steps
 
   /**
