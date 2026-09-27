@@ -67,6 +67,7 @@ import { MobileSeriesController } from '@interface/http/mobile-series.controller
 import { MobileSeriesHandler } from '@application/commands/mobile-series.handler';
 import { MobileSeriesReadHandler } from '@application/queries/mobile-series-read.handler';
 import { MobileSeriesManageHandler } from '@application/commands/mobile-series-manage.handler';
+import { MobileSeriesCancelHandler } from '@application/commands/mobile-series-cancel.handler';
 import { MobileGroupBookingHandler } from '@application/commands/mobile-group-booking.handler';
 import { MobileGroupReadHandler } from '@application/queries/mobile-group-read.handler';
 import { MobileGroupCancelHandler } from '@application/commands/mobile-group-cancel.handler';
@@ -142,6 +143,7 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     MobileSeriesHandler,
     MobileSeriesReadHandler,
     MobileSeriesManageHandler,
+    MobileSeriesCancelHandler,
     DeskExtrasHandler,
     DeskActionsHandler,
     ReadModelRepository,
