@@ -321,7 +321,7 @@ export class MobileSeriesController {
       "customer's own choice and shown as SKIPPED; the routine goes on. " +
       'Only sessions still to come and outside the 24 hour lock. dry_run ' +
       'true checks and changes nothing (answers the routine as it is). ' +
-      'RESCHEDULE, EXTEND, PAUSE and RESUME answer invalid_action for now. ' +
+      'RESCHEDULE moves one session (session_id, date, time). EXTEND, PAUSE and RESUME answer invalid_action for now. ' +
       'The customer who made the routine only; anyone else is 404.',
   })
   @ApiOkResponse({ description: 'The routine, after the change.' })

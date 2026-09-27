@@ -56,3 +56,6 @@ export function manageClaimFrom(body: unknown): ManageClaim {
 
 /** Why SKIP cancelled a session's booking (booking_status_history.reason). */
 export const SKIP_REASON = 'Skipped in the app, as part of a routine.';
+
+/** Why RESCHEDULE moved a session's booking (booking_status_history.reason). */
+export const RESCHEDULE_REASON = 'Moved in the app, as part of a routine.';

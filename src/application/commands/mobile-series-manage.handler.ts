@@ -1,28 +1,46 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { MobileContractError } from './mobile-booking.error';
 import { refused } from './mobile-series.handler';
+import { PlaceHoldHandler } from './place-hold.handler';
+import { RescheduleHandler } from './reschedule.handler';
 import {
   MobileSeriesReadHandler,
   type MobileSeriesView,
   type SeriesReader,
+  type SeriesRowLoaded,
 } from '@application/queries/mobile-series-read.handler';
 import { LifecycleRepository } from '@infrastructure/persistence/lifecycle.repository';
 import { PrismaService } from '@infrastructure/persistence/prisma.service';
-import { branchToday } from '@infrastructure/persistence/hold.repository';
+import {
+  branchInstant,
+  branchToday,
+} from '@infrastructure/persistence/hold.repository';
 import {
   checkManage,
+  type CheckedManage,
   type ManageClaim,
 } from '@domain/booking/mobile-series-contract';
 import {
   actionRefusal,
+  checkReschedule,
   checkSkip,
   frequencyFromColumn,
+  type SessionFacts,
 } from '@domain/booking/mobile-series';
-import { SKIP_REASON } from '@domain/booking/mobile-series-manage';
+import {
+  RESCHEDULE_REASON,
+  SKIP_REASON,
+} from '@domain/booking/mobile-series-manage';
+
+type Reschedule = Extract<CheckedManage, { action: 'RESCHEDULE' }>;
+
+/** A line for the log, from whatever was thrown. */
+const reasonOf = (e: unknown): string =>
+  e instanceof Error ? e.message : 'unknown error';
 
 /**
  * PATCH /v1/mobile-booking/series/:id (step 6): the changes the app asks
- * for. SKIP is built. RESCHEDULE, EXTEND, PAUSE and RESUME answer
+ * for. SKIP and RESCHEDULE are built. EXTEND, PAUSE and RESUME answer
  * invalid_action until they are.
  *
  * Every check runs on the facts the hub shows (MobileSeriesReadHandler
@@ -37,6 +55,8 @@ export class MobileSeriesManageHandler {
     private readonly prisma: PrismaService,
     private readonly lifecycle: LifecycleRepository,
     private readonly reads: MobileSeriesReadHandler,
+    private readonly holds: PlaceHoldHandler,
+    private readonly moves: RescheduleHandler,
   ) {}
 
   async execute(input: {
@@ -63,29 +83,43 @@ export class MobileSeriesManageHandler {
     if (checked.kind === 'refused') throw refused(checked.refusal);
     const change = checked.value;
 
-    if (change.action !== 'SKIP') {
+    if (change.action !== 'SKIP' && change.action !== 'RESCHEDULE') {
       throw refused({
         field: 'action',
         code: 'invalid_action',
-        message: `${change.action} is not available yet. Only SKIP is.`,
+        message: `${change.action} is not available yet. Only SKIP and RESCHEDULE are.`,
       });
     }
-
-    const notActive = actionRefusal('SKIP', series.status);
+    const notActive = actionRefusal(change.action, series.status);
     if (notActive !== null) throw refused(notActive);
-    const why = checkSkip(facts, change.sessionIds, nowMs);
-    if (why !== null) throw refused(why);
 
-    // A preview changes nothing. Every check passed, so the skip is allowed.
-    if (input.claim.dryRun) {
-      return this.reads.read(input.seriesId, input.who, nowMs);
+    if (change.action === 'SKIP') {
+      const why = checkSkip(facts, change.sessionIds, nowMs);
+      if (why !== null) throw refused(why);
+      // A preview changes nothing. Every check passed, so the skip is allowed.
+      if (input.claim.dryRun) {
+        return this.reads.read(input.seriesId, input.who, nowMs);
+      }
+      for (const id of change.sessionIds) {
+        const occurrence = series.occurrences.find((o) => o.id === id)!;
+        await this.skipOne(occurrence, input.who.actorId);
+      }
+      return this.reads.read(input.seriesId, input.who);
     }
 
-    for (const id of change.sessionIds) {
-      const occurrence = series.occurrences.find((o) => o.id === id)!;
-      await this.skipOne(occurrence, input.who.actorId);
-    }
-    return this.reads.read(input.seriesId, input.who);
+    await this.reschedule(
+      series,
+      facts,
+      change,
+      input.who.actorId,
+      input.claim.dryRun,
+      nowMs,
+    );
+    return this.reads.read(
+      input.seriesId,
+      input.who,
+      input.claim.dryRun ? nowMs : undefined,
+    );
   }
 
   /**
@@ -122,6 +156,114 @@ export class MobileSeriesManageHandler {
     await this.prisma.seriesOccurrence.update({
       where: { id: occurrence.id },
       data: { state: 'skipped', bookingId: null },
+    });
+  }
+
+  /**
+   * RESCHEDULE one session. The rules first (checkReschedule: still
+   * changeable, the new time past the 24 hour lock and within 90 days, no
+   * other session that day). Then the same two steps as any move: a HOLD on
+   * the new time, placed as the app's own booking places it (it does the
+   * racing: once placed, nobody else can take the slot), and the move onto
+   * it (same booking, same code, new time). A dry run places the hold and
+   * gives it straight back, so "free" is the truth and nothing moves.
+   *
+   * A session with no booking yet (planned past the horizon, or waiting for
+   * a choice) cannot be moved here: it is booked first.
+   */
+  private async reschedule(
+    series: SeriesRowLoaded,
+    facts: readonly SessionFacts[],
+    change: Reschedule,
+    customerId: string,
+    dryRun: boolean,
+    nowMs: number,
+  ): Promise<void> {
+    const why = checkReschedule({
+      sessions: facts,
+      sessionId: change.sessionId,
+      newDay: change.day,
+      newStartAtMs: branchInstant(change.day, change.startMin).getTime(),
+      today: branchToday(nowMs),
+      nowMs,
+    });
+    if (why !== null) throw refused(why);
+
+    const occurrence = series.occurrences.find(
+      (o) => o.id === change.sessionId,
+    )!;
+    const bookingId = occurrence.bookingId;
+    if (bookingId === null) {
+      throw refused({
+        field: 'session_id',
+        code: 'session_not_changeable',
+        message: 'This session is not booked yet, so it cannot be moved.',
+      });
+    }
+    const current = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      select: {
+        items: { orderBy: { position: 'asc' }, select: { staffId: true } },
+      },
+    });
+
+    const hold = await this.holds
+      .execute({
+        branchId: series.branchId,
+        customerId,
+        tradingDay: change.day,
+        // Never null for an app routine (CHECK series_mobile_has_services).
+        serviceIds: series.serviceIds ?? [],
+        startMin: change.startMin,
+        channel: 'online',
+        preferredStaffId:
+          change.stylistId ??
+          current?.items[0]?.staffId ??
+          series.preferredStaffId,
+      })
+      .catch((e: unknown) => {
+        MobileSeriesManageHandler.log.warn(
+          `reschedule: no hold on ${change.day} at ${change.startMin}: ${reasonOf(e)}`,
+        );
+        throw refused({
+          field: 'time',
+          code: 'session_not_free',
+          message: 'That time is not free. Please pick another.',
+        });
+      });
+
+    if (dryRun) {
+      await this.holds.release(hold.holdId).catch(() => undefined);
+      return;
+    }
+
+    try {
+      await this.moves.execute({
+        bookingId,
+        holdId: hold.holdId,
+        tradingDay: change.day,
+        reason: RESCHEDULE_REASON,
+        actor: 'customer',
+        actorId: customerId,
+      });
+    } catch (e) {
+      await this.holds.release(hold.holdId).catch(() => undefined);
+      MobileSeriesManageHandler.log.warn(
+        `reschedule: booking ${bookingId} was not moved: ${reasonOf(e)}`,
+      );
+      throw refused({
+        field: 'session_id',
+        code: 'session_not_changeable',
+        message: 'This session could not be moved. Please try again.',
+      });
+    }
+
+    await this.prisma.seriesOccurrence.update({
+      where: { id: occurrence.id },
+      data: {
+        plannedDay: new Date(`${change.day}T00:00:00Z`),
+        plannedStartMin: change.startMin,
+      },
     });
   }
 }
