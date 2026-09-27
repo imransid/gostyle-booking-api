@@ -308,6 +308,21 @@ export class MobileSeriesReadHandler {
     return { series, facts };
   }
 
+  /**
+   * The hourly job's view of a routine (step 8): the same rows and the same
+   * facts as the hub, with no caller to check. The job reads every app
+   * routine and answers nobody, so "done", "missed" and "remaining" mean
+   * exactly what they mean in the hub.
+   */
+  async factsForJob(
+    seriesId: string,
+  ): Promise<{ series: SeriesRowLoaded; facts: SessionFacts[] } | null> {
+    const series = await this.load(seriesId);
+    if (series === null) return null;
+    const { facts } = await this.factsOf(series);
+    return { series, facts };
+  }
+
   private async load(seriesId: string): Promise<SeriesRowLoaded | null> {
     // A malformed id is 404, not a 500 from the uuid cast.
     if (!UUID_RE.test(seriesId)) return null;

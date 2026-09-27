@@ -365,6 +365,146 @@ export class MobileSeriesRepository {
   }
 
   /**
+   * The hourly job (step 8): every app routine it looks at, active or
+   * paused. Ended and completed ones are closed for good.
+   */
+  async openRoutines(): Promise<
+    {
+      readonly id: string;
+      readonly customerId: string;
+      readonly status: 'active' | 'paused';
+      readonly pausedUntil: string | null;
+    }[]
+  > {
+    const rows = await this.prisma.bookingSeries.findMany({
+      where: { source: 'mobile', status: { in: ['active', 'paused'] } },
+      select: { id: true, customerId: true, status: true, pausedUntil: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    return rows.map((r) => ({
+      id: r.id,
+      customerId: r.customerId,
+      status: r.status === 'paused' ? 'paused' : 'active',
+      pausedUntil:
+        r.pausedUntil === null
+          ? null
+          : r.pausedUntil.toISOString().slice(0, 10),
+    }));
+  }
+
+  /**
+   * Plan E.4 step 6: the desk's "materialise" button rewrites
+   * materialised_through to today plus 70 days, which would let the desk's
+   * nightly job book an app routine the desk's way (K11, K4). Put back.
+   * Returns how many routines were put back.
+   */
+  async keepDeskAway(): Promise<number> {
+    const far = date('9999-12-31');
+    const out = await this.prisma.bookingSeries.updateMany({
+      where: {
+        source: 'mobile',
+        OR: [
+          { materialisedThrough: null },
+          { materialisedThrough: { not: far } },
+        ],
+      },
+      data: { materialisedThrough: far },
+    });
+    return out.count;
+  }
+
+  /**
+   * Plan E.4 step 1: a pause whose date has come ends by itself. The pause
+   * already moved the visits past that date (D6), so only the status and
+   * the pause columns change. CLAIMED IN ONE UPDATE: of the two copies of
+   * booking-api running the job, one resumes it, the other finds it done.
+   */
+  async resumeByJob(seriesId: string, today: string): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.bookingSeries.updateMany({
+        where: {
+          id: seriesId,
+          source: 'mobile',
+          status: 'paused',
+          pausedUntil: { not: null, lte: date(today) },
+        },
+        data: {
+          status: 'active',
+          pausedUntil: null,
+          pauseReason: null,
+          pauseNote: null,
+        },
+      });
+      if (claimed.count !== 1) return false;
+      await tx.eventOutbox.create({
+        data: {
+          aggregateType: 'series',
+          aggregateId: seriesId,
+          eventType: 'series.resumed',
+          payload: { source: 'mobile', by: 'job', on: today },
+        },
+      });
+      return true;
+    });
+  }
+
+  /**
+   * Plan E.4 step 4: every visit closed, the routine is `completed`, so the
+   * desk's job and this one never look at it again. Claimed as resumeByJob
+   * is.
+   */
+  async completeByJob(seriesId: string): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.bookingSeries.updateMany({
+        where: {
+          id: seriesId,
+          source: 'mobile',
+          status: { in: ['active', 'paused'] },
+        },
+        data: { status: 'completed' },
+      });
+      if (claimed.count !== 1) return false;
+      await tx.eventOutbox.create({
+        data: {
+          aggregateType: 'series',
+          aggregateId: seriesId,
+          eventType: 'series.completed',
+          payload: { source: 'mobile', by: 'job' },
+        },
+      });
+      return true;
+    });
+  }
+
+  /**
+   * Events the job writes with their OWN ids (the 48 hour reminders, R10).
+   * An id already in the outbox, written by this copy an hour ago or by the
+   * other copy a second ago, is skipped by the database itself. Returns how
+   * many were new.
+   */
+  async writeEvents(
+    seriesId: string,
+    events: readonly {
+      readonly id: string;
+      readonly eventType: string;
+      readonly payload: Readonly<Record<string, string | number>>;
+    }[],
+  ): Promise<number> {
+    if (events.length === 0) return 0;
+    const out = await this.prisma.eventOutbox.createMany({
+      data: events.map((e) => ({
+        id: e.id,
+        aggregateType: 'series',
+        aggregateId: seriesId,
+        eventType: e.eventType,
+        payload: { ...e.payload },
+      })),
+      skipDuplicates: true,
+    });
+    return out.count;
+  }
+
+  /**
    * EXTEND (step 6): more sessions on an existing app routine, in one
    * transaction, linked exactly as `create` links them (series_id,
    * booking_type and the `recurring` channel, scoped to the customer). The
