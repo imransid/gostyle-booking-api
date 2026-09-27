@@ -184,13 +184,13 @@ describe('SKIP (step 6)', () => {
     expect(text).toContain('routine_not_active');
   });
 
-  it('answers invalid_action for the changes not built yet', async () => {
+  it('answers invalid_action for an action the app does not have', async () => {
     const { handler, lifecycle } = build();
     const text = await failure(
       handler.execute({
         seriesId: 'S',
         who: customer,
-        claim: manageClaimFrom({ action: 'PAUSE', until: '2026-11-01' }),
+        claim: manageClaimFrom({ action: 'FREEZE' }),
         nowMs: NOW,
       }),
     );

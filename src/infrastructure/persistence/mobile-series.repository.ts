@@ -228,6 +228,143 @@ export class MobileSeriesRepository {
   }
 
   /**
+   * PAUSE and RESUME (step 7): the moved sessions on their new days, in one
+   * transaction. The handler has already booked the new slots; this links
+   * them exactly as `create` does, and sets the routine's own row.
+   *
+   * - The routine must still have `fromStatus` (active for a pause, paused
+   *   for a resume). If the desk or another request changed it a moment
+   *   before, nothing is written, and the handler releases what it booked.
+   * - Every moved row is first parked on a far day of its own with nothing
+   *   booked, then takes its new day and booking. So no two rows ever share
+   *   a day or a booking in between, whatever the table's unique rules: a
+   *   kept booking may move to another row.
+   * - The routine's explicit dates follow its sessions (the desk reads a
+   *   mobile routine as CUSTOM on these dates). Its count is unchanged (D6).
+   * - Its own event, series.paused or series.resumed, says what moved.
+   *
+   * False when the routine no longer had `fromStatus`: nothing changed.
+   */
+  async moveSessions(input: {
+    readonly seriesId: string;
+    readonly customerId: string;
+    readonly fromStatus: 'active' | 'paused';
+    readonly sessions: readonly {
+      readonly occurrenceId: string;
+      readonly day: string;
+      readonly startMin: number;
+      readonly movedFromDayOfMonth: number | null;
+      readonly bookingId: string | null;
+    }[];
+    /** The new bookings among them, to link to the routine. */
+    readonly linkIds: readonly string[];
+    readonly after: MoveRoutineUpdate;
+    readonly summary: {
+      readonly moved: number;
+      readonly kept: number;
+      readonly booked: number;
+      readonly released: number;
+    };
+  }): Promise<boolean> {
+    const { after } = input;
+    return this.prisma.$transaction(async (tx) => {
+      const changed = await tx.bookingSeries.updateMany({
+        where: { id: input.seriesId, status: input.fromStatus },
+        data: {
+          status: after.status,
+          pausedUntil:
+            after.pausedUntil === null ? null : date(after.pausedUntil),
+          pauseReason: after.pauseReason,
+          pauseNote: after.pauseNote,
+          ...(after.startMin === undefined ? {} : { startMin: after.startMin }),
+          ...(after.preferredStaffId === undefined
+            ? {}
+            : { preferredStaffId: after.preferredStaffId }),
+          ...(after.frequency === undefined
+            ? {}
+            : { frequency: after.frequency }),
+          ...(after.anchorDay === undefined
+            ? {}
+            : { anchorDay: date(after.anchorDay) }),
+        },
+      });
+      if (changed.count !== 1) return false;
+
+      for (const [k, s] of input.sessions.entries()) {
+        const parked = await tx.seriesOccurrence.updateMany({
+          where: { id: s.occurrenceId, seriesId: input.seriesId },
+          data: {
+            plannedDay: new Date(Date.UTC(2999, 0, 1 + k)),
+            bookingId: null,
+            state: 'planned',
+          },
+        });
+        if (parked.count !== 1) {
+          throw new Error(
+            `session ${s.occurrenceId} is not part of routine ${input.seriesId}`,
+          );
+        }
+      }
+      for (const s of input.sessions) {
+        await tx.seriesOccurrence.updateMany({
+          where: { id: s.occurrenceId, seriesId: input.seriesId },
+          data: {
+            plannedDay: date(s.day),
+            plannedStartMin: s.startMin,
+            movedFromDayOfMonth: s.movedFromDayOfMonth,
+            state: s.bookingId === null ? 'planned' : 'materialised',
+            bookingId: s.bookingId,
+          },
+        });
+      }
+
+      for (const bookingId of input.linkIds) {
+        const linked = await tx.booking.updateMany({
+          where: {
+            id: bookingId,
+            customerId: toUuid(input.customerId),
+            seriesId: null,
+          },
+          data: {
+            seriesId: input.seriesId,
+            bookingType: 'routine',
+            channel: 'recurring',
+          },
+        });
+        if (linked.count !== 1) {
+          throw new Error(`booking ${bookingId} could not be linked`);
+        }
+      }
+
+      const days = await tx.seriesOccurrence.findMany({
+        where: { seriesId: input.seriesId },
+        select: { plannedDay: true },
+        orderBy: { plannedDay: 'asc' },
+      });
+      await tx.bookingSeries.update({
+        where: { id: input.seriesId },
+        data: { customDates: days.map((d) => d.plannedDay) },
+      });
+
+      await tx.eventOutbox.create({
+        data: {
+          aggregateType: 'series',
+          aggregateId: input.seriesId,
+          eventType:
+            after.status === 'paused' ? 'series.paused' : 'series.resumed',
+          payload: {
+            source: 'mobile',
+            until: after.pausedUntil,
+            reason: after.pauseReason,
+            ...input.summary,
+          },
+        },
+      });
+      return true;
+    });
+  }
+
+  /**
    * EXTEND (step 6): more sessions on an existing app routine, in one
    * transaction, linked exactly as `create` links them (series_id,
    * booking_type and the `recurring` channel, scoped to the customer). The
@@ -286,4 +423,20 @@ export class MobileSeriesRepository {
       });
     });
   }
+}
+
+/**
+ * A routine's own row after a PAUSE or RESUME (step 7). The pause columns
+ * are cleared on a resume. What RESUME's "Customize first" changed (time,
+ * stylist, frequency) is written too, with the new cadence's anchor day.
+ */
+export interface MoveRoutineUpdate {
+  readonly status: 'active' | 'paused';
+  readonly pausedUntil: string | null;
+  readonly pauseReason: string | null;
+  readonly pauseNote: string | null;
+  readonly startMin?: number;
+  readonly preferredStaffId?: string;
+  readonly frequency?: FrequencyColumn;
+  readonly anchorDay?: string;
 }
