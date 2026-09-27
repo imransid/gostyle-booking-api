@@ -168,4 +168,64 @@ export class MobileSeriesRepository {
       return { seriesId: series.id };
     });
   }
+
+  /**
+   * EXTEND (step 6): more sessions on an existing app routine, in one
+   * transaction, linked exactly as `create` links them (series_id,
+   * booking_type and the `recurring` channel, scoped to the customer). The
+   * routine's explicit dates and count grow with them. If this throws, the
+   * handler cancels the sessions it booked.
+   */
+  async appendSessions(input: {
+    readonly seriesId: string;
+    readonly customerId: string;
+    readonly sessions: readonly MobileSeriesSessionInput[];
+  }): Promise<void> {
+    if (input.sessions.length === 0) return;
+    await this.prisma.$transaction(async (tx) => {
+      await tx.seriesOccurrence.createMany({
+        data: input.sessions.map((s) => ({
+          seriesId: input.seriesId,
+          index: s.index,
+          plannedDay: date(s.day),
+          plannedStartMin: s.startMin,
+          movedFromDayOfMonth: s.movedFromDayOfMonth,
+          state:
+            s.bookingId === null
+              ? ('planned' as const)
+              : ('materialised' as const),
+          bookingId: s.bookingId,
+        })),
+      });
+
+      for (const s of input.sessions) {
+        if (s.bookingId === null) continue;
+        const linked = await tx.booking.updateMany({
+          where: {
+            id: s.bookingId,
+            customerId: toUuid(input.customerId),
+            seriesId: null,
+          },
+          data: {
+            seriesId: input.seriesId,
+            bookingType: 'routine',
+            channel: 'recurring',
+          },
+        });
+        if (linked.count !== 1) {
+          throw new Error(
+            `session ${s.index}: booking ${s.bookingId} could not be linked`,
+          );
+        }
+      }
+
+      await tx.bookingSeries.update({
+        where: { id: input.seriesId },
+        data: {
+          customDates: { push: input.sessions.map((s) => date(s.day)) },
+          endCount: { increment: input.sessions.length },
+        },
+      });
+    });
+  }
 }

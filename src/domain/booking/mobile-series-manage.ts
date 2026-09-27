@@ -59,3 +59,48 @@ export const SKIP_REASON = 'Skipped in the app, as part of a routine.';
 
 /** Why RESCHEDULE moved a session's booking (booking_status_history.reason). */
 export const RESCHEDULE_REASON = 'Moved in the app, as part of a routine.';
+
+/** EXTEND: the first new session's number, after every session the routine has. */
+export function nextIndex(indexes: readonly number[]): number {
+  return indexes.length === 0 ? 0 : Math.max(...indexes) + 1;
+}
+
+/** EXTEND: the day to count on from, the routine's latest session day. */
+export function lastDay(days: readonly string[]): string | null {
+  if (days.length === 0) return null;
+  const sorted = [...days].sort();
+  return sorted[sorted.length - 1]!;
+}
+
+/**
+ * EXTEND a CUSTOM routine: each new day must be after today, and not a day
+ * another session of the routine already has (to come, or done). The first
+ * that is not, or null.
+ */
+export function customExtendRefusal(
+  days: readonly string[],
+  today: string,
+  taken: ReadonlySet<string>,
+): {
+  readonly field: string;
+  readonly code: 'date_out_of_range' | 'session_day_taken';
+  readonly message: string;
+} | null {
+  for (const [i, d] of days.entries()) {
+    if (d <= today) {
+      return {
+        field: `dates[${i}]`,
+        code: 'date_out_of_range',
+        message: `${d} is not after today. Pick days still to come.`,
+      };
+    }
+    if (taken.has(d)) {
+      return {
+        field: `dates[${i}]`,
+        code: 'session_day_taken',
+        message: `Another session of this routine is already on ${d}.`,
+      };
+    }
+  }
+  return null;
+}
