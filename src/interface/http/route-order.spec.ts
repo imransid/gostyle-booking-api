@@ -228,8 +228,7 @@ describe('route registration order', () => {
     expect(order.indexOf('MobileSeriesController')).toBeLessThan(single);
   });
 
-  it('the mobile series routes are where the plan puts them (steps 2 and 6)', () => {
-    // POST :seriesId/cancel joins in step 7.
+  it('the mobile series routes are where the plan puts them (steps 2, 6 and 7)', () => {
     const routine = routeTable()
       .filter((r) => r.controller === 'MobileSeriesController')
       .map((r) => `${r.method} ${r.path}`)
@@ -238,6 +237,7 @@ describe('route registration order', () => {
       'Get mobile-booking/series/:seriesId',
       'Patch mobile-booking/series/:seriesId',
       'Post mobile-booking/series',
+      'Post mobile-booking/series/:seriesId/cancel',
     ]);
   });
 

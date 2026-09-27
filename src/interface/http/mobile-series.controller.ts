@@ -56,6 +56,11 @@ import {
 import { MobileSeriesManageHandler } from '@application/commands/mobile-series-manage.handler';
 import { manageClaimFrom } from '@domain/booking/mobile-series-manage';
 import { MobileContractError } from '@application/commands/mobile-booking.error';
+import {
+  MobileSeriesCancelHandler,
+  type MobileSeriesCancelPreview,
+} from '@application/commands/mobile-series-cancel.handler';
+import { cancelClaimFrom } from '@domain/booking/mobile-series-cancel';
 
 /** One service of a session. `amount` is echoed by the app, never trusted. */
 export class RoutineServiceDto {
@@ -215,6 +220,7 @@ export class MobileSeriesController {
     private readonly handler: MobileSeriesHandler,
     private readonly reads: MobileSeriesReadHandler,
     @Optional() private readonly manage?: MobileSeriesManageHandler,
+    @Optional() private readonly cancels?: MobileSeriesCancelHandler,
   ) {}
 
   @Post()
@@ -344,6 +350,46 @@ export class MobileSeriesController {
       },
       claim: manageClaimFrom(body),
       depositPercent: seriesDepositPercent(),
+    });
+  }
+
+  @Post(':seriesId/cancel')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Cancel a routine',
+    description:
+      "Every session still to come is cancelled as the customer's own " +
+      "cancel, under the single booking's refund rules (inside the 24 hour " +
+      'lock: a late cancel), and the routine ends. Sessions never booked ' +
+      'are marked skipped. Optional reason: NOT_SATISFIED, TOO_EXPENSIVE, ' +
+      "MOVING or OTHER, written in each cancelled booking's history and on " +
+      'the series.cancelled event. dry_run true answers the refund summary ' +
+      'and the routine as it is, and changes nothing. Allowed while the hub ' +
+      'shows can.cancel, else cannot_cancel. The customer who made the ' +
+      'routine only; anyone else is 404.',
+  })
+  @ApiOkResponse({
+    description:
+      'The routine, ended. With dry_run: { dry_run, summary, routine }.',
+  })
+  @ApiNotFoundResponse({ description: 'No such routine, or not yours.' })
+  @ApiUnprocessableEntityResponse({ description: 'The contract envelope.' })
+  cancel(
+    @Param('seriesId') seriesId: string,
+    @Body() body: unknown,
+    @CurrentActor() actor: Actor,
+  ): Promise<MobileSeriesView | MobileSeriesCancelPreview> {
+    if (this.cancels === undefined) {
+      throw MobileContractError.notFoundBooking();
+    }
+    return this.cancels.execute({
+      seriesId,
+      who: {
+        actorId: actor.id ?? 'anonymous',
+        actorKind: actor.kind,
+        actorBranchId: actor.branchId,
+      },
+      claim: cancelClaimFrom(body),
     });
   }
 }

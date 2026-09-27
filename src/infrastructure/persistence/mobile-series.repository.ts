@@ -170,6 +170,64 @@ export class MobileSeriesRepository {
   }
 
   /**
+   * CANCEL (step 7): the routine ends at the customer's request, in one
+   * transaction. The handler has already cancelled every booking behind it
+   * through the lifecycle (refund bands, history, events), one by one. What
+   * is left is written here:
+   *
+   * - the routine becomes `ended`, ONLY if it is still active or paused (the
+   *   desk may have ended it a moment before; then nothing else is written);
+   * - its sessions that were never booked (past the 90 day horizon, or
+   *   waiting for a choice) are marked skipped, so none waits for a booking;
+   * - its own event, `series.cancelled`, carries the app's reason. A routine
+   *   with nothing booked has no booking history to carry it (plan, "Where
+   *   the cancel reason is stored").
+   *
+   * True when the routine ended here.
+   */
+  async endByCustomer(input: {
+    readonly seriesId: string;
+    readonly unbookedIds: readonly string[];
+    readonly reason: string | null;
+    readonly cancelled: number;
+  }): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const ended = await tx.bookingSeries.updateMany({
+        where: { id: input.seriesId, status: { in: ['active', 'paused'] } },
+        data: { status: 'ended' },
+      });
+      if (ended.count !== 1) return false;
+
+      if (input.unbookedIds.length > 0) {
+        await tx.seriesOccurrence.updateMany({
+          where: {
+            id: { in: [...input.unbookedIds] },
+            seriesId: input.seriesId,
+            bookingId: null,
+          },
+          data: { state: 'skipped' },
+        });
+      }
+
+      await tx.eventOutbox.create({
+        data: {
+          aggregateType: 'series',
+          aggregateId: input.seriesId,
+          eventType: 'series.cancelled',
+          payload: {
+            source: 'mobile',
+            status: 'ended',
+            reason: input.reason,
+            cancelled: input.cancelled,
+            skipped: input.unbookedIds.length,
+          },
+        },
+      });
+      return true;
+    });
+  }
+
+  /**
    * EXTEND (step 6): more sessions on an existing app routine, in one
    * transaction, linked exactly as `create` links them (series_id,
    * booking_type and the `recurring` channel, scoped to the customer). The
