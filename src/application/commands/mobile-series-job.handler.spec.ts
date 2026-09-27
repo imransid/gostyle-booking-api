@@ -2,7 +2,9 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import { MobileSeriesJobHandler } from './mobile-series-job.handler';
 import {
   MISSED_RELEASE_REASON,
+  NEEDS_ACTION_EVENT,
   REMINDER_EVENT,
+  needsActionEventId,
   reminderEventId,
 } from '@domain/booking/mobile-series-job';
 
@@ -38,10 +40,18 @@ const loaded = (
   status: 'active' | 'paused' = 'active',
 ) => ({
   series: {
+    id: 'S',
     status,
+    tenantId: 'T1',
+    branchId: 'BR',
+    customerId: CUSTOMER,
+    frequency: 'monthly',
+    serviceIds: ['svc'],
+    preferredStaffId: 'pref',
     occurrences: visits.map((v) => ({
       id: v.id,
       bookingId: v.bookingStatus === null ? null : `b-${v.id}`,
+      plannedStartMin: 660,
     })),
   },
   facts: visits,
@@ -59,6 +69,7 @@ function build(
     missStreakAfter: vi.fn().mockResolvedValue(null),
     pauseForMisses: vi.fn().mockResolvedValue(true),
     unlinkReleased: vi.fn().mockResolvedValue(undefined),
+    claimPlanned: vi.fn().mockResolvedValue(true),
     writeEvents: vi.fn((...args: [string, readonly unknown[]]) =>
       Promise.resolve(args[1].length),
     ),
@@ -69,12 +80,18 @@ function build(
   const lifecycle = {
     transition: vi.fn().mockResolvedValue({ kind: 'transitioned' }),
   };
+  const creates = { bookSession: vi.fn().mockResolvedValue('booked') };
+  const tenants = {
+    run: vi.fn((...args: [string | null, () => unknown]) => args[1]()),
+  };
   const job = new MobileSeriesJobHandler(
     repo as never,
     reads as never,
     lifecycle as never,
+    creates as never,
+    tenants as never,
   );
-  return { job, repo, reads, lifecycle };
+  return { job, repo, reads, lifecycle, creates, tenants };
 }
 
 describe('the hourly job, 8a (step 8)', () => {
@@ -256,5 +273,87 @@ describe('the hourly job, 8b: two misses in a row (D5, D9)', () => {
     const report = await job.run(NOW);
     expect(repo.unlinkReleased).not.toHaveBeenCalled();
     expect(report).toMatchObject({ pausedForMisses: 1, released: 0 });
+  });
+});
+
+describe('the hourly job, 8c: far-off visits the diary now reaches (R8)', () => {
+  /** A monthly routine: one visit booked, one planned 80 days out, one 106. */
+  const monthly = (status: 'active' | 'paused' = 'active') =>
+    loaded(
+      [
+        visit('booked', 0, Date.parse('2026-11-20T11:00:00+06:00')),
+        visit('near', 1, Date.parse('2026-12-20T11:00:00+06:00'), null),
+        visit('far', 2, Date.parse('2027-01-15T11:00:00+06:00'), null),
+      ],
+      status,
+    );
+
+  it("books the one now within 90 days, at its own day, time and stylist, in the routine's tenant", async () => {
+    const { job, repo, creates, tenants } = build([routine('r')], {
+      r: monthly(),
+    });
+    const report = await job.run(NOW);
+    expect(repo.claimPlanned).toHaveBeenCalledTimes(1);
+    expect(repo.claimPlanned).toHaveBeenCalledWith('r', 'near');
+    expect(tenants.run).toHaveBeenCalledWith('T1', expect.any(Function));
+    expect(creates.bookSession).toHaveBeenCalledWith({
+      routine: {
+        id: 'S',
+        branchId: 'BR',
+        frequency: 'monthly',
+        serviceIds: ['svc'],
+      },
+      occurrenceId: 'near',
+      day: '2026-12-20',
+      startMin: 660,
+      stylistId: 'pref',
+      customerId: CUSTOMER,
+      dryRun: false,
+      depositPercent: 20,
+      nowMs: NOW,
+    });
+    expect(report).toMatchObject({ booked: 1, needsAction: 0, failed: 0 });
+  });
+
+  it('leaves it "needs action", with one event, when its time is not free', async () => {
+    const { job, repo, creates } = build([routine('r')], { r: monthly() });
+    creates.bookSession.mockResolvedValue('not_free');
+    const report = await job.run(NOW);
+    expect(repo.writeEvents).toHaveBeenCalledWith('r', [
+      {
+        id: needsActionEventId('near', '2026-12-20'),
+        eventType: NEEDS_ACTION_EVENT,
+        payload: {
+          source: 'mobile',
+          occurrenceId: 'near',
+          index: 1,
+          day: '2026-12-20',
+          customerId: CUSTOMER,
+        },
+      },
+    ]);
+    expect(report).toMatchObject({ booked: 0, needsAction: 1 });
+  });
+
+  it('an error while booking is "needs action" too, never a failed run', async () => {
+    const { job, creates } = build([routine('r')], { r: monthly() });
+    creates.bookSession.mockRejectedValue(new Error('session_not_free'));
+    const report = await job.run(NOW);
+    expect(report).toMatchObject({ needsAction: 1, failed: 0 });
+  });
+
+  it('books nothing the other copy of the job claimed first', async () => {
+    const { job, repo, creates } = build([routine('r')], { r: monthly() });
+    repo.claimPlanned.mockResolvedValue(false);
+    await job.run(NOW);
+    expect(creates.bookSession).not.toHaveBeenCalled();
+  });
+
+  it('a paused routine books nothing: the resume does', async () => {
+    const { job, repo } = build([routine('r', 'paused', null)], {
+      r: monthly('paused'),
+    });
+    await job.run(NOW);
+    expect(repo.claimPlanned).not.toHaveBeenCalled();
   });
 });

@@ -178,6 +178,7 @@ export class MobileSeriesManageHandler {
       input.who.actorId,
       input.claim.dryRun,
       nowMs,
+      input.depositPercent ?? DEFAULT_DEPOSIT_PERCENT,
     );
     return this.reads.read(
       input.seriesId,
@@ -398,6 +399,7 @@ export class MobileSeriesManageHandler {
     customerId: string,
     dryRun: boolean,
     nowMs: number,
+    depositPercent: number,
   ): Promise<void> {
     const why = checkReschedule({
       sessions: facts,
@@ -414,11 +416,40 @@ export class MobileSeriesManageHandler {
     )!;
     const bookingId = occurrence.bookingId;
     if (bookingId === null) {
-      throw refused({
-        field: 'session_id',
-        code: 'session_not_changeable',
-        message: 'This session is not booked yet, so it cannot be moved.',
+      // A visit with nothing booked yet (far off, or "needs action"): the
+      // move BOOKS it at the new time instead (step 8c), exactly as the
+      // create books a session. Nothing else is tried (D4).
+      const result = await this.creates.bookSession({
+        routine: {
+          id: series.id,
+          branchId: series.branchId,
+          frequency: series.frequency,
+          serviceIds: series.serviceIds ?? [],
+        },
+        occurrenceId: occurrence.id,
+        day: change.day,
+        startMin: change.startMin,
+        stylistId: change.stylistId ?? series.preferredStaffId ?? '',
+        customerId,
+        dryRun,
+        depositPercent,
+        nowMs,
       });
+      if (result === 'not_free') {
+        throw refused({
+          field: 'time',
+          code: 'session_not_free',
+          message: 'That time is not free. Please pick another.',
+        });
+      }
+      if (result === 'changed') {
+        throw refused({
+          field: 'session_id',
+          code: 'session_not_changeable',
+          message: 'This visit changed in the meantime. Please try again.',
+        });
+      }
+      return;
     }
     const current = await this.prisma.booking.findUnique({
       where: { id: bookingId },

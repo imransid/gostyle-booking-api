@@ -348,8 +348,42 @@ describe('RESCHEDULE (step 6)', () => {
     expect(holds.execute).not.toHaveBeenCalled();
   });
 
-  it('refuses a visit that is not booked yet', async () => {
-    const { handler, holds } = build();
+  it('books a visit that is not booked yet, at the new time (step 8c)', async () => {
+    const { handler, holds, creates } = build();
+    const withBook = Object.assign(creates, {
+      bookSession: vi.fn().mockResolvedValue('booked'),
+    });
+    const out = await handler.execute({
+      seriesId: 'S',
+      who: customer,
+      claim: move(O4, '2026-11-02', '12:00'),
+      nowMs: NOW,
+    });
+    expect(withBook.bookSession).toHaveBeenCalledWith({
+      routine: {
+        id: 'S',
+        branchId: 'BR',
+        frequency: 'weekly',
+        serviceIds: ['svc'],
+      },
+      occurrenceId: O4,
+      day: '2026-11-02',
+      startMin: 720,
+      stylistId: 'pref',
+      customerId: CUSTOMER,
+      dryRun: false,
+      depositPercent: 20,
+      nowMs: NOW,
+    });
+    expect(holds.execute).not.toHaveBeenCalled();
+    expect(out).toEqual({ id: 'S', hub: true });
+  });
+
+  it('refuses a time that is not free for a visit not booked yet (step 8c)', async () => {
+    const { handler, creates } = build();
+    Object.assign(creates, {
+      bookSession: vi.fn().mockResolvedValue('not_free'),
+    });
     const text = await failure(
       handler.execute({
         seriesId: 'S',
@@ -358,8 +392,7 @@ describe('RESCHEDULE (step 6)', () => {
         nowMs: NOW,
       }),
     );
-    expect(text).toContain('session_not_changeable');
-    expect(holds.execute).not.toHaveBeenCalled();
+    expect(text).toContain('session_not_free');
   });
 });
 

@@ -571,6 +571,84 @@ export class MobileSeriesRepository {
   }
 
   /**
+   * Plan E.4 step 3: a far-off visit the diary now reaches, CLAIMED for
+   * booking in one update. It is marked "needs action" first: of the two
+   * copies of the job, one claims it and books it, the other finds it taken.
+   * If the booking then fails (its time is not free any more), the mark
+   * stays and the customer picks another time (D4: never moved silently).
+   */
+  async claimPlanned(seriesId: string, occurrenceId: string): Promise<boolean> {
+    const out = await this.prisma.seriesOccurrence.updateMany({
+      where: { id: occurrenceId, seriesId, state: 'planned', bookingId: null },
+      data: { state: 'needs_attention' },
+    });
+    return out.count === 1;
+  }
+
+  /**
+   * A visit that had nothing booked, now booked (step 8c): by the job, or by
+   * the customer moving it (RESCHEDULE). In one transaction, and only if the
+   * visit STILL has nothing booked (planned, or "needs action"): the visit
+   * takes its booking, day and time, the booking is linked to the routine
+   * exactly as `create` links it, and the routine's explicit dates follow.
+   * False when the visit changed in the meantime: nothing is written, and
+   * the caller releases the booking it made.
+   */
+  async linkSession(input: {
+    readonly seriesId: string;
+    readonly customerId: string;
+    readonly occurrenceId: string;
+    readonly day: string;
+    readonly startMin: number;
+    readonly bookingId: string;
+  }): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      const taken = await tx.seriesOccurrence.updateMany({
+        where: {
+          id: input.occurrenceId,
+          seriesId: input.seriesId,
+          bookingId: null,
+          state: { in: ['planned', 'needs_attention'] },
+        },
+        data: {
+          state: 'materialised',
+          bookingId: input.bookingId,
+          plannedDay: date(input.day),
+          plannedStartMin: input.startMin,
+        },
+      });
+      if (taken.count !== 1) return false;
+
+      const linked = await tx.booking.updateMany({
+        where: {
+          id: input.bookingId,
+          customerId: toUuid(input.customerId),
+          seriesId: null,
+        },
+        data: {
+          seriesId: input.seriesId,
+          bookingType: 'routine',
+          channel: 'recurring',
+        },
+      });
+      if (linked.count !== 1) {
+        throw new Error(`booking ${input.bookingId} could not be linked`);
+      }
+
+      const days = await tx.seriesOccurrence.findMany({
+        where: { seriesId: input.seriesId },
+        select: { plannedDay: true },
+        orderBy: { plannedDay: 'asc' },
+      });
+      await tx.bookingSeries.update({
+        where: { id: input.seriesId },
+        data: { customDates: days.map((d) => d.plannedDay) },
+      });
+      return true;
+    });
+  }
+
+  /**
    * EXTEND (step 6): more sessions on an existing app routine, in one
    * transaction, linked exactly as `create` links them (series_id,
    * booking_type and the `recurring` channel, scoped to the customer). The
