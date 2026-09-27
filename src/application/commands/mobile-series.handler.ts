@@ -18,7 +18,10 @@ import {
   type BookingContextReader,
 } from '@application/ports/booking-context.port';
 import { LifecycleRepository } from '@infrastructure/persistence/lifecycle.repository';
-import { MobileSeriesRepository } from '@infrastructure/persistence/mobile-series.repository';
+import {
+  MobileSeriesRepository,
+  type MoveRoutineUpdate,
+} from '@infrastructure/persistence/mobile-series.repository';
 import { PlatformProductCatalogue } from '@infrastructure/persistence/platform-product-catalogue';
 import {
   BRANCH_UTC_OFFSET_MIN,
@@ -62,6 +65,7 @@ import {
   frequencyFromColumn,
   sessionBucket,
   type SessionFacts,
+  resumeDays,
 } from '@domain/booking/mobile-series';
 import {
   checkRoutine,
@@ -79,6 +83,7 @@ import {
   lastDay,
   nextIndex,
 } from '@domain/booking/mobile-series-manage';
+import { keepPlan, type CurrentSlot } from '@domain/booking/mobile-series-move';
 
 /** POST /v1/mobile-booking/series, in our words. */
 export interface MobileSeriesCommand {
@@ -592,6 +597,277 @@ export class MobileSeriesHandler {
     } catch (e) {
       await this.release([...booked.values()], input.customerId);
       throw e;
+    }
+    return null;
+  }
+
+  /**
+   * PAUSE and RESUME (step 7): the routine's movable sessions (still to
+   * come, past the 24 hour lock) planned again from `from`, the count kept
+   * (D6), each checked free with up to three alternatives (D4; the picks
+   * replace busy ones), then booked all or nothing as the create books.
+   *
+   * The days come from resumeDays: the routine's own cadence, or RESUME's
+   * new frequency ("Customize first"). A DAILY cadence goes through the
+   * create's own `plan`, which skips the days the salon is closed (D3).
+   *
+   * A session already booked on its new slot KEEPS its booking (keepPlan):
+   * booking that slot again would clash with the routine's own booking.
+   * The new bookings are made first, then the sessions are relinked in one
+   * transaction, and only then are the old bookings released. A failure
+   * before that leaves the routine exactly as it was.
+   *
+   * Sessions are numbered by the routine's own index in the preview and in
+   * the picks, as the hub shows them. A dry run answers the moved sessions
+   * (a kept one is free) and their money, as the create's preview does.
+   */
+  async move(input: {
+    readonly routine: {
+      readonly id: string;
+      readonly branchId: string;
+      readonly frequency: string | null;
+      readonly serviceIds: readonly string[];
+      readonly anchorDay: string;
+    };
+    /** The movable sessions, in the routine's order, where each is now. */
+    readonly sessions: readonly (CurrentSlot & {
+      readonly occurrenceId: string;
+      readonly index: number;
+    })[];
+    /** Days the picks may not use: the sessions this move leaves alone. */
+    readonly otherDays: readonly string[];
+    /** The first day a moved session may land on. */
+    readonly from: string;
+    /** RESUME's new frequency, or null to keep the routine's. */
+    readonly newFrequency: Extract<
+      CheckedManage,
+      { action: 'RESUME' }
+    >['frequency'];
+    readonly startMin: number;
+    readonly stylistId: string;
+    readonly picks: Extract<CheckedManage, { action: 'RESUME' }>['picks'];
+    /** The routine must still have this status when the move is saved. */
+    readonly fromStatus: 'active' | 'paused';
+    /** The routine's own row once moved. */
+    readonly after: MoveRoutineUpdate;
+    /** booking_status_history.reason for each old booking released. */
+    readonly releaseReason: string;
+    /** The request field a "not enough open days" refusal points at. */
+    readonly field: string;
+    readonly customerId: string;
+    readonly dryRun: boolean;
+    readonly depositPercent: number;
+    readonly nowMs: number;
+  }): Promise<MobileSeriesPreview | null> {
+    const { routine, sessions, nowMs } = input;
+    const today = branchToday(nowMs);
+    const frequency = frequencyFromColumn(routine.frequency) ?? 'CUSTOM';
+    const effective = input.newFrequency ?? frequency;
+    const serviceIds = [...routine.serviceIds];
+    const offers = new DayOffers(
+      this.availability,
+      routine.branchId,
+      serviceIds,
+    );
+    const count = sessions.length;
+
+    let planned: PlannedDay[] = [];
+    if (count > 0 && effective === 'DAILY') {
+      planned = await this.plan(
+        // The create's own DAILY planning, which skips closed days (D3).
+        {
+          frequency: 'DAILY',
+          first: input.from,
+          count,
+          days: null,
+        } as unknown as CheckedRoutine,
+        offers,
+      );
+    } else if (count > 0) {
+      planned = resumeDays({
+        frequency,
+        anchor: routine.anchorDay,
+        newFrequency: input.newFrequency,
+        remaining: sessions.map((s) => s.day),
+        from: input.from,
+        isOpen: () => true,
+      });
+    }
+    if (planned.length < count) {
+      throw MobileContractError.of(
+        input.field,
+        'date_out_of_range',
+        'The salon is not open on enough days to move every session.',
+      );
+    }
+
+    // The app numbers sessions as the hub does; the steps count from 0.
+    const position = new Map(sessions.map((s, k) => [s.index, k] as const));
+    const picks: (typeof input.picks)[number][] = [];
+    for (const p of input.picks) {
+      const k = position.get(p.index);
+      if (k === undefined) {
+        throw refused({
+          field: 'picks',
+          code: 'invalid_pick',
+          message: `Session ${p.index} is not one this change moves.`,
+        });
+      }
+      picks.push({ ...p, index: k });
+    }
+    const slots = applyPicks(
+      planned.map((p, index) => ({
+        index,
+        day: p.day,
+        startMin: input.startMin,
+        staffId: input.stylistId,
+        picked: false,
+      })),
+      picks,
+      input.otherDays,
+    );
+    if (slots.kind === 'refused') throw refused(slots.refusal);
+    const { keep, release } = keepPlan(
+      sessions,
+      slots.slots.map((s) => ({
+        day: s.day,
+        startMin: s.startMin,
+        staffId: s.staffId,
+      })),
+    );
+
+    const cmd: MobileSeriesCommand = {
+      salonId: routine.branchId,
+      customerId: input.customerId,
+      claim: {
+        dryRun: input.dryRun,
+        serviceIds,
+        stylistId: input.stylistId,
+        frequency: effective,
+        startDate: null,
+        sessions: null,
+        dates: null,
+        time: formatMinute(input.startMin),
+        paymentPlan: 'PAY_AT_SALON',
+        picks: [],
+      },
+      products: [],
+      money: null,
+      depositPercent: input.depositPercent,
+      nowMs,
+    };
+    const money = await this.money(cmd, slots.slots, NO_PRODUCTS);
+    const checked = await this.check(
+      slots.slots,
+      planned,
+      today,
+      offers,
+      money.quotes.map((q) => q.durationMin),
+    );
+    // A kept session is booked for this routine already: free, for it.
+    const views = checked.map((v, k) =>
+      keep.has(k) ? { ...v, free: true, alternatives: [] } : v,
+    );
+
+    if (input.dryRun) {
+      const shown = views.map((v, k) => ({ ...v, index: sessions[k]!.index }));
+      return {
+        dry_run: true,
+        frequency: effective,
+        time: formatMinute(input.startMin),
+        stylist_id: input.stylistId,
+        payment_plan: 'PAY_AT_SALON',
+        sessions: shown,
+        available_times: null,
+        all_free: shown.every((v) => v.free !== false),
+        money: { plans: this.plansView(money.routine) },
+        rules: RULES_VIEW,
+      };
+    }
+
+    const busy = views.find((v) => v.free === false);
+    if (busy !== undefined) {
+      throw new MobileContractError(
+        [
+          {
+            field: `sessions[${sessions[busy.index]!.index}]`,
+            code: 'session_not_free',
+            message:
+              `The new session on ${busy.date} is not free. Nothing was ` +
+              'changed. Run the preview again to see the alternatives.',
+          },
+        ],
+        409,
+      );
+    }
+
+    const booked = await this.bookAll(
+      cmd,
+      slots.slots.filter((s) => !keep.has(s.index)),
+      views,
+      money,
+      today,
+    );
+    const switched =
+      input.newFrequency !== null && input.newFrequency !== frequency;
+    const after: MoveRoutineUpdate =
+      switched && planned.length > 0
+        ? { ...input.after, anchorDay: planned[0]!.day }
+        : input.after;
+    let saved: boolean;
+    try {
+      saved = await this.repo.moveSessions({
+        seriesId: routine.id,
+        customerId: input.customerId,
+        fromStatus: input.fromStatus,
+        sessions: slots.slots.map((s) => ({
+          occurrenceId: sessions[s.index]!.occurrenceId,
+          day: s.day,
+          startMin: s.startMin,
+          movedFromDayOfMonth: planned[s.index]!.movedFromDayOfMonth,
+          bookingId: keep.get(s.index) ?? booked.get(s.index) ?? null,
+        })),
+        linkIds: [...booked.values()],
+        after,
+        summary: {
+          moved: count - keep.size,
+          kept: keep.size,
+          booked: booked.size,
+          released: release.length,
+        },
+      });
+    } catch (e) {
+      await this.release([...booked.values()], input.customerId);
+      throw e;
+    }
+    if (!saved) {
+      await this.release([...booked.values()], input.customerId);
+      throw refused({
+        field: 'action',
+        code: 'routine_not_active',
+        message: 'This routine changed in the meantime. Please try again.',
+      });
+    }
+
+    // The old bookings go last, as the customer's own change: nothing is
+    // taken for a pay at salon visit. A future paid plan moves the money
+    // with the visit instead of refunding it.
+    for (const bookingId of release) {
+      const out = await this.lifecycle
+        .transition({
+          bookingId,
+          to: 'cancelled',
+          actor: 'customer',
+          actorId: input.customerId,
+          reason: input.releaseReason,
+          initiatedBy: 'customer',
+        })
+        .catch(() => null);
+      if (out === null || out.kind !== 'transitioned') {
+        MobileSeriesHandler.log.warn(
+          `move: old booking ${bookingId} was not released (${out === null ? 'error' : out.kind})`,
+        );
+      }
     }
     return null;
   }

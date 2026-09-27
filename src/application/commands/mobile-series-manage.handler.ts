@@ -21,22 +21,45 @@ import {
 } from '@infrastructure/persistence/hold.repository';
 import {
   checkManage,
+  pauseReasonColumn,
   type CheckedManage,
   type ManageClaim,
 } from '@domain/booking/mobile-series-contract';
 import {
   actionRefusal,
+  checkPause,
   checkReschedule,
   checkSkip,
   frequencyFromColumn,
+  type FrequencyColumn,
   type SessionFacts,
 } from '@domain/booking/mobile-series';
 import {
   RESCHEDULE_REASON,
   SKIP_REASON,
 } from '@domain/booking/mobile-series-manage';
+import {
+  PAUSE_MOVE_REASON,
+  RESUME_MOVE_REASON,
+  movableSessions,
+  pauseFrom,
+  resumeFrom,
+  stayingDays,
+} from '@domain/booking/mobile-series-move';
 
 type Reschedule = Extract<CheckedManage, { action: 'RESCHEDULE' }>;
+type Pause = Extract<CheckedManage, { action: 'PAUSE' }>;
+type Resume = Extract<CheckedManage, { action: 'RESUME' }>;
+
+/** A movable session: where it is now, and which row it is. */
+interface Movable {
+  readonly occurrenceId: string;
+  readonly index: number;
+  readonly bookingId: string | null;
+  readonly day: string;
+  readonly startMin: number;
+  readonly staffId: string | null;
+}
 
 /** MOBILE_SERIES_DEPOSIT_PERCENT's own default, when the caller sends none. */
 const DEFAULT_DEPOSIT_PERCENT = 20;
@@ -46,14 +69,14 @@ const reasonOf = (e: unknown): string =>
   e instanceof Error ? e.message : 'unknown error';
 
 /**
- * PATCH /v1/mobile-booking/series/:id (step 6): the changes the app asks
- * for. SKIP, RESCHEDULE and EXTEND are built. PAUSE and RESUME answer
- * invalid_action until they are.
+ * PATCH /v1/mobile-booking/series/:id (steps 6 and 7): the changes the app
+ * asks for: SKIP, RESCHEDULE, EXTEND, PAUSE and RESUME.
  *
  * Every check runs on the facts the hub shows (MobileSeriesReadHandler
  * .factsFor), so what the app is offered and what it is allowed always
- * agree. The answer is the whole routine, as the hub reads it; EXTEND's dry
- * run answers the new sessions instead, as the create's preview does.
+ * agree. The answer is the whole routine, as the hub reads it. The dry runs
+ * of EXTEND, PAUSE and RESUME answer the new sessions instead, as the
+ * create's preview does.
  */
 @Injectable()
 export class MobileSeriesManageHandler {
@@ -93,17 +116,6 @@ export class MobileSeriesManageHandler {
     if (checked.kind === 'refused') throw refused(checked.refusal);
     const change = checked.value;
 
-    if (
-      change.action !== 'SKIP' &&
-      change.action !== 'RESCHEDULE' &&
-      change.action !== 'EXTEND'
-    ) {
-      throw refused({
-        field: 'action',
-        code: 'invalid_action',
-        message: `${change.action} is not available yet. Only SKIP, RESCHEDULE and EXTEND are.`,
-      });
-    }
     const notActive = actionRefusal(change.action, series.status);
     if (notActive !== null) throw refused(notActive);
 
@@ -149,6 +161,16 @@ export class MobileSeriesManageHandler {
       return preview ?? this.reads.read(input.seriesId, input.who);
     }
 
+    if (change.action === 'PAUSE' || change.action === 'RESUME') {
+      return this.pauseOrResume(series, facts, change, {
+        seriesId: input.seriesId,
+        who: input.who,
+        dryRun: input.claim.dryRun,
+        depositPercent: input.depositPercent ?? DEFAULT_DEPOSIT_PERCENT,
+        nowMs,
+      });
+    }
+
     await this.reschedule(
       series,
       facts,
@@ -162,6 +184,162 @@ export class MobileSeriesManageHandler {
       input.who,
       input.claim.dryRun ? nowMs : undefined,
     );
+  }
+
+  /**
+   * PAUSE and RESUME (step 7). Both move the routine's movable sessions
+   * (still to come, past the 24 hour lock; one inside it stays), the count
+   * kept (D6), through the create's own planning, checks and booking
+   * (MobileSeriesHandler.move).
+   *
+   * PAUSE, at most 60 days (checkPause): the sessions move to the resume
+   * date onwards, on the routine's own cadence, time and stylist, and are
+   * booked there right away (plan E.3). A session already after the resume
+   * date stays on its day. The routine is `paused` until then.
+   *
+   * RESUME ("Resume now"): the sessions move back to tomorrow onwards, with
+   * the optional new frequency, time or stylist ("Customize first", R17),
+   * and the routine is active again.
+   */
+  private async pauseOrResume(
+    series: SeriesRowLoaded,
+    facts: readonly SessionFacts[],
+    change: Pause | Resume,
+    input: {
+      readonly seriesId: string;
+      readonly who: SeriesReader;
+      readonly dryRun: boolean;
+      readonly depositPercent: number;
+      readonly nowMs: number;
+    },
+  ): Promise<MobileSeriesView | MobileSeriesPreview> {
+    const { nowMs } = input;
+    const today = branchToday(nowMs);
+    if (change.action === 'PAUSE') {
+      const why = checkPause(change.until, today);
+      if (why !== null) throw refused(why);
+    }
+    const row = await this.prisma.bookingSeries.findUnique({
+      where: { id: series.id },
+      select: { anchorDay: true, startMin: true },
+    });
+    if (row === null) throw MobileContractError.notFoundBooking();
+
+    const movable = movableSessions(facts, nowMs);
+    const staying = stayingDays(facts, new Set(movable.map((f) => f.id)));
+    const sessions = await this.whereNow(series, movable);
+    const stylistId = series.preferredStaffId ?? '';
+    const common = {
+      routine: {
+        id: series.id,
+        branchId: series.branchId,
+        frequency: series.frequency,
+        // Never null for an app routine (CHECK series_mobile_has_services).
+        serviceIds: series.serviceIds ?? [],
+        anchorDay: row.anchorDay.toISOString().slice(0, 10),
+      },
+      sessions,
+      otherDays: staying,
+      picks: change.picks,
+      customerId: input.who.actorId,
+      dryRun: input.dryRun,
+      depositPercent: input.depositPercent,
+      nowMs,
+    };
+
+    const preview =
+      change.action === 'PAUSE'
+        ? await this.creates.move({
+            ...common,
+            from: pauseFrom(change.until, sessions[0]?.day ?? null, staying),
+            newFrequency: null,
+            startMin: row.startMin,
+            stylistId,
+            fromStatus: 'active',
+            after: {
+              status: 'paused',
+              pausedUntil: change.until,
+              pauseReason:
+                change.reason === null
+                  ? null
+                  : pauseReasonColumn(change.reason),
+              pauseNote: change.note,
+            },
+            releaseReason: PAUSE_MOVE_REASON,
+            field: 'until',
+          })
+        : await this.creates.move({
+            ...common,
+            from: resumeFrom(today, staying),
+            newFrequency: change.frequency,
+            startMin: change.startMin ?? row.startMin,
+            stylistId: change.stylistId ?? stylistId,
+            fromStatus: 'paused',
+            after: {
+              status: 'active',
+              pausedUntil: null,
+              pauseReason: null,
+              pauseNote: null,
+              ...(change.startMin === null
+                ? {}
+                : { startMin: change.startMin }),
+              ...(change.stylistId === null
+                ? {}
+                : { preferredStaffId: change.stylistId }),
+              ...(change.frequency === null
+                ? {}
+                : {
+                    frequency:
+                      change.frequency.toLowerCase() as FrequencyColumn,
+                  }),
+            },
+            releaseReason: RESUME_MOVE_REASON,
+            field: 'frequency',
+          });
+    return preview ?? this.reads.read(input.seriesId, input.who);
+  }
+
+  /**
+   * Where each movable session is now: its booking's day, minute and
+   * stylist (a desk move or a RESCHEDULE may have changed them), else its
+   * planned day and minute, with no stylist yet.
+   */
+  private async whereNow(
+    series: SeriesRowLoaded,
+    movable: readonly SessionFacts[],
+  ): Promise<Movable[]> {
+    const rows = new Map(series.occurrences.map((o) => [o.id, o] as const));
+    const ids = movable
+      .map((f) => rows.get(f.id)?.bookingId ?? null)
+      .filter((id): id is string => id !== null);
+    const bookings =
+      ids.length === 0
+        ? []
+        : await this.prisma.booking.findMany({
+            where: { id: { in: ids } },
+            select: {
+              id: true,
+              tradingDay: true,
+              startMinute: true,
+              items: {
+                orderBy: { position: 'asc' },
+                select: { staffId: true },
+              },
+            },
+          });
+    const byId = new Map(bookings.map((b) => [b.id, b] as const));
+    return movable.map((f): Movable => {
+      const o = rows.get(f.id)!;
+      const b = o.bookingId === null ? undefined : byId.get(o.bookingId);
+      return {
+        occurrenceId: o.id,
+        index: o.index,
+        bookingId: o.bookingId,
+        day: b === undefined ? f.day : b.tradingDay.toISOString().slice(0, 10),
+        startMin: b === undefined ? o.plannedStartMin : b.startMinute,
+        staffId: b?.items[0]?.staffId ?? null,
+      };
+    });
   }
 
   /**
