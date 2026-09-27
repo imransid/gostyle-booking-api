@@ -67,3 +67,10 @@ export function allClosed(facts: readonly SessionFacts[]): boolean {
 export function resumeDue(pausedUntil: string | null, today: string): boolean {
   return pausedUntil !== null && pausedUntil <= today;
 }
+
+/**
+ * Why the job released a visit when two misses paused its routine (D5):
+ * booking_status_history.reason, as the desk reads it.
+ */
+export const MISSED_RELEASE_REASON =
+  'Released: the routine was paused after 2 missed visits.';
