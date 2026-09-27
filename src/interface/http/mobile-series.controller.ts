@@ -321,7 +321,7 @@ export class MobileSeriesController {
       "customer's own choice and shown as SKIPPED; the routine goes on. " +
       'Only sessions still to come and outside the 24 hour lock. dry_run ' +
       'true checks and changes nothing (answers the routine as it is). ' +
-      'RESCHEDULE moves one session (session_id, date, time). EXTEND, PAUSE and RESUME answer invalid_action for now. ' +
+      'RESCHEDULE moves one session (session_id, date, time). EXTEND adds sessions (sessions, or dates for CUSTOM; picks for busy ones); its dry_run answers the new sessions and their money. PAUSE and RESUME answer invalid_action for now. ' +
       'The customer who made the routine only; anyone else is 404.',
   })
   @ApiOkResponse({ description: 'The routine, after the change.' })
@@ -331,7 +331,7 @@ export class MobileSeriesController {
     @Param('seriesId') seriesId: string,
     @Body() body: unknown,
     @CurrentActor() actor: Actor,
-  ): Promise<MobileSeriesView> {
+  ): Promise<MobileSeriesView | MobileSeriesPreview> {
     if (this.manage === undefined) {
       throw MobileContractError.notFoundBooking();
     }
@@ -343,6 +343,7 @@ export class MobileSeriesController {
         actorBranchId: actor.branchId,
       },
       claim: manageClaimFrom(body),
+      depositPercent: seriesDepositPercent(),
     });
   }
 }

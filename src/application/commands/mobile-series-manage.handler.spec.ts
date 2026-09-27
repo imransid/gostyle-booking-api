@@ -41,10 +41,10 @@ function build(status = 'active') {
     serviceIds: ['svc'],
     preferredStaffId: 'pref',
     occurrences: [
-      { id: O1, bookingId: B1 },
-      { id: O2, bookingId: B2 },
-      { id: O3, bookingId: B3 },
-      { id: O4, bookingId: null },
+      { id: O1, index: 0, bookingId: B1 },
+      { id: O2, index: 1, bookingId: B2 },
+      { id: O3, index: 2, bookingId: B3 },
+      { id: O4, index: 3, bookingId: null },
     ],
   };
   const facts = [
@@ -67,20 +67,28 @@ function build(status = 'active') {
         .fn()
         .mockResolvedValue({ items: [{ staffId: 'staff-1' }] }),
     },
+    bookingSeries: {
+      findUnique: vi.fn().mockResolvedValue({
+        anchorDay: new Date('2026-10-20T00:00:00Z'),
+        startMin: 660,
+      }),
+    },
   };
   const holds = {
     execute: vi.fn().mockResolvedValue({ holdId: 'H1' }),
     release: vi.fn().mockResolvedValue(undefined),
   };
   const moves = { execute: vi.fn().mockResolvedValue({ code: 'GS-1' }) };
+  const creates = { extend: vi.fn().mockResolvedValue(null) };
   const handler = new MobileSeriesManageHandler(
     prisma as never,
     lifecycle as never,
     reads as never,
     holds as never,
     moves as never,
+    creates as never,
   );
-  return { handler, reads, lifecycle, prisma, holds, moves };
+  return { handler, reads, lifecycle, prisma, holds, moves, creates };
 }
 
 const customer = {
@@ -182,7 +190,7 @@ describe('SKIP (step 6)', () => {
       handler.execute({
         seriesId: 'S',
         who: customer,
-        claim: manageClaimFrom({ action: 'EXTEND', sessions: 1 }),
+        claim: manageClaimFrom({ action: 'PAUSE', until: '2026-11-01' }),
         nowMs: NOW,
       }),
     );
@@ -352,5 +360,77 @@ describe('RESCHEDULE (step 6)', () => {
     );
     expect(text).toContain('session_not_changeable');
     expect(holds.execute).not.toHaveBeenCalled();
+  });
+});
+
+describe('EXTEND (step 6)', () => {
+  it('hands the routine to the create handler, numbered after its last session', async () => {
+    const { handler, creates } = build();
+    await handler.execute({
+      seriesId: 'S',
+      who: customer,
+      claim: manageClaimFrom({ action: 'EXTEND', sessions: 2 }),
+      nowMs: NOW,
+      depositPercent: 20,
+    });
+    const [arg] = creates.extend.mock.calls[0] as unknown as [
+      {
+        routine: Record<string, unknown>;
+        customerId: string;
+        dryRun: boolean;
+        depositPercent: number;
+      },
+    ];
+    expect(arg.routine).toMatchObject({
+      id: 'S',
+      branchId: 'BR',
+      serviceIds: ['svc'],
+      stylistId: 'pref',
+      startMin: 660,
+      anchorDay: '2026-10-20',
+      indexes: [0, 1, 2, 3],
+    });
+    expect(arg).toMatchObject({
+      customerId: CUSTOMER,
+      dryRun: false,
+      depositPercent: 20,
+    });
+  });
+
+  it('answers the new sessions on a dry run', async () => {
+    const { handler, creates } = build();
+    creates.extend.mockResolvedValue({ dry_run: true, sessions: [] });
+    const out = await handler.execute({
+      seriesId: 'S',
+      who: customer,
+      claim: manageClaimFrom({ action: 'EXTEND', sessions: 1, dry_run: true }),
+      nowMs: NOW,
+    });
+    expect(out).toEqual({ dry_run: true, sessions: [] });
+  });
+
+  it('answers the hub after a real extend', async () => {
+    const { handler } = build();
+    const out = await handler.execute({
+      seriesId: 'S',
+      who: customer,
+      claim: manageClaimFrom({ action: 'EXTEND', sessions: 1 }),
+      nowMs: NOW,
+    });
+    expect(out).toEqual({ id: 'S', hub: true });
+  });
+
+  it('refuses a routine that is not active, and books nothing', async () => {
+    const { handler, creates } = build('paused');
+    const text = await failure(
+      handler.execute({
+        seriesId: 'S',
+        who: customer,
+        claim: manageClaimFrom({ action: 'EXTEND', sessions: 1 }),
+        nowMs: NOW,
+      }),
+    );
+    expect(text).toContain('routine_not_active');
+    expect(creates.extend).not.toHaveBeenCalled();
   });
 });

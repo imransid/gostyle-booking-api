@@ -1,6 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { MobileContractError } from './mobile-booking.error';
-import { refused } from './mobile-series.handler';
+import {
+  MobileSeriesHandler,
+  refused,
+  type MobileSeriesPreview,
+} from './mobile-series.handler';
 import { PlaceHoldHandler } from './place-hold.handler';
 import { RescheduleHandler } from './reschedule.handler';
 import {
@@ -34,18 +38,22 @@ import {
 
 type Reschedule = Extract<CheckedManage, { action: 'RESCHEDULE' }>;
 
+/** MOBILE_SERIES_DEPOSIT_PERCENT's own default, when the caller sends none. */
+const DEFAULT_DEPOSIT_PERCENT = 20;
+
 /** A line for the log, from whatever was thrown. */
 const reasonOf = (e: unknown): string =>
   e instanceof Error ? e.message : 'unknown error';
 
 /**
  * PATCH /v1/mobile-booking/series/:id (step 6): the changes the app asks
- * for. SKIP and RESCHEDULE are built. EXTEND, PAUSE and RESUME answer
+ * for. SKIP, RESCHEDULE and EXTEND are built. PAUSE and RESUME answer
  * invalid_action until they are.
  *
  * Every check runs on the facts the hub shows (MobileSeriesReadHandler
  * .factsFor), so what the app is offered and what it is allowed always
- * agree. The answer is always the whole routine, as the hub reads it.
+ * agree. The answer is the whole routine, as the hub reads it; EXTEND's dry
+ * run answers the new sessions instead, as the create's preview does.
  */
 @Injectable()
 export class MobileSeriesManageHandler {
@@ -57,6 +65,7 @@ export class MobileSeriesManageHandler {
     private readonly reads: MobileSeriesReadHandler,
     private readonly holds: PlaceHoldHandler,
     private readonly moves: RescheduleHandler,
+    private readonly creates: MobileSeriesHandler,
   ) {}
 
   async execute(input: {
@@ -64,7 +73,8 @@ export class MobileSeriesManageHandler {
     readonly who: SeriesReader;
     readonly claim: ManageClaim;
     readonly nowMs?: number;
-  }): Promise<MobileSeriesView> {
+    readonly depositPercent?: number;
+  }): Promise<MobileSeriesView | MobileSeriesPreview> {
     // The app's changes are the customer's own. Staff change a routine at
     // the desk, with the desk's tools; here they get the hub's 404.
     if (input.who.actorKind !== 'customer') {
@@ -83,11 +93,15 @@ export class MobileSeriesManageHandler {
     if (checked.kind === 'refused') throw refused(checked.refusal);
     const change = checked.value;
 
-    if (change.action !== 'SKIP' && change.action !== 'RESCHEDULE') {
+    if (
+      change.action !== 'SKIP' &&
+      change.action !== 'RESCHEDULE' &&
+      change.action !== 'EXTEND'
+    ) {
       throw refused({
         field: 'action',
         code: 'invalid_action',
-        message: `${change.action} is not available yet. Only SKIP and RESCHEDULE are.`,
+        message: `${change.action} is not available yet. Only SKIP, RESCHEDULE and EXTEND are.`,
       });
     }
     const notActive = actionRefusal(change.action, series.status);
@@ -105,6 +119,34 @@ export class MobileSeriesManageHandler {
         await this.skipOne(occurrence, input.who.actorId);
       }
       return this.reads.read(input.seriesId, input.who);
+    }
+
+    if (change.action === 'EXTEND') {
+      const row = await this.prisma.bookingSeries.findUnique({
+        where: { id: series.id },
+        select: { anchorDay: true, startMin: true },
+      });
+      if (row === null) throw MobileContractError.notFoundBooking();
+      const preview = await this.creates.extend({
+        routine: {
+          id: series.id,
+          branchId: series.branchId,
+          frequency: series.frequency,
+          // Never null for an app routine (CHECK series_mobile_has_services).
+          serviceIds: series.serviceIds ?? [],
+          stylistId: series.preferredStaffId ?? '',
+          startMin: row.startMin,
+          anchorDay: row.anchorDay.toISOString().slice(0, 10),
+          indexes: series.occurrences.map((o) => o.index),
+        },
+        facts,
+        change,
+        customerId: input.who.actorId,
+        dryRun: input.claim.dryRun,
+        depositPercent: input.depositPercent ?? DEFAULT_DEPOSIT_PERCENT,
+        nowMs,
+      });
+      return preview ?? this.reads.read(input.seriesId, input.who);
     }
 
     await this.reschedule(
