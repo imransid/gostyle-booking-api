@@ -211,6 +211,22 @@ export class MobileSeriesReadHandler {
     return this.present(series, nowMs);
   }
 
+  /**
+   * Step B7: `read`, with the rows it was built from, for the booking
+   * shape (MobileRoutineBookingViewHandler). The same checks, the same 404.
+   */
+  async readWithRow(
+    seriesId: string,
+    who: SeriesReader,
+    nowMs = Date.now(),
+  ): Promise<{ view: MobileSeriesView; series: SeriesRowLoaded }> {
+    const series = await this.load(seriesId);
+    if (series === null || !this.visible(series, who)) {
+      throw MobileContractError.notFoundBooking();
+    }
+    return { view: await this.present(series, nowMs), series };
+  }
+
   /** The same shape, for a routine this request just made. */
   async afterCreate(
     seriesId: string,
@@ -237,19 +253,43 @@ export class MobileSeriesReadHandler {
     paging: { readonly page: number; readonly pageSize: number },
     nowMs = Date.now(),
   ): Promise<{ count: number; results: unknown[] }> {
+    const page = await this.pageWithRows(customerId, paging, nowMs);
+    return {
+      count: page.count,
+      results: page.items.map(({ view }) => routineRow(view)),
+    };
+  }
+
+  /**
+   * One page of this customer's app routines, in the Recurring order, each
+   * whole (the hub) with the rows it was built from: the Recurring tab's
+   * rows (listForCustomer) and, step B7, its booking shape.
+   */
+  async pageWithRows(
+    customerId: string,
+    paging: { readonly page: number; readonly pageSize: number },
+    nowMs = Date.now(),
+  ): Promise<{
+    count: number;
+    items: { view: MobileSeriesView; series: SeriesRowLoaded }[];
+  }> {
     const rows = await this.prisma.bookingSeries.findMany({
       where: { source: 'mobile', customerId: toUuid(customerId) },
       include: { occurrences: { orderBy: { index: 'asc' } } },
     });
-    const views = await Promise.all(
-      rows.map((row) => this.present(row, nowMs)),
+    const items = await Promise.all(
+      rows.map(async (series) => ({
+        view: await this.present(series, nowMs),
+        series,
+      })),
     );
+    const byView = new Map(items.map((i) => [i.view, i] as const));
     const start = (paging.page - 1) * paging.pageSize;
     return {
-      count: views.length,
-      results: sortRoutines(views)
+      count: items.length,
+      items: sortRoutines(items.map((i) => i.view))
         .slice(start, start + paging.pageSize)
-        .map((view) => routineRow(view)),
+        .map((view) => byView.get(view)!),
     };
   }
 
@@ -290,6 +330,29 @@ export class MobileSeriesReadHandler {
           : [],
       ),
     );
+  }
+
+  /**
+   * Step B7: what the single read adds about a booking's routine. The
+   * booking's own `booking_type` (SINGLE or ROUTINE, as the list says it),
+   * and `series_id` only for an app routine, as the list names it
+   * (appRoutinesOf): a desk series has no hub to open. Null for a booking
+   * that is not there.
+   */
+  async bookingLinkOf(
+    bookingId: string,
+  ): Promise<{ booking_type: string; series_id: string | null } | null> {
+    if (!UUID_RE.test(bookingId)) return null;
+    const row = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      select: { bookingType: true },
+    });
+    if (row === null) return null;
+    const routines = await this.appRoutinesOf([bookingId]);
+    return {
+      booking_type: row.bookingType.toUpperCase(),
+      series_id: routines.get(bookingId) ?? null,
+    };
   }
 
   /**

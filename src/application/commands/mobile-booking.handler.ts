@@ -36,7 +36,9 @@ import {
   toMobileStatus,
   toOffsetIso,
   railToMethod,
+  paidAndDue,
 } from '@domain/booking/mobile-contract';
+import type { VisitMoney } from '@domain/booking/mobile-series-booking-view';
 import {
   MobileContractError,
   isMobileContractError,
@@ -1191,6 +1193,35 @@ export class MobileBookingHandler {
     return this.tenants.run(b.tenantId, fn);
   }
 
+  /**
+   * Step B7: one booking's money exactly as `read` reports it (the same
+   * moneyFor, the same paidAndDue), for a routine's sum, so a routine and
+   * its visits can never disagree. Null for a booking that is not there.
+   *
+   * NO OWNER CHECK HERE: the caller has already checked the routine the
+   * booking belongs to, and this answers nothing but figures to it.
+   */
+  async moneyView(bookingId: string): Promise<VisitMoney | null> {
+    const b = await this.bookings.detail(bookingId);
+    if (b === null) return null;
+    const money = await this.moneyFor(b);
+    const paid = paidAndDue(money.totalFils, b.ledger);
+    return {
+      status: toMobileStatus(b.status),
+      code: b.code,
+      subtotalFils: money.subtotalFils,
+      vatFils: money.vatFils,
+      discountFils: money.discountFils,
+      totalFils: money.totalFils,
+      capturedFils: paid.capturedFils,
+      dueFils: paid.dueFils,
+      items: b.items.map((i) => ({
+        serviceId: i.serviceId,
+        priceFils: i.priceFils,
+      })),
+    };
+  }
+
   /** §8, read back from what was actually stored. */
   async present(
     cmd: Pick<MobileBookingCommand, 'salonId' | 'promoCode'>,
@@ -1219,9 +1250,7 @@ export class MobileBookingHandler {
      * `advance_paid_amount` is what the customer HANDED OVER. The two are
      * different questions and the ledger keeps both.
      */
-    const captures = b.ledger.filter((l) => l.entryType === 'captured');
-    const captured = captures.reduce((n, l) => n + l.amountFils, 0);
-    const paidRail = captures[captures.length - 1]?.rail ?? null;
+    const paid = paidAndDue(money.totalFils, b.ledger);
 
     // The roster speaks slugs and the columns hold the folded uuid, so every
     // id going back out is spelled the way the app sent it in (CLAUDE.md 8).
@@ -1314,14 +1343,11 @@ export class MobileBookingHandler {
        * ledger is the only record of what moved, so it is what these are
        * derived from.
        */
-      advance_paid_amount: filsToAed(captured),
-      due_amount:
-        money.totalFils === null
-          ? null
-          : filsToAed(Math.max(0, money.totalFils - captured)),
+      advance_paid_amount: filsToAed(paid.capturedFils),
+      due_amount: paid.dueFils === null ? null : filsToAed(paid.dueFils),
       payment_status: toMobilePaymentStatus(b.paymentStatus),
       payment_status_detail: b.paymentStatus.toUpperCase(),
-      payment_method: railToMethod(paidRail),
+      payment_method: railToMethod(paid.lastRail),
       /** §6: the server issues it, and it is the booking's own code. */
       pass_qr_code: b.code,
       /** §10.3: present while the draft hold is running, gone once paid. */

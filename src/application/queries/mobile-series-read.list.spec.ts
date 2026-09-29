@@ -49,3 +49,59 @@ describe('appRoutinesOf: which visits belong to an app routine', () => {
     expect(prisma.booking.findMany).not.toHaveBeenCalled();
   });
 });
+
+describe('bookingLinkOf (B7): what the single read adds', () => {
+  const build2 = (bookingType: string | null) => {
+    const prisma = {
+      booking: {
+        findUnique: vi
+          .fn()
+          .mockResolvedValue(bookingType === null ? null : { bookingType }),
+        findMany: vi.fn().mockResolvedValue([
+          { id: B1, seriesId: APP },
+          { id: B2, seriesId: DESK },
+        ]),
+      },
+      bookingSeries: { findMany: vi.fn().mockResolvedValue([{ id: APP }]) },
+    };
+    return {
+      prisma,
+      handler: new MobileSeriesReadHandler(
+        prisma as never,
+        {} as never,
+        {} as never,
+      ),
+    };
+  };
+
+  it('a visit of an app routine: ROUTINE and its routine', async () => {
+    const { handler } = build2('routine');
+    expect(await handler.bookingLinkOf(B1)).toStrictEqual({
+      booking_type: 'ROUTINE',
+      series_id: APP,
+    });
+  });
+
+  it('a desk series visit: its own type, and no routine the app can open', async () => {
+    const { handler } = build2('routine');
+    expect(await handler.bookingLinkOf(B2)).toStrictEqual({
+      booking_type: 'ROUTINE',
+      series_id: null,
+    });
+  });
+
+  it('a plain booking: SINGLE and null', async () => {
+    const { handler } = build2('single');
+    expect(await handler.bookingLinkOf(B3)).toStrictEqual({
+      booking_type: 'SINGLE',
+      series_id: null,
+    });
+  });
+
+  it('no such booking, or not a uuid: null, and a bad id asks nothing', async () => {
+    expect(await build2(null).handler.bookingLinkOf(B3)).toBeNull();
+    const { handler, prisma } = build2('single');
+    expect(await handler.bookingLinkOf('nope')).toBeNull();
+    expect(prisma.booking.findUnique).not.toHaveBeenCalled();
+  });
+});

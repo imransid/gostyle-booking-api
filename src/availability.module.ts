@@ -66,6 +66,7 @@ import { MobileGroupBookingController } from '@interface/http/mobile-group-booki
 import { MobileSeriesController } from '@interface/http/mobile-series.controller';
 import { MobileSeriesHandler } from '@application/commands/mobile-series.handler';
 import { MobileSeriesReadHandler } from '@application/queries/mobile-series-read.handler';
+import { MobileRoutineBookingViewHandler } from '@application/queries/mobile-routine-booking-view.handler';
 import { MobileSeriesManageHandler } from '@application/commands/mobile-series-manage.handler';
 import { MobileSeriesCancelHandler } from '@application/commands/mobile-series-cancel.handler';
 import { MobileSeriesJobHandler } from '@application/commands/mobile-series-job.handler';
@@ -146,6 +147,7 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     MobileGroupCancelHandler,
     MobileSeriesHandler,
     MobileSeriesReadHandler,
+    MobileRoutineBookingViewHandler,
     MobileSeriesManageHandler,
     MobileSeriesCancelHandler,
     MobileSeriesJobHandler,

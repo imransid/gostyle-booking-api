@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   GUARDS_METADATA,
   INTERCEPTORS_METADATA,
@@ -172,5 +172,50 @@ describe('MobileSeriesController', () => {
       });
       expect(rest).toStrictEqual(await commandFor(body()));
     });
+  });
+});
+
+describe('B7: GET :seriesId?view=booking', () => {
+  afterEach(() => {
+    delete process.env.MOBILE_ROUTINE_CONTRACT;
+  });
+  const who = { actorId: actor.id, actorKind: 'customer', actorBranchId: null };
+  const build = () => {
+    const reads = { read: vi.fn(() => Promise.resolve({ id: 'hub' })) };
+    const bookingView = {
+      read: vi.fn(() => Promise.resolve({ id: 'booking' })),
+    };
+    const controller = new MobileSeriesController(
+      {} as never,
+      reads as never,
+      undefined,
+      undefined,
+      bookingView as never,
+    );
+    return { controller, reads, bookingView };
+  };
+
+  it('flag on and view=booking: the routine as one booking', async () => {
+    process.env.MOBILE_ROUTINE_CONTRACT = 'true';
+    const { controller, reads, bookingView } = build();
+    expect(await controller.read('series-1', actor, 'booking')).toStrictEqual({
+      id: 'booking',
+    });
+    expect(bookingView.read).toHaveBeenCalledWith('series-1', who);
+    expect(reads.read).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['flag off, view=booking', undefined, 'booking'],
+    ['flag on, no view', 'true', undefined],
+    ['flag on, another view', 'true', 'hub'],
+  ] as const)('%s: the hub, exactly as before', async (_n, flag, view) => {
+    if (flag !== undefined) process.env.MOBILE_ROUTINE_CONTRACT = flag;
+    const { controller, reads, bookingView } = build();
+    expect(await controller.read('series-1', actor, view)).toStrictEqual({
+      id: 'hub',
+    });
+    expect(reads.read).toHaveBeenCalledWith('series-1', who);
+    expect(bookingView.read).not.toHaveBeenCalled();
   });
 });

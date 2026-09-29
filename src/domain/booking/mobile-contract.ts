@@ -536,3 +536,33 @@ export function paymentStatusAfterPatch(
       return 'none_required';
   }
 }
+
+/**
+ * What the single read reports as taken and still due, from a booking's
+ * ledger (booking-create.md §8 and §11). ONE place, so the single read and a
+ * routine's sum of its visits (step B7) can never disagree.
+ *
+ * `captured` rows only: a refund or a forfeit is money leaving again, and
+ * `advance_paid_amount` is what the customer HANDED OVER. Due is the total
+ * less that, never below 0, and unknown (null) when the total is.
+ */
+export function paidAndDue<R>(
+  totalFils: number | null,
+  ledger: readonly {
+    readonly entryType: string;
+    readonly amountFils: number;
+    readonly rail: R;
+  }[],
+): {
+  readonly capturedFils: number;
+  readonly dueFils: number | null;
+  readonly lastRail: R | null;
+} {
+  const captures = ledger.filter((l) => l.entryType === 'captured');
+  const capturedFils = captures.reduce((n, l) => n + l.amountFils, 0);
+  return {
+    capturedFils,
+    dueFils: totalFils === null ? null : Math.max(0, totalFils - capturedFils),
+    lastRail: captures[captures.length - 1]?.rail ?? null,
+  };
+}

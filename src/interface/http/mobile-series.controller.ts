@@ -6,6 +6,7 @@ import {
   Injectable,
   Param,
   Post,
+  Query,
   Res,
   UseGuards,
   UseInterceptors,
@@ -27,6 +28,7 @@ import {
   ApiOperation,
   ApiProperty,
   ApiPropertyOptional,
+  ApiQuery,
   ApiTags,
   ApiUnprocessableEntityResponse,
 } from '@nestjs/swagger';
@@ -57,6 +59,10 @@ import {
   MobileSeriesReadHandler,
   type MobileSeriesView,
 } from '@application/queries/mobile-series-read.handler';
+import {
+  MobileRoutineBookingViewHandler,
+  type RoutineBookingView,
+} from '@application/queries/mobile-routine-booking-view.handler';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
 import { IdempotentInterceptor } from './idempotent.interceptor';
@@ -376,6 +382,7 @@ export class MobileSeriesController {
     private readonly reads: MobileSeriesReadHandler,
     @Optional() private readonly manage?: MobileSeriesManageHandler,
     @Optional() private readonly cancels?: MobileSeriesCancelHandler,
+    @Optional() private readonly bookingView?: MobileRoutineBookingViewHandler,
   ) {}
 
   @Post()
@@ -470,15 +477,34 @@ export class MobileSeriesController {
   })
   @ApiOkResponse({ description: 'The routine.' })
   @ApiNotFoundResponse({ description: 'No such routine, or not yours.' })
+  @ApiQuery({
+    name: 'view',
+    required: false,
+    enum: ['booking'],
+    description:
+      'Behind MOBILE_ROUTINE_CONTRACT: `booking` answers the routine as one ' +
+      'booking (the app team contract). Off, or anything else: the hub.',
+  })
   read(
     @Param('seriesId') seriesId: string,
     @CurrentActor() actor: Actor,
-  ): Promise<MobileSeriesView> {
-    return this.reads.read(seriesId, {
+    @Query('view') view?: string,
+  ): Promise<MobileSeriesView | RoutineBookingView> {
+    const who = {
       actorId: actor.id ?? 'anonymous',
       actorKind: actor.kind,
       actorBranchId: actor.branchId,
-    });
+    };
+    // Step B7: the booking shape only when asked AND switched on; otherwise
+    // exactly the hub, as before.
+    if (
+      view === 'booking' &&
+      MOBILE_ROUTINE_CONTRACT() &&
+      this.bookingView !== undefined
+    ) {
+      return this.bookingView.read(seriesId, who);
+    }
+    return this.reads.read(seriesId, who);
   }
 
   @Patch(':seriesId')

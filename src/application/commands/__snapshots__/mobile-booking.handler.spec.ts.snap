@@ -1,0 +1,241 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`B7: the single read, as it was before B7 > a no-show nobody paid 1`] = `
+{
+  "advance_paid_amount": 0,
+  "amount_without_tax": 160,
+  "created_at": "2026-09-19T16:00:00+06:00",
+  "date": "2026-09-20",
+  "discount": 0,
+  "due_amount": 168,
+  "end_time": "2026-09-20T14:45:00+06:00",
+  "expires_at": null,
+  "id": "eeeeeeee-5555-4eee-8eee-eeeeeeeeeeee",
+  "pass_qr_code": "GS-1001",
+  "payment_method": null,
+  "payment_status": "PAY_AFTER_CHECK_IN",
+  "payment_status_detail": "NONE_REQUIRED",
+  "products": [],
+  "promo_code": null,
+  "salon_id": "marina-walk",
+  "services": [
+    {
+      "amount": 160,
+      "id": "haircut-finish",
+      "name": "Haircut & finish",
+    },
+  ],
+  "start_time": "2026-09-20T14:00:00+06:00",
+  "status": "CANCELLED",
+  "status_detail": "NO_SHOW",
+  "stylists": [
+    {
+      "avatar_url": null,
+      "id": "maya",
+      "name": "Maya",
+    },
+  ],
+  "tax_amount": 8,
+  "total": 168,
+}
+`;
+
+exports[`B7: the single read, as it was before B7 > paid at the desk (price_fils, net) 1`] = `
+{
+  "advance_paid_amount": 160,
+  "amount_without_tax": 160,
+  "created_at": "2026-09-19T16:00:00+06:00",
+  "date": "2026-09-20",
+  "discount": 0,
+  "due_amount": 8,
+  "end_time": "2026-09-20T14:45:00+06:00",
+  "expires_at": null,
+  "id": "eeeeeeee-5555-4eee-8eee-eeeeeeeeeeee",
+  "pass_qr_code": "GS-1001",
+  "payment_method": "OTHERS",
+  "payment_status": "FULLY_PAID",
+  "payment_status_detail": "FULLY_PAID",
+  "products": [],
+  "promo_code": null,
+  "salon_id": "marina-walk",
+  "services": [
+    {
+      "amount": 160,
+      "id": "haircut-finish",
+      "name": "Haircut & finish",
+    },
+  ],
+  "start_time": "2026-09-20T14:00:00+06:00",
+  "status": "CONFIRMED_BY_SALON",
+  "status_detail": "CONFIRMED",
+  "stylists": [
+    {
+      "avatar_url": null,
+      "id": "maya",
+      "name": "Maya",
+    },
+  ],
+  "tax_amount": 8,
+  "total": 168,
+}
+`;
+
+exports[`B7: the single read, as it was before B7 > paid at the desk, then refunded 1`] = `
+{
+  "advance_paid_amount": 160,
+  "amount_without_tax": 160,
+  "created_at": "2026-09-19T16:00:00+06:00",
+  "date": "2026-09-20",
+  "discount": 0,
+  "due_amount": 8,
+  "end_time": "2026-09-20T14:45:00+06:00",
+  "expires_at": null,
+  "id": "eeeeeeee-5555-4eee-8eee-eeeeeeeeeeee",
+  "pass_qr_code": "GS-1001",
+  "payment_method": "OTHERS",
+  "payment_status": "PARTIALLY",
+  "payment_status_detail": "REFUNDED",
+  "products": [],
+  "promo_code": null,
+  "salon_id": "marina-walk",
+  "services": [
+    {
+      "amount": 160,
+      "id": "haircut-finish",
+      "name": "Haircut & finish",
+    },
+  ],
+  "start_time": "2026-09-20T14:00:00+06:00",
+  "status": "CANCELLED",
+  "status_detail": "CANCELLED",
+  "stylists": [
+    {
+      "avatar_url": null,
+      "id": "maya",
+      "name": "Maya",
+    },
+  ],
+  "tax_amount": 8,
+  "total": 168,
+}
+`;
+
+exports[`B7: the single read, as it was before B7 > pay at the salon, nothing taken 1`] = `
+{
+  "advance_paid_amount": 0,
+  "amount_without_tax": 160,
+  "created_at": "2026-09-19T16:00:00+06:00",
+  "date": "2026-09-20",
+  "discount": 0,
+  "due_amount": 168,
+  "end_time": "2026-09-20T14:45:00+06:00",
+  "expires_at": null,
+  "id": "eeeeeeee-5555-4eee-8eee-eeeeeeeeeeee",
+  "pass_qr_code": "GS-1001",
+  "payment_method": null,
+  "payment_status": "PAY_AFTER_CHECK_IN",
+  "payment_status_detail": "NONE_REQUIRED",
+  "products": [],
+  "promo_code": null,
+  "salon_id": "marina-walk",
+  "services": [
+    {
+      "amount": 160,
+      "id": "haircut-finish",
+      "name": "Haircut & finish",
+    },
+  ],
+  "start_time": "2026-09-20T14:00:00+06:00",
+  "status": "CONFIRMED_BY_SALON",
+  "status_detail": "CONFIRMED",
+  "stylists": [
+    {
+      "avatar_url": null,
+      "id": "maya",
+      "name": "Maya",
+    },
+  ],
+  "tax_amount": 8,
+  "total": 168,
+}
+`;
+
+exports[`B7: the single read, as it was before B7 > the services cannot be priced, nothing stored 1`] = `
+{
+  "advance_paid_amount": 0,
+  "amount_without_tax": null,
+  "created_at": "2026-09-19T16:00:00+06:00",
+  "date": "2026-09-20",
+  "discount": 0,
+  "due_amount": null,
+  "end_time": "2026-09-20T14:45:00+06:00",
+  "expires_at": null,
+  "id": "eeeeeeee-5555-4eee-8eee-eeeeeeeeeeee",
+  "pass_qr_code": "GS-1001",
+  "payment_method": null,
+  "payment_status": "DRAFT",
+  "payment_status_detail": "UNPAID",
+  "products": [],
+  "promo_code": null,
+  "salon_id": "marina-walk",
+  "services": [
+    {
+      "amount": 160,
+      "id": "haircut-finish",
+      "name": "Haircut & finish",
+    },
+  ],
+  "start_time": "2026-09-20T14:00:00+06:00",
+  "status": "BOOKED",
+  "status_detail": "PENDING_PAYMENT",
+  "stylists": [
+    {
+      "avatar_url": null,
+      "id": "maya",
+      "name": "Maya",
+    },
+  ],
+  "tax_amount": 0,
+  "total": null,
+}
+`;
+
+exports[`B7: the single read, as it was before B7 > unpaid, waiting for its link 1`] = `
+{
+  "advance_paid_amount": 0,
+  "amount_without_tax": 160,
+  "created_at": "2026-09-19T16:00:00+06:00",
+  "date": "2026-09-20",
+  "discount": 0,
+  "due_amount": 168,
+  "end_time": "2026-09-20T14:45:00+06:00",
+  "expires_at": null,
+  "id": "eeeeeeee-5555-4eee-8eee-eeeeeeeeeeee",
+  "pass_qr_code": "GS-1001",
+  "payment_method": null,
+  "payment_status": "DRAFT",
+  "payment_status_detail": "UNPAID",
+  "products": [],
+  "promo_code": null,
+  "salon_id": "marina-walk",
+  "services": [
+    {
+      "amount": 160,
+      "id": "haircut-finish",
+      "name": "Haircut & finish",
+    },
+  ],
+  "start_time": "2026-09-20T14:00:00+06:00",
+  "status": "BOOKED",
+  "status_detail": "PENDING_PAYMENT",
+  "stylists": [
+    {
+      "avatar_url": null,
+      "id": "maya",
+      "name": "Maya",
+    },
+  ],
+  "tax_amount": 8,
+  "total": 168,
+}
+`;
