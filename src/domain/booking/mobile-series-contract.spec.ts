@@ -856,6 +856,25 @@ describe('checkPicks', () => {
     }
   });
 
+  it("B6 strictPicks: only the shape is checked here; the range is the rule's", () => {
+    const strict = { farPicks: false, strictPicks: true };
+    for (const date of ['2027-04-19', '2026-09-30']) {
+      expect(checkPicks([pickOn(date)], TODAY, 6, strict).kind).toBe('ok');
+    }
+    expect(checkPicks([pickOn('2026-02-30')], TODAY, 6, strict)).toEqual({
+      kind: 'refused',
+      refusal: {
+        field: 'picks[0].date',
+        code: 'invalid_pick',
+        message: 'A pick is a day, YYYY-MM-DD.',
+      },
+    });
+    expect(
+      checkPicks([{ ...pickOn('2026-10-20'), time: '09:00' }], TODAY, 6, strict)
+        .kind,
+    ).toBe('refused');
+  });
+
   it('B5: no stylist is refused, unless the server chooses one (stylistChosenByServer)', () => {
     const claim = weekly({ stylistId: null });
     expect(checkRoutine(claim, TODAY)).toMatchObject({

@@ -200,7 +200,8 @@ export type RuleRefusalCode =
   | 'too_many_sessions'
   | 'reschedule_out_of_range'
   | 'session_day_taken'
-  | 'invalid_pick';
+  | 'invalid_pick'
+  | 'session_not_offered';
 
 export interface RuleRefusal {
   readonly field: string;
@@ -570,6 +571,63 @@ export function farPickRefusal(input: {
         'invalid_pick',
         `A session more than ${BOOKING_HORIZON_DAYS} days away keeps the ` +
           "routine's stylist until it is booked.",
+      );
+    }
+  }
+  return null;
+}
+
+/**
+ * Step B6, the contract's strict_picks: every pick must be a time the B4
+ * alternatives rule (routineAlternatives) allows for its session:
+ *   - the session's own stylist (null, or the routine's);
+ *   - the session's own day, or up to 7 days after it; never before today;
+ *   - never a day another session of the routine has (its own day, or its
+ *     pick);
+ *   - inside booking-api's day;
+ *   - a near session stays inside the 90 days; a far one may go past them
+ *     only with check_later, and only inside its own +7 window.
+ * A pick that follows the rule is fine even if it was not one of the
+ * alternatives shown (Q3): the ones shown change as the diary does. Whether
+ * it is free is checked afterwards, as for every session. A pick equal to
+ * its own slot is fine.
+ *
+ * Replaces, with strict_picks, the looser checks: the 90 or 366 day range
+ * of checkPicks and farPickRefusal (B2).
+ */
+export function offeredPickRefusal(input: {
+  /** The session days as planned, before any pick. */
+  readonly planned: readonly PlannedDay[];
+  readonly picks: readonly PickChoice[];
+  readonly today: TradingDay;
+  /** The routine's stylist. */
+  readonly stylistId: string;
+  /** check_later: a far session may be picked past the 90 days. */
+  readonly checkLater: boolean;
+}): RuleRefusal | null {
+  const own = input.planned.map((p) => p.day);
+  const picked = new Map(input.picks.map((p) => [p.index, p.day] as const));
+  const final = own.map((day, i) => picked.get(i) ?? day);
+
+  for (const [j, p] of input.picks.entries()) {
+    const day = own[p.index];
+    const ahead = day === undefined ? -1 : daysBetween(day, p.day);
+    const far = day !== undefined && beyondHorizon(day, input.today);
+    const allowed =
+      (p.stylistId === null || p.stylistId === input.stylistId) &&
+      ahead >= 0 &&
+      ahead <= ROUTINE_ALTERNATIVE_DAYS &&
+      p.day >= input.today &&
+      !final.some((d, i) => i !== p.index && d === p.day) &&
+      isInsideDay(p.startMin) &&
+      (far ? input.checkLater : !beyondHorizon(p.day, input.today));
+    if (!allowed) {
+      return refuse(
+        `picks[${j}]`,
+        'session_not_offered',
+        `Session ${p.index + 1} is neither on its cadence nor at a time the ` +
+          'alternatives rule allows (same stylist, same day or up to ' +
+          `${ROUTINE_ALTERNATIVE_DAYS} days after, not another session's day).`,
       );
     }
   }

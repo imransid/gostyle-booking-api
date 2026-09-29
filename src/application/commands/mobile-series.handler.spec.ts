@@ -1845,3 +1845,186 @@ describe('B5: Any Available Expert (stylist_candidates, no stylist_id)', () => {
     ).toBe('stylist_required');
   });
 });
+
+// ------------------------------------------------------------ B6
+
+describe('B6: strict_picks, every pick follows the alternatives rule', () => {
+  const STRICT: RoutineContractOptions = { ...OPTIONS_OFF, strictPicks: true };
+  const strictWith = (over: Partial<RoutineContractOptions>) => ({
+    ...STRICT,
+    ...over,
+  });
+  const run = (
+    contract: RoutineContractOptions | undefined,
+    over: Partial<RoutineClaim>,
+    diary: Diary = {},
+  ) => {
+    const h = harness({ diary });
+    return everything(
+      h,
+      command(
+        { ...SIX_MONTHLY, ...over },
+        { money: SIX_MONEY, ...(contract === undefined ? {} : { contract }) },
+      ),
+    ).then((r) => ({
+      ...r,
+      asked: h.availability.execute.mock.calls.map((c) => c[0].tradingDay),
+    }));
+  };
+  const pick = (
+    index: number,
+    date: string,
+    time = '16:30',
+    stylistId: string | null = null,
+  ) => ({ index, date, time, stylistId });
+  const offRule = (j = 0) => ({
+    status: 422,
+    errors: [
+      expect.objectContaining({
+        field: `picks[${j}]`,
+        code: 'session_not_offered',
+      }),
+    ],
+  });
+  const bookedDays = (r: { booked: unknown[] }) =>
+    r.booked.map((b) => (b as { date: string }).date);
+
+  // ---- 1 and 2. Outside the rule: refused, before anything is booked
+
+  it('a free time 2 weeks later is refused, in the preview and in the create, before anything is looked at', async () => {
+    const picks = [pick(1, '2026-11-20')];
+    for (const dryRun of [true, false]) {
+      const now = await run(STRICT, { dryRun, picks });
+      expect(now.answer).toStrictEqual(offRule());
+      expect(now.booked).toStrictEqual([]);
+      expect(now.saved).toStrictEqual([]);
+      expect(now.asked).not.toContain('2026-11-20');
+    }
+    // Without strict_picks the same pick is booked, as before.
+    const before = await run(undefined, { picks });
+    expect(bookedDays(before)).toContain('2026-11-20');
+  });
+
+  it.each([
+    ['another stylist', [pick(1, '2026-11-07', '16:30', 'rana')], {}],
+    ['the day before its own day', [pick(1, '2026-11-05')], {}],
+    [
+      "another session's day",
+      [pick(1, '2026-10-20')],
+      { frequency: 'WEEKLY', startDate: '2026-10-06', sessions: 3 },
+    ],
+    [
+      'a near session past the 90 days, inside its +7',
+      [pick(2, '2026-12-31')],
+      { frequency: 'MONTHLY', startDate: '2026-10-29', sessions: 4 },
+    ],
+  ] as const)('%s: session_not_offered', async (_name, picks, over) => {
+    const now = await run(strictWith({ checkLater: true }), {
+      ...over,
+      picks: [...picks],
+    });
+    expect(now.answer).toStrictEqual(offRule());
+    expect(now.booked).toStrictEqual([]);
+  });
+
+  it("a far session's pick on day +8 is refused; on day +7 it is saved", async () => {
+    const later = strictWith({ checkLater: true });
+    const eight = await run(later, { picks: [pick(3, '2027-01-14')] });
+    expect(eight.answer).toStrictEqual(offRule());
+    const seven = await run(later, { picks: [pick(3, '2027-01-13')] });
+    const saved = seven.saved[0] as {
+      sessions: { day: string; bookingId: string | null }[];
+    };
+    expect(saved.sessions[3]).toMatchObject({
+      day: '2027-01-13',
+      bookingId: null,
+    });
+    // Without check_later a far session cannot be picked at all.
+    const notLater = await run(STRICT, { picks: [pick(3, '2027-01-07')] });
+    expect(notLater.answer).toStrictEqual(offRule());
+  });
+
+  // ---- 3. Inside the rule: accepted, but it must be free
+
+  it('a free time on day +3 that was not in the list is accepted', async () => {
+    const diary = mayaOff('2026-11-06');
+    const preview = await run(
+      strictWith({ alternativeRule: 'SAME_STYLIST_FORWARD' }),
+      { dryRun: true },
+      diary,
+    );
+    const shown = sessionsOf(preview)[1]!.alternatives.map(
+      (a) => `${a.date} ${a.time}`,
+    );
+    expect(shown).not.toContain('2026-11-09 18:00');
+
+    const now = await run(
+      strictWith({ alternativeRule: 'SAME_STYLIST_FORWARD' }),
+      { picks: [pick(1, '2026-11-09', '18:00')] },
+      diary,
+    );
+    expect(bookedDays(now)).toStrictEqual([
+      '2026-10-06',
+      '2026-11-09',
+      '2026-12-06',
+    ]);
+    const saved = now.saved[0] as {
+      sessions: { day: string; startMin: number }[];
+    };
+    expect(saved.sessions[1]).toMatchObject({
+      day: '2026-11-09',
+      startMin: 1080,
+    });
+  });
+
+  it('a pick inside the rule that is not free: not free in the preview, 409 on the create', async () => {
+    const diary: Diary = {
+      starts: {
+        ...mayaOff('2026-11-06').starts,
+        '2026-11-09': { maya: [900], rana: ALL_DAY },
+      },
+    };
+    const picks = [pick(1, '2026-11-09', '18:00')];
+    const preview = await run(STRICT, { dryRun: true, picks }, diary);
+    expect(sessionsOf(preview)[1]).toMatchObject({
+      date: '2026-11-09',
+      free: false,
+    });
+    const now = await run(STRICT, { picks }, diary);
+    expect(now.answer).toMatchObject({
+      status: 409,
+      errors: [{ field: 'sessions[1]', code: 'session_not_free' }],
+    });
+    expect(now.booked).toStrictEqual([]);
+  });
+
+  // ---- 4. Its own slot
+
+  it('a pick equal to its own slot is fine', async () => {
+    const now = await run(STRICT, { picks: [pick(1, '2026-11-06')] });
+    const plain = await run(STRICT, {});
+    expect(now.booked).toStrictEqual(plain.booked);
+    expect(now.saved).toStrictEqual(plain.saved);
+  });
+
+  // ---- 5. Without strict_picks: as before
+
+  it('without strict_picks every one of these picks answers exactly as with no contract', async () => {
+    const cases: Partial<RoutineClaim>[] = [
+      { picks: [pick(1, '2026-11-20')] },
+      { picks: [pick(1, '2026-11-05')] },
+      { picks: [pick(1, '2026-11-07', '16:30', 'rana')] },
+      {
+        frequency: 'WEEKLY',
+        startDate: '2026-10-06',
+        sessions: 3,
+        picks: [pick(1, '2026-10-20')],
+      },
+    ];
+    for (const over of cases) {
+      expect(await run(OPTIONS_OFF, over)).toStrictEqual(
+        await run(undefined, over),
+      );
+    }
+  });
+});

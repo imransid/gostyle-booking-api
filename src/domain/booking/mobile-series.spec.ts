@@ -21,6 +21,7 @@ import {
   customDays,
   effectivePause,
   farPickRefusal,
+  offeredPickRefusal,
   chooseRegularStylist,
   fixedShuffle,
   routineAlternatives,
@@ -1736,5 +1737,122 @@ describe('chooseRegularStylist (B5, Any Available Expert)', () => {
   it('only one candidate: that one; none: null', () => {
     expect(choose([free()], {}, ['ghost'])).toBe('ghost');
     expect(choose([free('maya')], {}, [])).toBeNull();
+  });
+});
+
+// ------------------------------------------------------------ B6
+
+describe('offeredPickRefusal (B6, strict_picks)', () => {
+  const TODAY = '2026-10-01';
+  const plannedOf = (...days: string[]) =>
+    days.map((day) => ({ day, movedFromDayOfMonth: null }));
+  /** 0 and 1 near; 2 on day 89; 3 past the 90 days (day 97). */
+  const MONTHLY = plannedOf(
+    '2026-10-06',
+    '2026-11-06',
+    '2026-12-29',
+    '2027-01-06',
+  );
+  const pick = (
+    index: number,
+    day: string,
+    startMin = 990,
+    stylistId: string | null = null,
+  ) => ({ index, day, startMin, stylistId });
+  const check = (
+    picks: ReturnType<typeof pick>[],
+    over: Partial<Parameters<typeof offeredPickRefusal>[0]> = {},
+  ) =>
+    offeredPickRefusal({
+      planned: MONTHLY,
+      picks,
+      today: TODAY,
+      stylistId: 'maya',
+      checkLater: false,
+      ...over,
+    });
+  const offRule = (j: number) => ({
+    field: `picks[${j}]`,
+    code: 'session_not_offered',
+  });
+
+  it("a pick equal to its own slot is fine, with no stylist or the routine's", () => {
+    expect(check([pick(1, '2026-11-06')])).toBeNull();
+    expect(check([pick(1, '2026-11-06', 990, 'maya')])).toBeNull();
+  });
+
+  it('its own day at any time, and each day up to +7, are fine', () => {
+    expect(check([pick(1, '2026-11-06', 600)])).toBeNull();
+    for (const day of ['2026-11-07', '2026-11-09', '2026-11-13']) {
+      expect(check([pick(1, day, 1080)])).toBeNull();
+    }
+  });
+
+  it('+8 days, 2 weeks later, and the day before are refused', () => {
+    for (const day of ['2026-11-14', '2026-11-20', '2026-11-05']) {
+      expect(check([pick(1, day)])).toMatchObject(offRule(0));
+    }
+  });
+
+  it('another stylist is refused', () => {
+    expect(check([pick(1, '2026-11-07', 990, 'rana')])).toMatchObject(
+      offRule(0),
+    );
+  });
+
+  it('never before today', () => {
+    const planned = plannedOf('2026-09-30', '2026-10-20');
+    expect(check([pick(0, '2026-09-30', 1020)], { planned })).toMatchObject(
+      offRule(0),
+    );
+    expect(check([pick(0, '2026-10-01')], { planned })).toBeNull();
+  });
+
+  it("never another session's day: its own day, or where its pick moved it", () => {
+    const planned = plannedOf('2026-10-06', '2026-10-08');
+    expect(check([pick(0, '2026-10-08')], { planned })).toMatchObject(
+      offRule(0),
+    );
+    // Session 1 moved to 10-09: its old day is free for session 0...
+    expect(
+      check([pick(1, '2026-10-09'), pick(0, '2026-10-08')], { planned }),
+    ).toBeNull();
+    // ...and its new day is not.
+    expect(
+      check([pick(1, '2026-10-09'), pick(0, '2026-10-09')], { planned }),
+    ).toMatchObject(offRule(0));
+  });
+
+  it('a near session never past the 90 days, even inside its +7', () => {
+    expect(check([pick(2, '2026-12-30')])).toBeNull();
+    expect(check([pick(2, '2026-12-31')])).toMatchObject(offRule(0));
+    expect(check([pick(2, '2026-12-31')], { checkLater: true })).toMatchObject(
+      offRule(0),
+    );
+  });
+
+  it('a far session: only with check_later, and only inside its +7', () => {
+    expect(check([pick(3, '2027-01-07')])).toMatchObject(offRule(0));
+    expect(check([pick(3, '2027-01-07')], { checkLater: true })).toBeNull();
+    expect(check([pick(3, '2027-01-13')], { checkLater: true })).toBeNull();
+    expect(check([pick(3, '2027-01-14')], { checkLater: true })).toMatchObject(
+      offRule(0),
+    );
+  });
+
+  it('a time outside the trading day is refused', () => {
+    expect(check([pick(1, '2026-11-07', 1320)])).toMatchObject(offRule(0));
+  });
+
+  it('names the pick that breaks the rule, with the plain message', () => {
+    expect(check([pick(0, '2026-10-07'), pick(1, '2026-11-20')])).toStrictEqual(
+      {
+        field: 'picks[1]',
+        code: 'session_not_offered',
+        message:
+          'Session 2 is neither on its cadence nor at a time the alternatives rule ' +
+          "allows (same stylist, same day or up to 7 days after, not another session's day).",
+      },
+    );
   });
 });

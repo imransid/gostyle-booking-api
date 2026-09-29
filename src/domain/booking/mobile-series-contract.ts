@@ -99,6 +99,7 @@ export const SERIES_REFUSAL_CODES: readonly SeriesRefusalCode[] = [
   'too_many_sessions',
   'reschedule_out_of_range',
   'session_day_taken',
+  'session_not_offered',
   'not_found',
   'cannot_cancel',
 ];
@@ -241,6 +242,12 @@ function inBookingRange(day: TradingDay, today: TradingDay): boolean {
  */
 export interface HorizonOptions {
   readonly farPicks: boolean;
+  /**
+   * Step B6, the contract's strict_picks: a pick's range is the
+   * alternatives rule's to check (offeredPickRefusal, once the days are
+   * planned), so here only its shape is.
+   */
+  readonly strictPicks?: boolean;
 }
 
 /** The old rule: every pick inside the 90 days. */
@@ -552,7 +559,17 @@ export function checkPicks(
       );
     }
     seen.add(p.index);
-    if (!isTradingDay(p.date) || !pickInRange(p.date, today, horizon)) {
+    if (horizon.strictPicks === true) {
+      if (!isTradingDay(p.date)) {
+        return no(
+          refuse(
+            `${field}.date`,
+            'invalid_pick',
+            'A pick is a day, YYYY-MM-DD.',
+          ),
+        );
+      }
+    } else if (!isTradingDay(p.date) || !pickInRange(p.date, today, horizon)) {
       return no(
         refuse(`${field}.date`, 'invalid_pick', pickRangeMessage(horizon)),
       );

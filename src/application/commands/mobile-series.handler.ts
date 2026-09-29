@@ -51,6 +51,7 @@ import {
   customDays,
   farPickRefusal,
   frequencyColumn,
+  offeredPickRefusal,
   MAX_ALTERNATIVES,
   ROUTINE_ALTERNATIVE_DAYS,
   pickAlternatives,
@@ -335,6 +336,8 @@ export class MobileSeriesHandler {
     // Step B5, Any Available Expert: no stylist sent, candidates sent, and a
     // time to judge them by. A stylist_id sent wins; without a time the old
     // stylist_required stands.
+    // Step B6: every pick must follow the alternatives rule (B4).
+    const strictPicks = cmd.contract?.strictPicks === true;
     const candidates = cmd.contract?.stylistCandidates ?? null;
     const anyStylist =
       candidates !== null &&
@@ -346,6 +349,7 @@ export class MobileSeriesHandler {
     const checked = checkRoutine(cmd.claim, today, {
       farPicks: checkLater,
       stylistChosenByServer: anyStylist,
+      strictPicks,
     });
     if (checked.kind === 'refused') throw refused(checked.refusal);
     const routine = checked.value;
@@ -398,7 +402,17 @@ export class MobileSeriesHandler {
     }
 
     // ---- 6. The slots, with the customer's picks (D4) --------------------
-    if (checkLater) {
+    if (strictPicks) {
+      // B6: before anything is looked up for the picks, let alone booked.
+      const off = offeredPickRefusal({
+        planned,
+        picks: routine.picks,
+        today,
+        stylistId,
+        checkLater,
+      });
+      if (off !== null) throw refused(off);
+    } else if (checkLater) {
       const far = farPickRefusal({
         planned,
         picks: routine.picks,

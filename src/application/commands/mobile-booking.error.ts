@@ -81,7 +81,8 @@ export type MobileErrorCode =
   | 'invalid_extend'
   | 'too_many_sessions'
   | 'reschedule_out_of_range'
-  | 'session_day_taken';
+  | 'session_day_taken'
+  | 'session_not_offered';
 
 export interface MobileFieldError {
   readonly field: string;
