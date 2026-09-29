@@ -68,6 +68,12 @@ function harness(
     failOn?: { day: string; error: Error };
     repoFails?: boolean;
     productsOn?: boolean;
+    /**
+     * B5: by day, the stylists the engine has and the minutes each is
+     * already reserved in the diary. Default: maya and rana, nothing booked.
+     * The roster's bookingsToday is 0 for everyone, as platform publishes it.
+     */
+    busy?: Readonly<Record<string, Readonly<Record<string, number>>>>;
   } = {},
 ) {
   const single = {
@@ -108,6 +114,26 @@ function harness(
           .map((id) => ({ id, name: id, durationMin: 45, currency: 'AED' })),
       ),
     ),
+    loadDay: vi.fn((_b: string, day: string) => {
+      const busy = Object.entries(over.busy?.[day] ?? { maya: 0, rana: 0 });
+      return Promise.resolve({
+        professionals: busy.map(([id]) => ({ id, bookingsToday: 0 })),
+        staffBookings: new Map(
+          busy
+            .filter(([, minutes]) => minutes > 0)
+            .map(([id, minutes]) => [
+              id,
+              [
+                {
+                  startMin: 600,
+                  endMin: 600 + minutes,
+                  claims: { preMin: 0, postMin: 0 },
+                },
+              ],
+            ]),
+        ),
+      });
+    }),
   };
   const productCatalogue = {
     enabled: () => over.productsOn === true,
@@ -141,7 +167,7 @@ function harness(
     context as never,
     productCatalogue as never,
   );
-  return { handler, single, availability, lifecycle, repo, reads };
+  return { handler, single, availability, lifecycle, repo, reads, context };
 }
 
 const claim = (over: Partial<RoutineClaim> = {}): RoutineClaim => ({
@@ -1478,5 +1504,344 @@ describe('B4: alternative_rule SAME_STYLIST_FORWARD', () => {
       );
       expect(now).toStrictEqual(plain);
     }
+  });
+});
+
+// ------------------------------------------------------------ B5
+
+/** What the hourly job books from the rows a create saved (as in B2). */
+async function jobBooks(
+  saved: {
+    stylistId: string;
+    sessions: {
+      index: number;
+      day: string;
+      startMin: number;
+      bookingId: string | null;
+    }[];
+  },
+  atMs: number,
+) {
+  const bookSession = vi.fn((_input: unknown) => Promise.resolve('booked'));
+  const job = new MobileSeriesJobHandler(
+    {
+      keepDeskAway: vi.fn().mockResolvedValue(0),
+      openRoutines: vi.fn().mockResolvedValue([
+        {
+          id: 'S',
+          customerId: CUSTOMER,
+          status: 'active',
+          pausedUntil: null,
+        },
+      ]),
+      missStreakAfter: vi.fn().mockResolvedValue(null),
+      claimPlanned: vi.fn().mockResolvedValue(true),
+      writeEvents: vi.fn().mockResolvedValue(0),
+      completeByJob: vi.fn().mockResolvedValue(true),
+    } as never,
+    {
+      factsForJob: vi.fn().mockResolvedValue({
+        series: {
+          id: 'S',
+          status: 'active',
+          tenantId: 'T1',
+          branchId: 'marina-walk',
+          customerId: CUSTOMER,
+          frequency: 'monthly',
+          serviceIds: ['haircut-finish'],
+          preferredStaffId: saved.stylistId,
+          occurrences: saved.sessions.map((s) => ({
+            id: `occ-${s.index}`,
+            bookingId: s.bookingId,
+            plannedStartMin: s.startMin,
+          })),
+        },
+        facts: saved.sessions.map((s) => ({
+          id: `occ-${s.index}`,
+          index: s.index,
+          day: s.day,
+          startAtMs: branchInstant(s.day, s.startMin).getTime(),
+          state: s.bookingId === null ? 'planned' : 'materialised',
+          bookingStatus: s.bookingId === null ? null : 'confirmed',
+          noShowBy: null,
+        })),
+      }),
+    } as never,
+    { transition: vi.fn() } as never,
+    { bookSession } as never,
+    { run: (_t: unknown, f: () => unknown) => f() } as never,
+  );
+  await job.run(atMs);
+  return bookSession.mock.calls.map((c) => {
+    const i = c[0] as { day: string; startMin: number; stylistId: string };
+    return [i.day, i.startMin, i.stylistId];
+  });
+}
+
+describe('B5: Any Available Expert (stylist_candidates, no stylist_id)', () => {
+  const any = (
+    candidates: string[] = ['maya', 'rana'],
+    more: Partial<RoutineContractOptions> = {},
+  ): RoutineContractOptions => ({
+    ...OPTIONS_OFF,
+    stylistCandidates: candidates,
+    ...more,
+  });
+  const ranaOff = (...days: string[]): Readonly<Record<string, Starts>> =>
+    Object.fromEntries(days.map((d) => [d, { maya: ALL_DAY }]));
+  const run = (
+    contract: RoutineContractOptions | undefined,
+    diary: Diary,
+    over: Partial<RoutineClaim> = {},
+    busy?: Record<string, Record<string, number>>,
+    customerId: string = CUSTOMER,
+  ) => {
+    const h = harness({ diary, busy });
+    return everything(
+      h,
+      command(
+        { ...SIX_MONTHLY, stylistId: null, ...over },
+        {
+          money: SIX_MONEY,
+          customerId,
+          ...(contract === undefined ? {} : { contract }),
+        },
+      ),
+    ).then((r) => ({ ...r, loadDay: h.context.loadDay.mock.calls }));
+  };
+  const chosen = (r: { answer: unknown }) =>
+    (r.answer as MobileSeriesPreview).stylist_id;
+  const DRY = { dryRun: true };
+
+  // ---- 1. Who is chosen
+
+  it('the stylist free on more sessions wins, over session 0 and over the diary', async () => {
+    // maya: free on 10-06 only. rana: free on 11-06 and 12-06, not 10-06.
+    const now = await run(
+      any(),
+      {
+        starts: {
+          ...ranaOff('2026-10-06'),
+          ...mayaOff('2026-11-06', '2026-12-06').starts,
+        },
+      },
+      DRY,
+      { '2026-10-06': { maya: 0, rana: 480 } },
+    );
+    expect(chosen(now)).toBe('rana');
+    expect(sessionsOf(now).every((s) => s.stylist_id === 'rana')).toBe(true);
+  });
+
+  it('tie on sessions: free on session 0 wins, over the diary', async () => {
+    // Both free on 2 of 3: maya misses 11-06, rana misses 10-06.
+    const now = await run(
+      any(['rana', 'maya']),
+      {
+        starts: {
+          ...ranaOff('2026-10-06'),
+          ...mayaOff('2026-11-06').starts,
+        },
+      },
+      DRY,
+      { '2026-10-06': { maya: 480, rana: 0 } },
+    );
+    expect(chosen(now)).toBe('maya');
+  });
+
+  it("tie on both: the fewest minutes already taken in booking-api's diary on session 0's day", async () => {
+    // Everyone's roster count is 0 (as platform publishes it): only the
+    // diary can tell them apart. Another day's diary does not count.
+    const busier = (maya: number, rana: number) => ({
+      '2026-10-06': { maya, rana },
+      '2026-11-06': { maya: 0, rana: 600 },
+    });
+    const ranaLess = await run(any(), {}, DRY, busier(120, 45));
+    expect(chosen(ranaLess)).toBe('rana');
+    expect(ranaLess.loadDay).toStrictEqual([['marina-walk', '2026-10-06']]);
+    expect(chosen(await run(any(), {}, DRY, busier(45, 120)))).toBe('maya');
+  });
+
+  it('tie on everything: different customers get different stylists; the same customer gets the same one twice', async () => {
+    const other = 'cccccccc-cccc-4ccc-8ccc-000000000002';
+    // Equally free, equally busy (nothing booked), in either order.
+    for (const candidates of [
+      ['maya', 'rana'],
+      ['rana', 'maya'],
+    ]) {
+      expect(
+        chosen(await run(any(candidates), {}, DRY, undefined, CUSTOMER)),
+      ).toBe('maya');
+      expect(
+        chosen(await run(any(candidates), {}, DRY, undefined, other)),
+      ).toBe('rana');
+    }
+    // The same customer, the preview and then the create: the same stylist.
+    for (const [who, stylist] of [
+      [CUSTOMER, 'maya'],
+      [other, 'rana'],
+    ] as const) {
+      const preview = await run(any(), {}, DRY, undefined, who);
+      const created = await run(any(), {}, {}, undefined, who);
+      expect(chosen(preview)).toBe(stylist);
+      expect((created.saved[0] as { stylistId: string }).stylistId).toBe(
+        stylist,
+      );
+    }
+  });
+
+  it('far sessions count too, with check_later', async () => {
+    // maya: off on the 3 far days. rana: off on 11-06 and 12-06.
+    const diary: Diary = {
+      starts: {
+        ...ranaOff('2026-11-06', '2026-12-06'),
+        ...mayaOff('2027-01-06', '2027-02-06', '2027-03-06').starts,
+      },
+    };
+    expect(chosen(await run(any(), diary, DRY))).toBe('maya'); // 3 against 1
+    expect(
+      chosen(
+        await run(any(['maya', 'rana'], { checkLater: true }), diary, DRY),
+      ),
+    ).toBe(
+      'rana', // 3 against 4
+    );
+  });
+
+  // ---- 2. Used exactly as if the app had sent it
+
+  it('the preview is exactly the one for that stylist sent by the app: sessions, alternatives, money, reasons', async () => {
+    const options = {
+      checkLater: true,
+      withReasons: true,
+      alternativeRule: 'SAME_STYLIST_FORWARD' as const,
+    };
+    const diary: Diary = {
+      starts: {
+        ...ranaOff('2026-10-06'),
+        ...mayaOff('2026-11-06', '2026-12-06', '2027-02-06').starts,
+        '2027-01-06': { maya: ALL_DAY },
+      },
+    };
+    // maya: 10-06, 01-06, 03-06 (3). rana: 11-06, 12-06, 02-06, 03-06 (4).
+    const chosenRun = await run(any(['maya', 'rana'], options), diary, DRY);
+    const sentRun = await run({ ...OPTIONS_OFF, ...options }, diary, {
+      ...DRY,
+      stylistId: 'rana',
+    });
+    expect(chosen(chosenRun)).toBe('rana');
+    const { loadDay: _a, ...a } = chosenRun;
+    const { loadDay: _b, ...b } = sentRun;
+    expect(a).toStrictEqual(b);
+    // It does show a busy session with its reason and rana's alternatives.
+    expect(sessionsOf(a)[0]).toMatchObject({
+      free: false,
+      reason: 'stylist_unavailable',
+    });
+    expect(
+      sessionsOf(a)[0]!.alternatives.every((x) => x.stylist_id === 'rana'),
+    ).toBe(true);
+  });
+
+  // ---- 3. The create
+
+  it('a create chooses the same way, books all or nothing with that stylist, and saves it as the regular one', async () => {
+    const diary: Diary = { starts: ranaOff('2026-10-06') };
+    // maya is free everywhere, rana misses 10-06: maya wins.
+    const now = await run(any(['rana', 'maya']), diary);
+    const sent = await run(OPTIONS_OFF, diary, { stylistId: 'maya' });
+    const { loadDay: _a, ...a } = now;
+    const { loadDay: _b, ...b } = sent;
+    expect(a).toStrictEqual(b);
+    expect((now.saved[0] as { stylistId: string }).stylistId).toBe('maya');
+    expect(
+      now.booked.map((c) => (c as unknown as { stylists: string[] }).stylists),
+    ).toStrictEqual([['maya'], ['maya'], ['maya']]);
+  });
+
+  it('a create that sends a stylist_id uses it and ignores the candidates', async () => {
+    const withCandidates = await run(any(['rana']), {}, { stylistId: 'maya' });
+    const without = await run(OPTIONS_OFF, {}, { stylistId: 'maya' });
+    expect(withCandidates).toStrictEqual(without);
+    expect(withCandidates.loadDay).toStrictEqual([]);
+  });
+
+  it('a routine created with candidates: the hourly job books its far sessions with the chosen stylist', async () => {
+    // rana is free everywhere; maya misses 10-06. rana is chosen.
+    const now = await run(
+      any(['maya', 'rana'], { checkLater: true }),
+      mayaOff('2026-10-06'),
+    );
+    const saved = now.saved[0] as Parameters<typeof jobBooks>[0];
+    expect(saved.stylistId).toBe('rana');
+    expect(
+      await jobBooks(saved, Date.parse('2026-12-01T09:00:00+06:00')),
+    ).toStrictEqual([
+      ['2027-01-06', 990, 'rana'],
+      ['2027-02-06', 990, 'rana'],
+    ]);
+  });
+
+  // ---- 4. Nobody here, nobody free
+
+  it('a candidate who does not work here counts 0, and comes after one who does', async () => {
+    expect(chosen(await run(any(['ghost', 'maya']), {}, DRY))).toBe('maya');
+    // Neither is free anywhere: the tie still picks the one the engine has.
+    const nobody = {
+      starts: {
+        '2026-10-06': {},
+        '2026-11-06': {},
+        '2026-12-06': {},
+      },
+    };
+    expect(chosen(await run(any(['ghost', 'maya']), nobody, DRY))).toBe('maya');
+  });
+
+  it("nobody free on any session: still one, by the tie rules, and the customer sees that stylist's alternatives", async () => {
+    const nobody: Diary = {
+      starts: { '2026-10-06': {}, '2026-11-06': {}, '2026-12-06': {} },
+    };
+    const now = await run(
+      any(['maya', 'rana'], { alternativeRule: 'SAME_STYLIST_FORWARD' }),
+      nobody,
+      DRY,
+      { '2026-10-06': { maya: 60, rana: 30 } },
+    );
+    expect(chosen(now)).toBe('rana');
+    const first = sessionsOf(now)[0]!;
+    expect(first.free).toBe(false);
+    expect(first.alternatives.length).toBeGreaterThan(0);
+    expect(first.alternatives.every((x) => x.stylist_id === 'rana')).toBe(true);
+  });
+
+  // ---- 5. Only with a time
+
+  it('a preview without a time and without a stylist_id is refused as before (stylist_required)', async () => {
+    const over = { dryRun: true, time: null };
+    const now = await run(any(), {}, over);
+    const before = await run(undefined, {}, over);
+    expect(now.answer).toStrictEqual({
+      status: 422,
+      errors: [
+        {
+          field: 'stylist_id',
+          code: 'stylist_required',
+          message: 'A routine keeps one regular stylist. Choose one.',
+        },
+      ],
+    });
+    expect(now).toStrictEqual(before);
+  });
+
+  // ---- 6. Without candidates: as before
+
+  it('without candidates, no stylist is still stylist_required, exactly as before', async () => {
+    const before = await run(undefined, {});
+    for (const contract of [OPTIONS_OFF, LATER]) {
+      const now = await run(contract, {});
+      expect(now).toStrictEqual(before);
+    }
+    expect(
+      (before.answer as { errors: { code: string }[] }).errors[0]!.code,
+    ).toBe('stylist_required');
   });
 });

@@ -246,6 +246,17 @@ export interface HorizonOptions {
 /** The old rule: every pick inside the 90 days. */
 export const NEAR_PICKS_ONLY: HorizonOptions = { farPicks: false };
 
+/** What checkRoutine is told by the contract's options. */
+export interface RoutineCheckOptions extends HorizonOptions {
+  /**
+   * Step B5, Any Available Expert: no stylist was sent, and the server picks
+   * one from the contract's stylist_candidates, so a missing stylist_id is
+   * not refused. The caller sets it only with a time and candidates; without
+   * a time the old stylist_required stands.
+   */
+  readonly stylistChosenByServer?: boolean;
+}
+
 function pickInRange(
   day: TradingDay,
   today: TradingDay,
@@ -323,12 +334,15 @@ export interface CheckedRoutine {
 export function checkRoutine(
   claim: RoutineClaim,
   today: TradingDay,
-  horizon: HorizonOptions = NEAR_PICKS_ONLY,
+  horizon: RoutineCheckOptions = NEAR_PICKS_ONLY,
 ): Checked<CheckedRoutine> {
   if (claim.serviceIds.length === 0) {
     return no(refuse('services', 'no_services', 'Pick at least one service.'));
   }
-  if ((claim.stylistId ?? '').trim() === '') {
+  if (
+    horizon.stylistChosenByServer !== true &&
+    (claim.stylistId ?? '').trim() === ''
+  ) {
     return no(
       refuse(
         'stylist_id',

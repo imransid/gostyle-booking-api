@@ -1399,3 +1399,75 @@ export function routineAlternatives(input: {
   }
   return picked;
 }
+
+/**
+ * Step B5, "Any Available Expert": the ONE stylist a routine gets when the
+ * app sends none, from the contract's stylist_candidates (the stylists
+ * customer-api knows can do every service). It becomes the routine's
+ * regular stylist, used exactly as if the app had sent it.
+ *
+ * In this order:
+ *   1. free on the most sessions, each at its cadence slot. A session not
+ *      checked (past the 90 days without check_later) counts for nobody;
+ *   2. free on session 0, the start the customer chose;
+ *   3. the fewest minutes already taken on session 0's day in booking-api's
+ *      own diary (its staff reservations: bookings and live holds). A
+ *      candidate the engine does not have that day (off, or not at this
+ *      branch) has no diary and comes after every one it has. Not the
+ *      roster's bookingsToday: the platform roster publishes 0 for everyone,
+ *      so it would never decide anything;
+ *   4. a fixed shuffle per customer (fixedShuffle, lowest first), then the
+ *      id. The same customer always gets the same stylist, so the preview
+ *      and the create agree, but on a quiet day different customers are
+ *      spread over the stylists instead of all going to the lowest id.
+ *      Never random.
+ *
+ * A candidate who is free nowhere still counts (0 sessions): when nobody is
+ * free anywhere, the tie rules still choose one, so the customer sees that
+ * stylist's alternatives. Null only for no candidate at all.
+ */
+export function chooseRegularStylist(input: {
+  readonly candidates: readonly string[];
+  /** Per session, in order: who is free at its cadence slot. Null: not checked. */
+  readonly freeBySession: readonly (ReadonlySet<string> | null)[];
+  /**
+   * Minutes already taken on session 0's day, for every stylist the engine
+   * has that day (0 for one with nothing booked). Missing: not that day.
+   */
+  readonly bookedMinutesOnFirstDay: ReadonlyMap<string, number>;
+  /** Whose routine it is: the key of the fixed shuffle (rule 4). */
+  readonly customerId: string;
+}): string | null {
+  const minutes = (id: string): number =>
+    input.bookedMinutesOnFirstDay.get(id) ?? Number.POSITIVE_INFINITY;
+  const ranked = [...new Set(input.candidates)].map((id) => ({
+    id,
+    free: input.freeBySession.filter((who) => who?.has(id) === true).length,
+    first: input.freeBySession[0]?.has(id) === true,
+    minutes: minutes(id),
+    shuffle: fixedShuffle(input.customerId, id),
+  }));
+  ranked.sort(
+    (a, b) =>
+      b.free - a.free ||
+      Number(b.first) - Number(a.first) ||
+      (a.minutes === b.minutes ? 0 : a.minutes < b.minutes ? -1 : 1) ||
+      a.shuffle - b.shuffle ||
+      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
+  return ranked[0]?.id ?? null;
+}
+
+/**
+ * Rule 4 of chooseRegularStylist: a number from the customer and the
+ * stylist, the same every time (32 bit FNV-1a). It orders the stylists
+ * differently for each customer, and never changes for one customer.
+ */
+export function fixedShuffle(customerId: string, stylistId: string): number {
+  let hash = 0x811c9dc5;
+  for (const ch of `${customerId}|${stylistId}`) {
+    hash ^= ch.codePointAt(0)!;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash;
+}

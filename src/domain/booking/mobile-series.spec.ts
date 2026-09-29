@@ -21,6 +21,8 @@ import {
   customDays,
   effectivePause,
   farPickRefusal,
+  chooseRegularStylist,
+  fixedShuffle,
   routineAlternatives,
   ALTERNATIVES_PER_DAY,
   ROUTINE_ALTERNATIVE_DAYS,
@@ -1614,5 +1616,125 @@ describe('routineAlternatives (B4, SAME_STYLIST_FORWARD)', () => {
 
   it('a time outside the trading day is never offered', () => {
     expect(offered(maya('2026-11-07', 540, 1320))).toStrictEqual([]);
+  });
+});
+
+// ------------------------------------------------------------ B5
+
+describe('chooseRegularStylist (B5, Any Available Expert)', () => {
+  const CUSTOMER = '11111111-1111-4111-8111-111111111111';
+  const customer = (n: number) => `cccccccc-cccc-4ccc-8ccc-00000000000${n}`;
+  const free = (...who: string[]) => new Set(who);
+  const choose = (
+    freeBySession: (ReadonlySet<string> | null)[],
+    busy: Record<string, number> = { maya: 0, rana: 0, omar: 0 },
+    candidates = ['maya', 'rana', 'omar'],
+    customerId = CUSTOMER,
+  ) =>
+    chooseRegularStylist({
+      candidates,
+      freeBySession,
+      bookedMinutesOnFirstDay: new Map(Object.entries(busy)),
+      customerId,
+    });
+
+  it('1. the one free on the most sessions wins, whatever session 0 or the diary say', () => {
+    expect(
+      choose([free('maya'), free('rana'), free('rana')], {
+        maya: 0,
+        rana: 480,
+        omar: 0,
+      }),
+    ).toBe('rana');
+  });
+
+  it('2. tie on sessions: free on session 0 wins, whatever the diary says', () => {
+    expect(
+      choose([free('rana'), free('maya'), free('rana', 'maya')], {
+        maya: 0,
+        rana: 480,
+        omar: 0,
+      }),
+    ).toBe('rana');
+  });
+
+  it('3. tie on sessions and session 0: the fewest minutes in the diary that day wins', () => {
+    const both = [free('maya', 'rana'), free('maya', 'rana')];
+    expect(
+      choose(both, { maya: 120, rana: 45, omar: 0 }, ['maya', 'rana']),
+    ).toBe('rana');
+    expect(
+      choose(both, { maya: 45, rana: 120, omar: 0 }, ['maya', 'rana']),
+    ).toBe('maya');
+  });
+
+  it('3. a candidate the engine does not have that day comes after every one it has', () => {
+    expect(
+      choose([free('maya'), free()], { maya: 300 }, ['ghost', 'maya']),
+    ).toBe('maya');
+    // Nobody free anywhere: the one the engine has still comes first.
+    expect(choose([free(), free()], { maya: 300 }, ['ghost', 'maya'])).toBe(
+      'maya',
+    );
+  });
+
+  it('4. tie on everything: a fixed shuffle per customer, so customers are spread over the stylists', () => {
+    const equal = [free('maya', 'rana', 'omar'), free('maya', 'rana', 'omar')];
+    const pickFor = (id: string) => choose(equal, undefined, undefined, id);
+    expect([
+      pickFor(customer(1)),
+      pickFor(customer(2)),
+      pickFor(customer(3)),
+    ]).toStrictEqual(['maya', 'omar', 'rana']);
+    // Over nine customers every stylist gets someone.
+    const nine = [CUSTOMER, 1, 2, 3, 4, 5, 6, 7, 8].map((c) =>
+      pickFor(typeof c === 'string' ? c : customer(c)),
+    );
+    expect(new Set(nine)).toStrictEqual(new Set(['maya', 'rana', 'omar']));
+  });
+
+  it('4. the same customer gets the same stylist every time, whatever order the candidates come in', () => {
+    const equal = [free('maya', 'rana', 'omar')];
+    for (const id of [CUSTOMER, customer(2), customer(3)]) {
+      const answers = [
+        ['maya', 'rana', 'omar'],
+        ['omar', 'rana', 'maya'],
+        ['rana', 'maya', 'omar'],
+      ].map((c) => choose(equal, undefined, c, id));
+      expect(new Set(answers).size).toBe(1);
+      expect(choose(equal, undefined, undefined, id)).toBe(answers[0]);
+    }
+  });
+
+  it('fixedShuffle is a plain function of the two ids', () => {
+    expect(fixedShuffle(CUSTOMER, 'maya')).toBe(fixedShuffle(CUSTOMER, 'maya'));
+    expect(fixedShuffle(CUSTOMER, 'maya')).not.toBe(
+      fixedShuffle(CUSTOMER, 'rana'),
+    );
+    expect(fixedShuffle(customer(1), 'maya')).not.toBe(
+      fixedShuffle(customer(2), 'maya'),
+    );
+    expect(Number.isInteger(fixedShuffle('', ''))).toBe(true);
+  });
+
+  it('a session not checked (null) counts for nobody', () => {
+    // Without the null sessions rana would have 2 to maya's 1.
+    expect(choose([free('maya'), null, null], {}, ['maya', 'rana'])).toBe(
+      'maya',
+    );
+    expect(
+      choose([free('maya'), free('rana'), free('rana')], {}, ['maya', 'rana']),
+    ).toBe('rana');
+  });
+
+  it('nobody free anywhere: still one, by the tie rules', () => {
+    expect(choose([free(), free()], { maya: 60, rana: 90, omar: 30 })).toBe(
+      'omar',
+    );
+  });
+
+  it('only one candidate: that one; none: null', () => {
+    expect(choose([free()], {}, ['ghost'])).toBe('ghost');
+    expect(choose([free('maya')], {}, [])).toBeNull();
   });
 });

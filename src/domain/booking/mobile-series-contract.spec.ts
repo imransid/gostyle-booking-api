@@ -856,6 +856,26 @@ describe('checkPicks', () => {
     }
   });
 
+  it('B5: no stylist is refused, unless the server chooses one (stylistChosenByServer)', () => {
+    const claim = weekly({ stylistId: null });
+    expect(checkRoutine(claim, TODAY)).toMatchObject({
+      kind: 'refused',
+      refusal: { field: 'stylist_id', code: 'stylist_required' },
+    });
+    expect(
+      checkRoutine(claim, TODAY, {
+        farPicks: false,
+        stylistChosenByServer: false,
+      }).kind,
+    ).toBe('refused');
+    expect(
+      checkRoutine(claim, TODAY, {
+        farPicks: false,
+        stylistChosenByServer: true,
+      }).kind,
+    ).toBe('ok');
+  });
+
   it('checkRoutine passes farPicks on; without it a far pick is refused as before', () => {
     const claim = weekly({ picks: [pickOn('2027-01-07')] });
     expect(checkRoutine(claim, TODAY).kind).toBe('refused');

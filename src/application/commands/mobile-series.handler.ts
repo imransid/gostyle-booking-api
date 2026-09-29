@@ -47,6 +47,7 @@ import {
   ROUTINE_RULES,
   applyPicks,
   beyondHorizon,
+  chooseRegularStylist,
   customDays,
   farPickRefusal,
   frequencyColumn,
@@ -331,12 +332,23 @@ export class MobileSeriesHandler {
       cmd.contract?.alternativeRule === 'SAME_STYLIST_FORWARD'
         ? { max: cmd.contract.alternativesMax ?? MAX_ALTERNATIVES }
         : null;
+    // Step B5, Any Available Expert: no stylist sent, candidates sent, and a
+    // time to judge them by. A stylist_id sent wins; without a time the old
+    // stylist_required stands.
+    const candidates = cmd.contract?.stylistCandidates ?? null;
+    const anyStylist =
+      candidates !== null &&
+      candidates.length > 0 &&
+      (cmd.claim.stylistId ?? '').trim() === '' &&
+      cmd.claim.time !== null;
 
     // ---- 1. The request on its own ---------------------------------------
-    const checked = checkRoutine(cmd.claim, today, { farPicks: checkLater });
+    const checked = checkRoutine(cmd.claim, today, {
+      farPicks: checkLater,
+      stylistChosenByServer: anyStylist,
+    });
     if (checked.kind === 'refused') throw refused(checked.refusal);
     const routine = checked.value;
-    const stylistId = cmd.claim.stylistId!.trim();
     const serviceIds = cmd.claim.serviceIds;
 
     // ---- 2. The services must exist at this salon ------------------------
@@ -363,6 +375,22 @@ export class MobileSeriesHandler {
         `The salon is not open on ${routine.count} days in the ${DAILY_SEARCH_DAYS} days from the first one.`,
       );
     }
+
+    // The routine's stylist: the one sent, or (B5) the one chosen now. From
+    // here on it is used exactly as if the app had sent it.
+    const stylistId =
+      anyStylist && routine.startMin !== null
+        ? await this.chooseStylist({
+            branchId: cmd.salonId,
+            customerId: cmd.customerId,
+            candidates,
+            planned,
+            startMin: routine.startMin,
+            today,
+            offers,
+            checkLater,
+          })
+        : cmd.claim.stylistId!.trim();
 
     // ---- 5. No time yet: which times are free on every day ---------------
     if (routine.startMin === null) {
@@ -1036,6 +1064,60 @@ export class MobileSeriesHandler {
   }
 
   // ------------------------------------------------------------ steps
+
+  /**
+   * Step B5: the routine's one stylist, from the contract's candidates
+   * (chooseRegularStylist). Each session is judged at its cadence slot, the
+   * same way in the preview and in the create, so the same diary gives the
+   * same stylist in both. A far session counts only with check_later. The
+   * busy tie reads booking-api's own diary on session 0's day: the minutes
+   * each stylist the engine has that day is already reserved.
+   */
+  private async chooseStylist(input: {
+    readonly branchId: string;
+    readonly customerId: string;
+    readonly candidates: readonly string[];
+    readonly planned: readonly PlannedDay[];
+    readonly startMin: number;
+    readonly today: string;
+    readonly offers: DayOffers;
+    readonly checkLater: boolean;
+  }): Promise<string> {
+    const freeBySession = await Promise.all(
+      input.planned.map(async (p) => {
+        if (beyondHorizon(p.day, input.today) && !input.checkLater) {
+          return null;
+        }
+        const view = await input.offers.get(p.day);
+        if (view.closureReason !== undefined) return new Set<string>();
+        const offer = view.offers.find((o) => o.startMin === input.startMin);
+        return new Set((offer?.staff ?? []).map((s) => s.id));
+      }),
+    );
+    const day = await this.context.loadDay(
+      input.branchId,
+      input.planned[0]!.day,
+    );
+    return (
+      chooseRegularStylist({
+        candidates: input.candidates,
+        freeBySession,
+        bookedMinutesOnFirstDay: new Map(
+          day.professionals.map(
+            (p) =>
+              [
+                p.id,
+                (day.staffBookings.get(p.id) ?? []).reduce(
+                  (sum, b) => sum + Math.max(0, b.endMin - b.startMin),
+                  0,
+                ),
+              ] as const,
+          ),
+        ),
+        customerId: input.customerId,
+      }) ?? input.candidates[0]!
+    );
+  }
 
   /**
    * The days. DAILY needs to know which days are open (D3), so it loads a
