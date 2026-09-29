@@ -129,6 +129,9 @@ export interface RoutineContractOptions {
   readonly strictPicks: boolean;
 }
 
+/** Why a session is not free, as booking-api can tell (step B3). */
+export type SessionReason = 'stylist_unavailable';
+
 export interface AlternativeView {
   readonly date: string;
   readonly time: string;
@@ -144,6 +147,15 @@ export interface PlannedSessionView {
   readonly stylist_id: string | null;
   /** Null past the 90 day horizon, where nothing is checked yet. */
   readonly free: boolean | null;
+  /**
+   * Why a session is not free (step B3, the contract's with_reasons only;
+   * the key is absent otherwise). booking-api knows its diary, not the
+   * salon's closed days or opening hours, so the only reason it can give is
+   * `stylist_unavailable`: the stylist is off, or busy, then. customer-api
+   * puts its own hours reasons first (salon_closed, outside_hours,
+   * too_soon).
+   */
+  readonly reason?: SessionReason;
   /** Past the 90 day horizon: stored as planned, booked later. */
   readonly later: boolean;
   /** The customer chose this one from the alternatives (D4). */
@@ -308,6 +320,8 @@ export class MobileSeriesHandler {
     // Step B2: sessions past the 90 days are checked against today's
     // calendar, and may be picked past them, only when the contract asks.
     const checkLater = cmd.contract?.checkLater === true;
+    // Step B3: a session that is not free says why, only when asked.
+    const withReasons = cmd.contract?.withReasons === true;
 
     // ---- 1. The request on its own ---------------------------------------
     const checked = checkRoutine(cmd.claim, today, { farPicks: checkLater });
@@ -375,7 +389,7 @@ export class MobileSeriesHandler {
       today,
       offers,
       money.quotes.map((q) => q.durationMin),
-      { checkLater },
+      { checkLater, withReasons },
     );
 
     if (routine.dryRun) {
@@ -1105,6 +1119,9 @@ export class MobileSeriesHandler {
    * contract says check_later (step B2): then a far session is checked
    * against today's calendar exactly as a near one. Nothing is held either
    * way: this is the availability engine's answer, not a hold.
+   *
+   * With the contract's with_reasons (step B3), a session that is not free
+   * carries `reason`. Without it the key is not there at all.
    */
   private async check(
     slots: readonly SessionSlot[],
@@ -1112,7 +1129,10 @@ export class MobileSeriesHandler {
     today: string,
     offers: DayOffers,
     durations: readonly number[],
-    horizon: { readonly checkLater: boolean } = { checkLater: false },
+    horizon: {
+      readonly checkLater: boolean;
+      readonly withReasons?: boolean;
+    } = { checkLater: false },
   ): Promise<PlannedSessionView[]> {
     return Promise.all(
       slots.map(async (s): Promise<PlannedSessionView> => {
@@ -1132,6 +1152,9 @@ export class MobileSeriesHandler {
           end_time: iso(s.day, s.startMin + durations[s.index]!),
           stylist_id: s.staffId,
           free,
+          ...(horizon.withReasons === true && free === false
+            ? { reason: 'stylist_unavailable' as const }
+            : {}),
           later,
           picked: s.picked,
           moved_from_day_of_month: planned[s.index]!.movedFromDayOfMonth,

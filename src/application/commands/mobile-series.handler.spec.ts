@@ -1075,3 +1075,183 @@ describe('B2 on: check_later, sessions past the 90 days', () => {
     ]);
   });
 });
+
+// ------------------------------------------------------------ B3
+
+describe('B3: with_reasons, why a session is not free', () => {
+  const REASONS: RoutineContractOptions = { ...OPTIONS_OFF, withReasons: true };
+  const BOTH: RoutineContractOptions = {
+    ...OPTIONS_OFF,
+    checkLater: true,
+    withReasons: true,
+  };
+  const preview = async (
+    contract: RoutineContractOptions | undefined,
+    diary: Diary,
+    over: Partial<RoutineClaim> = {},
+  ) => {
+    const r = await everything(
+      harness({ diary }),
+      command(
+        { ...SIX_MONTHLY, dryRun: true, ...over },
+        contract === undefined ? {} : { contract },
+      ),
+    );
+    return (r.answer as MobileSeriesPreview).sessions;
+  };
+
+  // ---- 1. Every session that is not free, and only those
+
+  it('a session that is not free says stylist_unavailable; a free one has no reason at all', async () => {
+    const sessions = await preview(REASONS, mayaOff('2026-11-06'));
+    expect(sessions[1]).toMatchObject({
+      date: '2026-11-06',
+      free: false,
+      reason: 'stylist_unavailable',
+    });
+    for (const s of [sessions[0]!, sessions[2]!]) {
+      expect(s.free).toBe(true);
+      expect('reason' in s).toBe(false);
+    }
+  });
+
+  it.each([
+    ['off that day', { starts: { '2026-11-06': { rana: ALL_DAY } } }],
+    [
+      'busy at that time',
+      { starts: { '2026-11-06': { maya: [900, 930], rana: ALL_DAY } } },
+    ],
+  ])('the stylist %s: stylist_unavailable', async (_name, diary) => {
+    const sessions = await preview(REASONS, diary);
+    expect(sessions[1]).toMatchObject({
+      free: false,
+      reason: 'stylist_unavailable',
+    });
+  });
+
+  it('a far session with check_later says so too', async () => {
+    const sessions = await preview(BOTH, mayaOff('2027-01-06'));
+    expect(sessions[3]).toMatchObject({
+      date: '2027-01-06',
+      later: true,
+      free: false,
+      reason: 'stylist_unavailable',
+    });
+    expect('reason' in sessions[4]!).toBe(false);
+  });
+
+  it('a far session WITHOUT check_later is not checked (free null), so it has no reason', async () => {
+    const sessions = await preview(REASONS, mayaOff('2027-01-06'));
+    expect(sessions[3]!.free).toBeNull();
+    expect('reason' in sessions[3]!).toBe(false);
+  });
+
+  it('a picked session says why when its pick is not free, and nothing when it is', async () => {
+    const pickedBusy = await preview(
+      REASONS,
+      mayaOff('2026-11-06', '2026-11-07'),
+      {
+        picks: [
+          { index: 1, date: '2026-11-07', time: '16:30', stylistId: null },
+        ],
+      },
+    );
+    expect(pickedBusy[1]).toMatchObject({
+      date: '2026-11-07',
+      picked: true,
+      free: false,
+      reason: 'stylist_unavailable',
+    });
+    const pickedFree = await preview(REASONS, mayaOff('2026-11-06'), {
+      picks: [{ index: 1, date: '2026-11-07', time: '16:30', stylistId: null }],
+    });
+    expect(pickedFree[1]).toMatchObject({ picked: true, free: true });
+    expect('reason' in pickedFree[1]!).toBe(false);
+  });
+
+  it('a picked FAR session (check_later) says why too', async () => {
+    const sessions = await preview(BOTH, mayaOff('2027-01-06', '2027-01-07'), {
+      picks: [{ index: 3, date: '2027-01-07', time: '16:30', stylistId: null }],
+    });
+    expect(sessions[3]).toMatchObject({
+      date: '2027-01-07',
+      picked: true,
+      free: false,
+      reason: 'stylist_unavailable',
+    });
+  });
+
+  // ---- 2. booking-api never says anything about the salon's hours
+
+  it('only ever says stylist_unavailable, even on a day the engine calls closed', async () => {
+    const diaries: Diary[] = [
+      mayaOff('2026-11-06', '2027-01-06'),
+      { closed: ['2026-10-06', '2027-02-06'] },
+      { starts: { '2026-12-06': { maya: [900], rana: [900] } } },
+    ];
+    const reasons = new Set<string>();
+    for (const diary of diaries) {
+      for (const s of await preview(BOTH, diary)) {
+        if (s.free === false) {
+          expect(s.reason).toBe('stylist_unavailable');
+        }
+        if (s.reason !== undefined) reasons.add(s.reason);
+      }
+    }
+    expect([...reasons]).toStrictEqual(['stylist_unavailable']);
+  });
+
+  // ---- 3. Without with_reasons: as before
+
+  it('without with_reasons no session carries a reason, near or far', async () => {
+    for (const contract of [undefined, OPTIONS_OFF, LATER]) {
+      const sessions = await preview(
+        contract,
+        mayaOff('2026-11-06', '2027-01-06'),
+      );
+      expect(sessions.some((s) => s.free === false)).toBe(true);
+      expect(sessions.some((s) => 'reason' in s)).toBe(false);
+    }
+  });
+
+  it('with_reasons changes nothing else in the preview', async () => {
+    const diary = mayaOff('2026-11-06', '2027-01-06');
+    const over = { ...SIX_MONTHLY, dryRun: true };
+    for (const [plain, withWhy] of [
+      [OPTIONS_OFF, REASONS],
+      [LATER, BOTH],
+    ] as const) {
+      const before = await everything(
+        harness({ diary }),
+        command(over, { contract: plain }),
+      );
+      const now = await everything(
+        harness({ diary }),
+        command(over, { contract: withWhy }),
+      );
+      const strip = (r: { answer: unknown }) => ({
+        ...(r.answer as MobileSeriesPreview),
+        sessions: sessionsOf(r).map(({ reason: _reason, ...rest }) => rest),
+      });
+      expect(strip(now)).toStrictEqual(strip(before));
+    }
+  });
+
+  it('a create answers exactly as without it, booked or refused', async () => {
+    for (const diary of [{}, mayaOff('2026-11-06')]) {
+      const before = await everything(
+        harness({ diary }),
+        command(SIX_MONTHLY, { money: SIX_MONEY, contract: LATER }),
+      );
+      const now = await everything(
+        harness({ diary }),
+        command(SIX_MONTHLY, { money: SIX_MONEY, contract: BOTH }),
+      );
+      expect(now).toStrictEqual(before);
+    }
+  });
+});
+
+function sessionsOf(r: { answer: unknown }) {
+  return (r.answer as MobileSeriesPreview).sessions;
+}
