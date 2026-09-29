@@ -1255,3 +1255,228 @@ describe('B3: with_reasons, why a session is not free', () => {
 function sessionsOf(r: { answer: unknown }) {
   return (r.answer as MobileSeriesPreview).sessions;
 }
+
+// ------------------------------------------------------------ B4
+
+describe('B4: alternative_rule SAME_STYLIST_FORWARD', () => {
+  const RULE: RoutineContractOptions = {
+    ...OPTIONS_OFF,
+    alternativeRule: 'SAME_STYLIST_FORWARD',
+  };
+  const ruleWith = (over: Partial<RoutineContractOptions>) => ({
+    ...RULE,
+    ...over,
+  });
+  const run = (
+    contract: RoutineContractOptions,
+    diary: Diary,
+    over: Partial<RoutineClaim> = {},
+  ) => {
+    const h = harness({ diary });
+    return everything(
+      h,
+      command({ ...SIX_MONTHLY, dryRun: true, ...over }, { contract }),
+    ).then((r) => ({
+      ...r,
+      asked: h.availability.execute.mock.calls.map((c) => c[0].tradingDay),
+    }));
+  };
+  const altsOf = (r: { answer: unknown }, index: number) =>
+    sessionsOf(r)[index]!.alternatives.map((a) => [
+      a.date,
+      a.time,
+      a.stylist_id,
+    ]);
+  const daysOf = (r: { answer: unknown }, index: number) =>
+    sessionsOf(r)[index]!.alternatives.map((a) => a.date);
+
+  // ---- 1 and 2. The rule, in the preview
+
+  it("uses the rule: the session's own stylist, the next days, nothing before", async () => {
+    const now = await run(RULE, mayaOff('2026-11-06'));
+    expect(sessionsOf(now)[1]!.alternatives).toStrictEqual([
+      {
+        date: '2026-11-07',
+        time: '16:30',
+        start_time: '2026-11-07T16:30:00+06:00',
+        stylist_id: 'maya',
+      },
+      {
+        date: '2026-11-07',
+        time: '16:00',
+        start_time: '2026-11-07T16:00:00+06:00',
+        stylist_id: 'maya',
+      },
+      {
+        date: '2026-11-08',
+        time: '16:30',
+        start_time: '2026-11-08T16:30:00+06:00',
+        stylist_id: 'maya',
+      },
+    ]);
+    // The old rule (D4) offers another stylist first, and the days before.
+    const before = await run(OPTIONS_OFF, mayaOff('2026-11-06'));
+    const old = altsOf(before, 1);
+    expect(old.some(([, , who]) => who === 'rana')).toBe(true);
+  });
+
+  it('the same day first, nearest time first, when the stylist is only busy then', async () => {
+    const now = await run(RULE, {
+      starts: {
+        '2026-11-06': { maya: ALL_DAY.filter((m) => m !== 990), rana: ALL_DAY },
+      },
+    });
+    expect(altsOf(now, 1)).toStrictEqual([
+      ['2026-11-06', '16:00', 'maya'],
+      ['2026-11-06', '17:00', 'maya'],
+      ['2026-11-07', '16:30', 'maya'],
+    ]);
+  });
+
+  // ---- 3. At most 2 on one day
+
+  it('a same day full of free times still leaves room for the next days', async () => {
+    const now = await run(ruleWith({ alternativesMax: 12 }), {
+      starts: {
+        '2026-11-06': { maya: ALL_DAY.filter((m) => m !== 990), rana: ALL_DAY },
+      },
+    });
+    expect(daysOf(now, 1)).toStrictEqual([
+      '2026-11-06',
+      '2026-11-06',
+      '2026-11-07',
+      '2026-11-07',
+      '2026-11-08',
+      '2026-11-08',
+      '2026-11-09',
+      '2026-11-09',
+      '2026-11-10',
+      '2026-11-10',
+      '2026-11-11',
+      '2026-11-11',
+    ]);
+  });
+
+  it('+8 days is never offered, nor even asked about', async () => {
+    const off = mayaOff(
+      '2026-11-06',
+      '2026-11-07',
+      '2026-11-08',
+      '2026-11-09',
+      '2026-11-10',
+      '2026-11-11',
+      '2026-11-12',
+      '2026-11-13',
+    );
+    const now = await run(ruleWith({ alternativesMax: 12 }), off);
+    expect(sessionsOf(now)[1]!.free).toBe(false);
+    expect(sessionsOf(now)[1]!.alternatives).toStrictEqual([]);
+    expect(now.asked).toContain('2026-11-13');
+    expect(now.asked).not.toContain('2026-11-14');
+  });
+
+  it('never a day another session of the routine already has', async () => {
+    // WEEKLY: 10-06, 10-13, 10-20. Maya is off 10-13 to 10-19; 10-20 is free
+    // but it is session 2's day.
+    const now = await run(
+      ruleWith({ alternativesMax: 12 }),
+      mayaOff(
+        '2026-10-13',
+        '2026-10-14',
+        '2026-10-15',
+        '2026-10-16',
+        '2026-10-17',
+        '2026-10-18',
+        '2026-10-19',
+      ),
+      { frequency: 'WEEKLY', startDate: '2026-10-06', sessions: 3 },
+    );
+    expect(sessionsOf(now)[1]!.free).toBe(false);
+    expect(sessionsOf(now)[1]!.alternatives).toStrictEqual([]);
+  });
+
+  // ---- 4. alternatives_max
+
+  it.each([
+    [1, 1],
+    [12, 12],
+    [null, 3],
+  ] as const)('alternatives_max %j gives %i', async (max, count) => {
+    const now = await run(
+      ruleWith({ alternativesMax: max }),
+      mayaOff('2026-11-06'),
+    );
+    expect(sessionsOf(now)[1]!.alternatives).toHaveLength(count);
+  });
+
+  // ---- 5. The 90 days
+
+  it('a near session never gets one past the 90 days; a far one (check_later) may', async () => {
+    const over: Partial<RoutineClaim> = {
+      frequency: 'MONTHLY',
+      startDate: '2026-10-29',
+      sessions: 4,
+    };
+    const off = mayaOff('2026-12-29', '2026-12-30', '2027-01-29');
+    const now = await run(
+      ruleWith({ checkLater: true, alternativesMax: 12 }),
+      off,
+      over,
+    );
+    expect(sessionsOf(now)[2]).toMatchObject({
+      date: '2026-12-29',
+      free: false,
+      alternatives: [],
+    });
+    expect(now.asked).not.toContain('2026-12-31');
+    expect(sessionsOf(now)[3]!.free).toBe(false);
+    expect(daysOf(now, 3).slice(0, 3)).toStrictEqual([
+      '2027-01-30',
+      '2027-01-30',
+      '2027-01-31',
+    ]);
+    // Without check_later a far session is not checked, so it has none.
+    const notLater = await run(ruleWith({ alternativesMax: 12 }), off, over);
+    expect(sessionsOf(notLater)[3]).toMatchObject({
+      free: null,
+      alternatives: [],
+    });
+  });
+
+  // ---- 6. Without the rule: as before
+
+  it('alternatives_max without the rule changes nothing', async () => {
+    const diary = mayaOff('2026-11-06');
+    const plain = await run(OPTIONS_OFF, diary);
+    const maxOnly = await run({ ...OPTIONS_OFF, alternativesMax: 12 }, diary);
+    expect(maxOnly).toStrictEqual(plain);
+  });
+
+  it('the rule changes only the alternatives', async () => {
+    const diary = mayaOff('2026-11-06', '2026-12-06');
+    const plain = await run(OPTIONS_OFF, diary);
+    const now = await run(RULE, diary);
+    const strip = (r: { answer: unknown }) => ({
+      ...(r.answer as MobileSeriesPreview),
+      sessions: sessionsOf(r).map(({ alternatives: _a, ...rest }) => rest),
+    });
+    expect(strip(now)).toStrictEqual(strip(plain));
+  });
+
+  it('a create answers exactly as without it, booked or refused', async () => {
+    for (const diary of [{}, mayaOff('2026-11-06')]) {
+      const plain = await everything(
+        harness({ diary }),
+        command(SIX_MONTHLY, { money: SIX_MONEY, contract: OPTIONS_OFF }),
+      );
+      const now = await everything(
+        harness({ diary }),
+        command(SIX_MONTHLY, {
+          money: SIX_MONEY,
+          contract: ruleWith({ alternativesMax: 12 }),
+        }),
+      );
+      expect(now).toStrictEqual(plain);
+    }
+  });
+});

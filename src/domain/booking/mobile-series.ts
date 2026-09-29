@@ -63,6 +63,10 @@ export const RESCHEDULE_WITHIN_DAYS = BOOKING_HORIZON_DAYS;
 export const MISSES_TO_PAUSE = 2;
 /** D4. */
 export const MAX_ALTERNATIVES = 3;
+/** Step B4: how many days after a session's own day its alternatives go. */
+export const ROUTINE_ALTERNATIVE_DAYS = 7;
+/** Step B4: at most this many alternatives on one day. */
+export const ALTERNATIVES_PER_DAY = 2;
 /** D8. */
 export const UPFRONT_DISCOUNT_PERCENT = 10;
 
@@ -1319,6 +1323,79 @@ export function pickAlternatives(input: {
         Math.abs(p.startMin - c.startMin) < OFFER_SPACING_MIN,
     );
     if (!tooClose) picked.push(c);
+  }
+  return picked;
+}
+
+/**
+ * Step B4, the contract's alternative_rule SAME_STYLIST_FORWARD: up to `max`
+ * alternatives for a session that is not free, as the app team's contract
+ * wants them. In this order:
+ *
+ *   1. the same day, the nearest time first;
+ *   2. then the next days, +1 up to +7, each the same time first, then the
+ *      nearest time.
+ *
+ * And always:
+ *   - the session's own stylist only: the create carries one stylist;
+ *   - never before the session's own day, never before today, never on a
+ *     day another session of the routine already has;
+ *   - at most 2 on one day, OFFER_SPACING_MIN apart. booking-api does not
+ *     know the salon's closed days, and customer-api drops what falls
+ *     outside the salon's hours: with no cap one closed day could fill the
+ *     whole list, and nothing would be left to offer;
+ *   - past the 90 day horizon only for a session itself past it
+ *     (`pastHorizon`: check_later, step B2).
+ *
+ * pickAlternatives (D4) is untouched: the old route keeps it.
+ */
+export function routineAlternatives(input: {
+  readonly wanted: SlotChoice;
+  readonly free: readonly SlotChoice[];
+  readonly otherSessionDays: readonly TradingDay[];
+  readonly today: TradingDay;
+  /** The session is past the 90 day horizon, and check_later is on. */
+  readonly pastHorizon: boolean;
+  readonly max: number;
+}): SlotChoice[] {
+  const { wanted, today } = input;
+  const blocked = new Set(input.otherSessionDays);
+
+  const ranked = input.free
+    .map((c) => ({
+      c,
+      ahead: daysBetween(wanted.day, c.day),
+      minutes: Math.abs(c.startMin - wanted.startMin),
+    }))
+    .filter(
+      ({ c, ahead, minutes }) =>
+        c.staffId === wanted.staffId &&
+        isInsideDay(c.startMin) &&
+        ahead >= 0 &&
+        ahead <= ROUTINE_ALTERNATIVE_DAYS &&
+        !(ahead === 0 && minutes === 0) &&
+        c.day >= today &&
+        !blocked.has(c.day) &&
+        (input.pastHorizon || !beyondHorizon(c.day, today)),
+    )
+    .sort(
+      (a, b) =>
+        a.ahead - b.ahead ||
+        a.minutes - b.minutes ||
+        a.c.startMin - b.c.startMin,
+    );
+
+  const picked: SlotChoice[] = [];
+  for (const { c } of ranked) {
+    if (picked.length >= input.max) break;
+    const sameDay = picked.filter((p) => p.day === c.day);
+    if (sameDay.length >= ALTERNATIVES_PER_DAY) continue;
+    if (
+      sameDay.some((p) => Math.abs(p.startMin - c.startMin) < OFFER_SPACING_MIN)
+    ) {
+      continue;
+    }
+    picked.push(c);
   }
   return picked;
 }

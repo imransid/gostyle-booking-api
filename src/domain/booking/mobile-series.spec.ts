@@ -21,6 +21,9 @@ import {
   customDays,
   effectivePause,
   farPickRefusal,
+  routineAlternatives,
+  ALTERNATIVES_PER_DAY,
+  ROUTINE_ALTERNATIVE_DAYS,
   frequencyColumn,
   frequencyFromColumn,
   isLocked,
@@ -1439,5 +1442,177 @@ describe('farPickRefusal (B2, check_later)', () => {
       message:
         "A session more than 90 days away keeps the routine's stylist until it is booked.",
     });
+  });
+});
+
+// ------------------------------------------------------------ B4
+
+describe('routineAlternatives (B4, SAME_STYLIST_FORWARD)', () => {
+  const TODAY = '2026-10-01';
+  /** Friday 2026-11-06 at 16:30, with maya. */
+  const wanted: SlotChoice = {
+    day: '2026-11-06',
+    startMin: 990,
+    staffId: 'maya',
+  };
+  const maya = (day: string, ...mins: number[]): SlotChoice[] =>
+    mins.map((startMin) => ({ day, startMin, staffId: 'maya' }));
+  const rana = (day: string, ...mins: number[]): SlotChoice[] =>
+    mins.map((startMin) => ({ day, startMin, staffId: 'rana' }));
+  const ALL = Array.from({ length: 22 }, (_, i) => 630 + 30 * i); // 10:30 to 21:00
+  const next = (n: number) => {
+    const d = new Date(`${wanted.day}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+  const offered = (
+    free: SlotChoice[],
+    over: Partial<Parameters<typeof routineAlternatives>[0]> = {},
+  ) =>
+    routineAlternatives({
+      wanted,
+      free,
+      otherSessionDays: [],
+      today: TODAY,
+      pastHorizon: false,
+      max: 12,
+      ...over,
+    }).map((c) => `${c.day} ${c.startMin} ${c.staffId}`);
+
+  it('the numbers', () => {
+    expect(ROUTINE_ALTERNATIVE_DAYS).toBe(7);
+    expect(ALTERNATIVES_PER_DAY).toBe(2);
+  });
+
+  it("the session's own stylist only", () => {
+    expect(
+      offered([...rana('2026-11-06', 960, 990), ...maya('2026-11-07', 990)]),
+    ).toStrictEqual(['2026-11-07 990 maya']);
+  });
+
+  it('the same day first, the nearest time first; a tie goes to the earlier time', () => {
+    expect(
+      offered(
+        [
+          ...maya('2026-11-07', 990),
+          ...maya('2026-11-06', 900, 1080, 1020, 960),
+        ],
+        {
+          max: 2,
+        },
+      ),
+    ).toStrictEqual(['2026-11-06 960 maya', '2026-11-06 1020 maya']);
+  });
+
+  it('then the next days, each the same time first, then the nearest time', () => {
+    expect(
+      offered([
+        ...maya('2026-11-08', 960, 990),
+        ...maya('2026-11-07', 1050, 930, 990),
+      ]),
+    ).toStrictEqual([
+      '2026-11-07 990 maya',
+      '2026-11-07 930 maya',
+      '2026-11-08 990 maya',
+      '2026-11-08 960 maya',
+    ]);
+  });
+
+  it('at most 2 on one day, at least 25 minutes apart', () => {
+    expect(
+      offered([
+        ...maya('2026-11-06', 975, 985, 1005, 1020),
+        ...maya('2026-11-07', 990),
+      ]),
+    ).toStrictEqual([
+      '2026-11-06 985 maya',
+      '2026-11-06 1020 maya',
+      '2026-11-07 990 maya',
+    ]);
+  });
+
+  it('a same day full of free times still leaves room for the next days', () => {
+    const free = [0, 1, 2, 3, 4, 5, 6, 7].flatMap((n) => maya(next(n), ...ALL));
+    const list = offered(free);
+    expect(list).toHaveLength(12);
+    const days = list.map((l) => l.slice(0, 10));
+    expect(days).toStrictEqual([
+      '2026-11-06',
+      '2026-11-06',
+      '2026-11-07',
+      '2026-11-07',
+      '2026-11-08',
+      '2026-11-08',
+      '2026-11-09',
+      '2026-11-09',
+      '2026-11-10',
+      '2026-11-10',
+      '2026-11-11',
+      '2026-11-11',
+    ]);
+  });
+
+  it('+7 days is offered, +8 never', () => {
+    expect(next(7)).toBe('2026-11-13');
+    expect(
+      offered([...maya(next(8), 990), ...maya(next(7), 990)]),
+    ).toStrictEqual(['2026-11-13 990 maya']);
+    expect(offered(maya(next(8), 990))).toStrictEqual([]);
+  });
+
+  it("never before the session's own day, never before today", () => {
+    expect(offered(maya('2026-11-05', 990))).toStrictEqual([]);
+    const pastSession = { day: '2026-09-30', startMin: 990, staffId: 'maya' };
+    expect(
+      routineAlternatives({
+        wanted: pastSession,
+        free: [...maya('2026-09-30', 1020), ...maya('2026-10-01', 990)],
+        otherSessionDays: [],
+        today: TODAY,
+        pastHorizon: false,
+        max: 12,
+      }),
+    ).toStrictEqual(maya('2026-10-01', 990));
+  });
+
+  it('never a day another session of the routine already has', () => {
+    expect(
+      offered([...maya('2026-11-07', 990), ...maya('2026-11-08', 990)], {
+        otherSessionDays: ['2026-11-07'],
+      }),
+    ).toStrictEqual(['2026-11-08 990 maya']);
+  });
+
+  it('never the wanted slot itself', () => {
+    expect(offered(maya('2026-11-06', 990, 1020))).toStrictEqual([
+      '2026-11-06 1020 maya',
+    ]);
+  });
+
+  it('a near session never past the 90 days; a far one (check_later) may', () => {
+    const near = { day: '2026-12-29', startMin: 990, staffId: 'maya' };
+    const free = [...maya('2026-12-30', 990), ...maya('2026-12-31', 990)];
+    const run = (pastHorizon: boolean) =>
+      routineAlternatives({
+        wanted: near,
+        free,
+        otherSessionDays: [],
+        today: TODAY,
+        pastHorizon,
+        max: 12,
+      }).map((c) => c.day);
+    expect(run(false)).toStrictEqual(['2026-12-30']);
+    expect(run(true)).toStrictEqual(['2026-12-30', '2026-12-31']);
+  });
+
+  it('up to max, in the same order', () => {
+    const free = [0, 1, 2, 3].flatMap((n) => maya(next(n), ...ALL));
+    const twelve = offered(free);
+    expect(offered(free, { max: 1 })).toStrictEqual(twelve.slice(0, 1));
+    expect(offered(free, { max: 3 })).toStrictEqual(twelve.slice(0, 3));
+  });
+
+  it('a time outside the trading day is never offered', () => {
+    expect(offered(maya('2026-11-07', 540, 1320))).toStrictEqual([]);
   });
 });

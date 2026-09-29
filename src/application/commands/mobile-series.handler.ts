@@ -50,7 +50,10 @@ import {
   customDays,
   farPickRefusal,
   frequencyColumn,
+  MAX_ALTERNATIVES,
+  ROUTINE_ALTERNATIVE_DAYS,
   pickAlternatives,
+  routineAlternatives,
   planDays,
   routineMoney,
   timesFreeOnAll,
@@ -322,6 +325,12 @@ export class MobileSeriesHandler {
     const checkLater = cmd.contract?.checkLater === true;
     // Step B3: a session that is not free says why, only when asked.
     const withReasons = cmd.contract?.withReasons === true;
+    // Step B4: the contract's alternatives rule, and how many to send back.
+    // alternatives_max means nothing without the rule.
+    const routineRule =
+      cmd.contract?.alternativeRule === 'SAME_STYLIST_FORWARD'
+        ? { max: cmd.contract.alternativesMax ?? MAX_ALTERNATIVES }
+        : null;
 
     // ---- 1. The request on its own ---------------------------------------
     const checked = checkRoutine(cmd.claim, today, { farPicks: checkLater });
@@ -389,7 +398,7 @@ export class MobileSeriesHandler {
       today,
       offers,
       money.quotes.map((q) => q.durationMin),
-      { checkLater, withReasons },
+      { checkLater, withReasons, routineRule },
     );
 
     if (routine.dryRun) {
@@ -1122,6 +1131,10 @@ export class MobileSeriesHandler {
    *
    * With the contract's with_reasons (step B3), a session that is not free
    * carries `reason`. Without it the key is not there at all.
+   *
+   * With the contract's alternative_rule (step B4), the alternatives follow
+   * routineAlternatives, up to its `max`; without it, pickAlternatives as
+   * before.
    */
   private async check(
     slots: readonly SessionSlot[],
@@ -1132,6 +1145,7 @@ export class MobileSeriesHandler {
     horizon: {
       readonly checkLater: boolean;
       readonly withReasons?: boolean;
+      readonly routineRule?: { readonly max: number } | null;
     } = { checkLater: false },
   ): Promise<PlannedSessionView[]> {
     return Promise.all(
@@ -1143,7 +1157,14 @@ export class MobileSeriesHandler {
           horizon.checkLater && beyondHorizon(planned[s.index]!.day, today);
         const alternatives =
           free === false
-            ? await this.alternativesFor(s, slots, today, offers, farSession)
+            ? await this.alternativesFor(
+                s,
+                slots,
+                today,
+                offers,
+                farSession,
+                horizon.routineRule ?? null,
+              )
             : [];
         return {
           index: s.index,
@@ -1182,7 +1203,30 @@ export class MobileSeriesHandler {
     today: string,
     offers: DayOffers,
     farSession = false,
+    routineRule: { readonly max: number } | null = null,
   ): Promise<SlotChoice[]> {
+    if (routineRule !== null) {
+      // Step B4: the session's day and the 7 after it, nothing before. A
+      // near session is never offered a day past the 90 days (the engine is
+      // not even asked about one).
+      const days = Array.from(
+        { length: ROUTINE_ALTERNATIVE_DAYS + 1 },
+        (_, n) => addDays(slot.day, n),
+      ).filter((d) => d >= today && (farSession || !beyondHorizon(d, today)));
+      const choices = (
+        await Promise.all(days.map((d) => offers.choices(d)))
+      ).flat();
+      return routineAlternatives({
+        wanted: slot,
+        free: choices,
+        otherSessionDays: slots
+          .filter((x) => x.index !== slot.index)
+          .map((x) => x.day),
+        today,
+        pastHorizon: farSession,
+        max: routineRule.max,
+      });
+    }
     const days = ALTERNATIVE_DAYS.map((n) => addDays(slot.day, n)).filter(
       (d) => d >= today && (farSession || !beyondHorizon(d, today)),
     );
