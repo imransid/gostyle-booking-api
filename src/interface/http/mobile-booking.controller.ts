@@ -51,7 +51,11 @@ import {
   withSeriesIds,
 } from '@domain/booking/mobile-series-list';
 import { MobileSeriesReadHandler } from '@application/queries/mobile-series-read.handler';
-import { MOBILE_SERIES_BOOKING } from './mobile-series.flag';
+import { MobileRoutineBookingViewHandler } from '@application/queries/mobile-routine-booking-view.handler';
+import {
+  MOBILE_ROUTINE_CONTRACT,
+  MOBILE_SERIES_BOOKING,
+} from './mobile-series.flag';
 import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
 import { BookingRepository } from '@infrastructure/persistence/booking.repository';
 import { MobileContractError } from '@application/commands/mobile-booking.error';
@@ -272,6 +276,7 @@ export class MobileBookingController {
     private readonly bookings: BookingRepository,
     private readonly groups: MobileGroupReadHandler,
     @Optional() private readonly series?: MobileSeriesReadHandler,
+    @Optional() private readonly bookingView?: MobileRoutineBookingViewHandler,
   ) {}
 
   @Post()
@@ -356,6 +361,15 @@ export class MobileBookingController {
   })
   @ApiQuery({ name: 'page', required: false, example: 1 })
   @ApiQuery({ name: 'pageSize', required: false, example: 20 })
+  @ApiQuery({
+    name: 'view',
+    required: false,
+    enum: ['booking'],
+    description:
+      'Behind MOBILE_ROUTINE_CONTRACT, `recurring` only: `booking` answers ' +
+      'each routine as one booking (the app team contract). Off, or ' +
+      'anything else: the routine rows as before.',
+  })
   @ApiOkResponse({ description: 'A page of the shelf, plus all three counts.' })
   @ApiUnprocessableEntityResponse({
     description: 'filter was not one of the three: code `invalid_filter`.',
@@ -365,6 +379,7 @@ export class MobileBookingController {
     @Query('filter') filter?: string,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
+    @Query('view') view?: string,
   ): Promise<unknown> {
     const shelf = parseFilter(filter);
     if (shelf === null) {
@@ -388,10 +403,16 @@ export class MobileBookingController {
     // Behind MOBILE_SERIES_BOOKING (step 5): the Recurring tab lists this
     // customer's app routines, and every tab's `counts.recurring` counts
     // them. Off, the page is exactly what it was.
-    return this.withRoutines(decorated, actor.id, shelf, {
-      page: clampInt(page, 1, 1, 10_000),
-      pageSize: clampInt(pageSize, 20, 1, 50),
-    });
+    return this.withRoutines(
+      decorated,
+      actor.id,
+      shelf,
+      {
+        page: clampInt(page, 1, 1, 10_000),
+        pageSize: clampInt(pageSize, 20, 1, 50),
+      },
+      view,
+    );
   }
 
   /**
@@ -410,6 +431,8 @@ export class MobileBookingController {
     customerId: string | null | undefined,
     shelf: string,
     paging: { readonly page: number; readonly pageSize: number },
+    /** Step B7: `booking` asks for each routine as one booking. */
+    view?: string,
   ): Promise<unknown> {
     const body: unknown = await Promise.resolve(page);
     if (
@@ -444,7 +467,13 @@ export class MobileBookingController {
       };
     }
 
-    const routines = await this.series.listForCustomer(customerId, paging);
+    // Step B7: each row as one booking, only when asked AND switched on.
+    const routines =
+      view === 'booking' &&
+      MOBILE_ROUTINE_CONTRACT() &&
+      this.bookingView !== undefined
+        ? await this.bookingView.list(customerId, paging)
+        : await this.series.listForCustomer(customerId, paging);
     return {
       ...current,
       count: routines.count,
@@ -570,17 +599,31 @@ export class MobileBookingController {
   @ApiNotFoundResponse({
     description: 'No such booking, or not the caller\u2019s.',
   })
-  read(
+  async read(
     @Param('id') id: string,
     @CurrentActor() actor: Actor,
   ): Promise<unknown> {
-    return this.handler.read({
+    const booking: unknown = await this.handler.read({
       bookingId: id,
       actorId: actor.id ?? 'anonymous',
       actorKind: actor.kind,
       // Null means every branch, which is what a company owner carries.
       actorBranchId: actor.branchId,
     });
+    // Step B7, behind MOBILE_ROUTINE_CONTRACT: two fields added at the end,
+    // `booking_type` (SINGLE or ROUTINE) and `series_id` (its app routine,
+    // or null), so a visit opened from Upcoming can open its routine.
+    // Nothing else changes; off, the booking exactly as before.
+    if (
+      !MOBILE_ROUTINE_CONTRACT() ||
+      this.series === undefined ||
+      typeof booking !== 'object' ||
+      booking === null
+    ) {
+      return booking;
+    }
+    const link = await this.series.bookingLinkOf(id);
+    return link === null ? booking : { ...booking, ...link };
   }
 
   @Patch(':id')

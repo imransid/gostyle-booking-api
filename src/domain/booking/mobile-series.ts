@@ -63,6 +63,10 @@ export const RESCHEDULE_WITHIN_DAYS = BOOKING_HORIZON_DAYS;
 export const MISSES_TO_PAUSE = 2;
 /** D4. */
 export const MAX_ALTERNATIVES = 3;
+/** Step B4: how many days after a session's own day its alternatives go. */
+export const ROUTINE_ALTERNATIVE_DAYS = 7;
+/** Step B4: at most this many alternatives on one day. */
+export const ALTERNATIVES_PER_DAY = 2;
 /** D8. */
 export const UPFRONT_DISCOUNT_PERCENT = 10;
 
@@ -196,7 +200,8 @@ export type RuleRefusalCode =
   | 'too_many_sessions'
   | 'reschedule_out_of_range'
   | 'session_day_taken'
-  | 'invalid_pick';
+  | 'invalid_pick'
+  | 'session_not_offered';
 
 export interface RuleRefusal {
   readonly field: string;
@@ -527,6 +532,106 @@ export function applyPicks(
     taken.add(s.day);
   }
   return { kind: 'ok', slots };
+}
+
+/**
+ * Step B2 (the contract's check_later): a pick past the 90 day horizon.
+ *
+ * Such a pick is SAVED, not booked (the job books it when the diary reaches
+ * it), so:
+ *   - its session must itself be past the horizon. A near session is booked
+ *     now, and 90 days is as far as a booking goes;
+ *   - it keeps the routine's stylist. A saved session has no stylist of its
+ *     own (series_occurrence has no column for one), and the job books it
+ *     with the routine's. Another stylist would be lost without a word.
+ * A pick inside the 90 days is booked now, as before, and is not looked at
+ * here.
+ */
+export function farPickRefusal(input: {
+  /** The session days as planned, before any pick. */
+  readonly planned: readonly PlannedDay[];
+  readonly picks: readonly PickChoice[];
+  readonly today: TradingDay;
+  /** The routine's stylist. */
+  readonly stylistId: string;
+}): RuleRefusal | null {
+  for (const [i, p] of input.picks.entries()) {
+    if (!beyondHorizon(p.day, input.today)) continue;
+    const session = input.planned[p.index];
+    if (session === undefined || !beyondHorizon(session.day, input.today)) {
+      return refuse(
+        `picks[${i}].date`,
+        'invalid_pick',
+        `A pick is a day from today to ${BOOKING_HORIZON_DAYS} days ahead.`,
+      );
+    }
+    if (p.stylistId !== null && p.stylistId !== input.stylistId) {
+      return refuse(
+        `picks[${i}].stylist_id`,
+        'invalid_pick',
+        `A session more than ${BOOKING_HORIZON_DAYS} days away keeps the ` +
+          "routine's stylist until it is booked.",
+      );
+    }
+  }
+  return null;
+}
+
+/**
+ * Step B6, the contract's strict_picks: every pick must be a time the B4
+ * alternatives rule (routineAlternatives) allows for its session:
+ *   - the session's own stylist (null, or the routine's);
+ *   - the session's own day, or up to 7 days after it; never before today;
+ *   - never a day another session of the routine has (its own day, or its
+ *     pick);
+ *   - inside booking-api's day;
+ *   - a near session stays inside the 90 days; a far one may go past them
+ *     only with check_later, and only inside its own +7 window.
+ * A pick that follows the rule is fine even if it was not one of the
+ * alternatives shown (Q3): the ones shown change as the diary does. Whether
+ * it is free is checked afterwards, as for every session. A pick equal to
+ * its own slot is fine.
+ *
+ * Replaces, with strict_picks, the looser checks: the 90 or 366 day range
+ * of checkPicks and farPickRefusal (B2).
+ */
+export function offeredPickRefusal(input: {
+  /** The session days as planned, before any pick. */
+  readonly planned: readonly PlannedDay[];
+  readonly picks: readonly PickChoice[];
+  readonly today: TradingDay;
+  /** The routine's stylist. */
+  readonly stylistId: string;
+  /** check_later: a far session may be picked past the 90 days. */
+  readonly checkLater: boolean;
+}): RuleRefusal | null {
+  const own = input.planned.map((p) => p.day);
+  const picked = new Map(input.picks.map((p) => [p.index, p.day] as const));
+  const final = own.map((day, i) => picked.get(i) ?? day);
+
+  for (const [j, p] of input.picks.entries()) {
+    const day = own[p.index];
+    const ahead = day === undefined ? -1 : daysBetween(day, p.day);
+    const far = day !== undefined && beyondHorizon(day, input.today);
+    const allowed =
+      (p.stylistId === null || p.stylistId === input.stylistId) &&
+      ahead >= 0 &&
+      ahead <= ROUTINE_ALTERNATIVE_DAYS &&
+      p.day >= input.today &&
+      !final.some((d, i) => i !== p.index && d === p.day) &&
+      isInsideDay(p.startMin) &&
+      (far ? input.checkLater : !beyondHorizon(p.day, input.today));
+    if (!allowed) {
+      return refuse(
+        `picks[${j}]`,
+        'session_not_offered',
+        `Session ${p.index + 1} is neither on its cadence nor at a time the ` +
+          'alternatives rule allows (same stylist, same day or up to ' +
+          `${ROUTINE_ALTERNATIVE_DAYS} days after, not another session's day).`,
+      );
+    }
+  }
+  return null;
 }
 
 // ------------------------------------------------------------ the lock
@@ -1278,4 +1383,149 @@ export function pickAlternatives(input: {
     if (!tooClose) picked.push(c);
   }
   return picked;
+}
+
+/**
+ * Step B4, the contract's alternative_rule SAME_STYLIST_FORWARD: up to `max`
+ * alternatives for a session that is not free, as the app team's contract
+ * wants them. In this order:
+ *
+ *   1. the same day, the nearest time first;
+ *   2. then the next days, +1 up to +7, each the same time first, then the
+ *      nearest time.
+ *
+ * And always:
+ *   - the session's own stylist only: the create carries one stylist;
+ *   - never before the session's own day, never before today, never on a
+ *     day another session of the routine already has;
+ *   - at most 2 on one day, OFFER_SPACING_MIN apart. booking-api does not
+ *     know the salon's closed days, and customer-api drops what falls
+ *     outside the salon's hours: with no cap one closed day could fill the
+ *     whole list, and nothing would be left to offer;
+ *   - past the 90 day horizon only for a session itself past it
+ *     (`pastHorizon`: check_later, step B2).
+ *
+ * pickAlternatives (D4) is untouched: the old route keeps it.
+ */
+export function routineAlternatives(input: {
+  readonly wanted: SlotChoice;
+  readonly free: readonly SlotChoice[];
+  readonly otherSessionDays: readonly TradingDay[];
+  readonly today: TradingDay;
+  /** The session is past the 90 day horizon, and check_later is on. */
+  readonly pastHorizon: boolean;
+  readonly max: number;
+}): SlotChoice[] {
+  const { wanted, today } = input;
+  const blocked = new Set(input.otherSessionDays);
+
+  const ranked = input.free
+    .map((c) => ({
+      c,
+      ahead: daysBetween(wanted.day, c.day),
+      minutes: Math.abs(c.startMin - wanted.startMin),
+    }))
+    .filter(
+      ({ c, ahead, minutes }) =>
+        c.staffId === wanted.staffId &&
+        isInsideDay(c.startMin) &&
+        ahead >= 0 &&
+        ahead <= ROUTINE_ALTERNATIVE_DAYS &&
+        !(ahead === 0 && minutes === 0) &&
+        c.day >= today &&
+        !blocked.has(c.day) &&
+        (input.pastHorizon || !beyondHorizon(c.day, today)),
+    )
+    .sort(
+      (a, b) =>
+        a.ahead - b.ahead ||
+        a.minutes - b.minutes ||
+        a.c.startMin - b.c.startMin,
+    );
+
+  const picked: SlotChoice[] = [];
+  for (const { c } of ranked) {
+    if (picked.length >= input.max) break;
+    const sameDay = picked.filter((p) => p.day === c.day);
+    if (sameDay.length >= ALTERNATIVES_PER_DAY) continue;
+    if (
+      sameDay.some((p) => Math.abs(p.startMin - c.startMin) < OFFER_SPACING_MIN)
+    ) {
+      continue;
+    }
+    picked.push(c);
+  }
+  return picked;
+}
+
+/**
+ * Step B5, "Any Available Expert": the ONE stylist a routine gets when the
+ * app sends none, from the contract's stylist_candidates (the stylists
+ * customer-api knows can do every service). It becomes the routine's
+ * regular stylist, used exactly as if the app had sent it.
+ *
+ * In this order:
+ *   1. free on the most sessions, each at its cadence slot. A session not
+ *      checked (past the 90 days without check_later) counts for nobody;
+ *   2. free on session 0, the start the customer chose;
+ *   3. the fewest minutes already taken on session 0's day in booking-api's
+ *      own diary (its staff reservations: bookings and live holds). A
+ *      candidate the engine does not have that day (off, or not at this
+ *      branch) has no diary and comes after every one it has. Not the
+ *      roster's bookingsToday: the platform roster publishes 0 for everyone,
+ *      so it would never decide anything;
+ *   4. a fixed shuffle per customer (fixedShuffle, lowest first), then the
+ *      id. The same customer always gets the same stylist, so the preview
+ *      and the create agree, but on a quiet day different customers are
+ *      spread over the stylists instead of all going to the lowest id.
+ *      Never random.
+ *
+ * A candidate who is free nowhere still counts (0 sessions): when nobody is
+ * free anywhere, the tie rules still choose one, so the customer sees that
+ * stylist's alternatives. Null only for no candidate at all.
+ */
+export function chooseRegularStylist(input: {
+  readonly candidates: readonly string[];
+  /** Per session, in order: who is free at its cadence slot. Null: not checked. */
+  readonly freeBySession: readonly (ReadonlySet<string> | null)[];
+  /**
+   * Minutes already taken on session 0's day, for every stylist the engine
+   * has that day (0 for one with nothing booked). Missing: not that day.
+   */
+  readonly bookedMinutesOnFirstDay: ReadonlyMap<string, number>;
+  /** Whose routine it is: the key of the fixed shuffle (rule 4). */
+  readonly customerId: string;
+}): string | null {
+  const minutes = (id: string): number =>
+    input.bookedMinutesOnFirstDay.get(id) ?? Number.POSITIVE_INFINITY;
+  const ranked = [...new Set(input.candidates)].map((id) => ({
+    id,
+    free: input.freeBySession.filter((who) => who?.has(id) === true).length,
+    first: input.freeBySession[0]?.has(id) === true,
+    minutes: minutes(id),
+    shuffle: fixedShuffle(input.customerId, id),
+  }));
+  ranked.sort(
+    (a, b) =>
+      b.free - a.free ||
+      Number(b.first) - Number(a.first) ||
+      (a.minutes === b.minutes ? 0 : a.minutes < b.minutes ? -1 : 1) ||
+      a.shuffle - b.shuffle ||
+      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
+  return ranked[0]?.id ?? null;
+}
+
+/**
+ * Rule 4 of chooseRegularStylist: a number from the customer and the
+ * stylist, the same every time (32 bit FNV-1a). It orders the stylists
+ * differently for each customer, and never changes for one customer.
+ */
+export function fixedShuffle(customerId: string, stylistId: string): number {
+  let hash = 0x811c9dc5;
+  for (const ch of `${customerId}|${stylistId}`) {
+    hash ^= ch.codePointAt(0)!;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash;
 }

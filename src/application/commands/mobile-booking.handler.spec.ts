@@ -101,6 +101,13 @@ interface HandlerOptions {
     readonly taxFils: number | null;
     readonly discountFils: number | null;
   };
+  /** B7: the stored booking's status columns, and its money ledger. */
+  readonly row?: Readonly<Record<string, unknown>>;
+  readonly ledger?: readonly {
+    readonly entryType: string;
+    readonly amountFils: number;
+    readonly rail: string | null;
+  }[];
 }
 
 function handlerWith(options: HandlerOptions = {}) {
@@ -171,6 +178,7 @@ function handlerWith(options: HandlerOptions = {}) {
     taxFils: null,
     discountFils: null,
     ...options.stored,
+    ...options.row,
     depositFils: 5_000,
     items: [
       {
@@ -181,7 +189,7 @@ function handlerWith(options: HandlerOptions = {}) {
       },
     ],
     products,
-    ledger: [],
+    ledger: options.ledger ?? [],
   });
 
   const bookings = {
@@ -977,5 +985,50 @@ describe('create and read agree: the products are counted once', () => {
       ],
     });
     expect(money(read)).toStrictEqual(money(created));
+  });
+});
+
+// ------------------------------------------------------------ B7
+
+/**
+ * STEP B7 (gostyle-customer-api docs/ROUTINE_FE_CONTRACT_AUDIT.md): the
+ * routine's money is the sum of its visits exactly as this read reports
+ * each one. These snapshots were recorded on the code before B7 (commit
+ * fb0e039), so any change B7 makes to how the read reports money shows up
+ * here.
+ */
+describe('B7: the single read, as it was before B7', () => {
+  const PAID_AT_DESK = {
+    row: { status: 'confirmed', paymentStatus: 'fully_paid' },
+    ledger: [{ entryType: 'captured', amountFils: 16_000, rail: 'cash' }],
+  };
+  it.each([
+    ['unpaid, waiting for its link', {}],
+    [
+      'pay at the salon, nothing taken',
+      { row: { status: 'confirmed', paymentStatus: 'none_required' } },
+    ],
+    ['paid at the desk (price_fils, net)', PAID_AT_DESK],
+    [
+      'paid at the desk, then refunded',
+      {
+        row: { status: 'cancelled', paymentStatus: 'refunded' },
+        ledger: [
+          { entryType: 'captured', amountFils: 16_000, rail: 'cash' },
+          { entryType: 'refunded', amountFils: -16_000, rail: 'cash' },
+        ],
+      },
+    ],
+    [
+      'a no-show nobody paid',
+      { row: { status: 'no_show', paymentStatus: 'none_required' } },
+    ],
+    [
+      'the services cannot be priced, nothing stored',
+      { quoteThrows: new Error('Unknown service: haircut-finish') },
+    ],
+  ] as const)('%s', async (_name, options) => {
+    const { handler } = handlerWith(options);
+    expect(await handler.read(OWNER)).toMatchSnapshot();
   });
 });

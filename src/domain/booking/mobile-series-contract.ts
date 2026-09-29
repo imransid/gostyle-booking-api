@@ -8,6 +8,7 @@ import {
   MIN_SESSIONS,
   PAUSE_REASONS,
   PAYMENT_PLANS,
+  PLAN_SEARCH_DAYS,
   ROUTINE_ACTIONS,
   V1_PAYMENT_PLANS,
   type Cadence,
@@ -98,6 +99,7 @@ export const SERIES_REFUSAL_CODES: readonly SeriesRefusalCode[] = [
   'too_many_sessions',
   'reschedule_out_of_range',
   'session_day_taken',
+  'session_not_offered',
   'not_found',
   'cannot_cancel',
 ];
@@ -230,6 +232,55 @@ function inBookingRange(day: TradingDay, today: TradingDay): boolean {
   return ahead >= 0 && ahead <= BOOKING_HORIZON_DAYS;
 }
 
+/**
+ * How a create treats the sessions past the 90 day horizon.
+ *
+ * `farPicks` is the contract's check_later (step B2): a pick may then be
+ * past the 90 days too, up to PLAN_SEARCH_DAYS. Whether its session really
+ * is a far one is known only once the days are planned: farPickRefusal
+ * (mobile-series.ts) checks that.
+ */
+export interface HorizonOptions {
+  readonly farPicks: boolean;
+  /**
+   * Step B6, the contract's strict_picks: a pick's range is the
+   * alternatives rule's to check (offeredPickRefusal, once the days are
+   * planned), so here only its shape is.
+   */
+  readonly strictPicks?: boolean;
+}
+
+/** The old rule: every pick inside the 90 days. */
+export const NEAR_PICKS_ONLY: HorizonOptions = { farPicks: false };
+
+/** What checkRoutine is told by the contract's options. */
+export interface RoutineCheckOptions extends HorizonOptions {
+  /**
+   * Step B5, Any Available Expert: no stylist was sent, and the server picks
+   * one from the contract's stylist_candidates, so a missing stylist_id is
+   * not refused. The caller sets it only with a time and candidates; without
+   * a time the old stylist_required stands.
+   */
+  readonly stylistChosenByServer?: boolean;
+}
+
+function pickInRange(
+  day: TradingDay,
+  today: TradingDay,
+  horizon: HorizonOptions,
+): boolean {
+  if (!horizon.farPicks) return inBookingRange(day, today);
+  const ahead = daysBetween(today, day);
+  return ahead >= 0 && ahead <= PLAN_SEARCH_DAYS;
+}
+
+function pickRangeMessage(horizon: HorizonOptions): string {
+  return horizon.farPicks
+    ? `A pick is a day from today to ${BOOKING_HORIZON_DAYS} days ahead, ` +
+        `or up to ${PLAN_SEARCH_DAYS} days ahead for a session past them.`
+    : `A pick is a day from today to ${BOOKING_HORIZON_DAYS} days ahead.`;
+}
+
 const TIME_MESSAGE = 'time is HH:MM, on a 5 minute step, from 10:00 to 21:55.';
 
 // ------------------------------------------------------------ create
@@ -290,11 +341,15 @@ export interface CheckedRoutine {
 export function checkRoutine(
   claim: RoutineClaim,
   today: TradingDay,
+  horizon: RoutineCheckOptions = NEAR_PICKS_ONLY,
 ): Checked<CheckedRoutine> {
   if (claim.serviceIds.length === 0) {
     return no(refuse('services', 'no_services', 'Pick at least one service.'));
   }
-  if ((claim.stylistId ?? '').trim() === '') {
+  if (
+    horizon.stylistChosenByServer !== true &&
+    (claim.stylistId ?? '').trim() === ''
+  ) {
     return no(
       refuse(
         'stylist_id',
@@ -449,7 +504,7 @@ export function checkRoutine(
   }
 
   // ---- the picks (D4)
-  const picks = checkPicks(claim.picks, today, count);
+  const picks = checkPicks(claim.picks, today, count, horizon);
   if (picks.kind === 'refused') return picks;
 
   return ok({
@@ -477,6 +532,7 @@ export function checkPicks(
   claims: readonly PickClaim[],
   today: TradingDay,
   count: number | null,
+  horizon: HorizonOptions = NEAR_PICKS_ONLY,
 ): Checked<readonly CheckedPick[]> {
   const picks: CheckedPick[] = [];
   const seen = new Set<number>();
@@ -503,13 +559,19 @@ export function checkPicks(
       );
     }
     seen.add(p.index);
-    if (!isTradingDay(p.date) || !inBookingRange(p.date, today)) {
+    if (horizon.strictPicks === true) {
+      if (!isTradingDay(p.date)) {
+        return no(
+          refuse(
+            `${field}.date`,
+            'invalid_pick',
+            'A pick is a day, YYYY-MM-DD.',
+          ),
+        );
+      }
+    } else if (!isTradingDay(p.date) || !pickInRange(p.date, today, horizon)) {
       return no(
-        refuse(
-          `${field}.date`,
-          'invalid_pick',
-          `A pick is a day from today to ${BOOKING_HORIZON_DAYS} days ahead.`,
-        ),
+        refuse(`${field}.date`, 'invalid_pick', pickRangeMessage(horizon)),
       );
     }
     const startMin = parseRoutineTime(p.time);

@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   GUARDS_METADATA,
   INTERCEPTORS_METADATA,
 } from '@nestjs/common/constants';
 import {
+  MobileRoutineContractDto,
   MobileSeriesController,
   type MobileSeriesDto,
 } from './mobile-series.controller';
@@ -133,5 +134,88 @@ describe('MobileSeriesController', () => {
       actorKind: 'customer',
       actorBranchId: null,
     });
+  });
+
+  describe('the routine contract options (step B1)', () => {
+    const commandFor = async (dto: MobileSeriesDto) => {
+      const { controller, handler, res } = harness();
+      await controller.create(dto, actor, res as never);
+      return handler.execute.mock.calls[0]![0] as Record<string, unknown>;
+    };
+
+    it('an old body makes exactly the old command: no contract key at all', async () => {
+      const cmd = await commandFor(body());
+      expect('contract' in cmd).toBe(false);
+    });
+
+    it('the contract class with no option sent: still no contract key', async () => {
+      const dto = Object.assign(new MobileRoutineContractDto(), body());
+      const cmd = await commandFor(dto);
+      expect('contract' in cmd).toBe(false);
+      expect(cmd).toStrictEqual(await commandFor(body()));
+    });
+
+    it('the options reach the handler in our words; nothing else changes', async () => {
+      const dto = Object.assign(new MobileRoutineContractDto(), body(), {
+        stylist_candidates: ['maya', 'omar'],
+        check_later: true,
+        strict_picks: true,
+      });
+      const { contract, ...rest } = await commandFor(dto);
+      expect(contract).toStrictEqual({
+        stylistCandidates: ['maya', 'omar'],
+        checkLater: true,
+        withReasons: false,
+        alternativeRule: null,
+        alternativesMax: null,
+        strictPicks: true,
+      });
+      expect(rest).toStrictEqual(await commandFor(body()));
+    });
+  });
+});
+
+describe('B7: GET :seriesId?view=booking', () => {
+  afterEach(() => {
+    delete process.env.MOBILE_ROUTINE_CONTRACT;
+  });
+  const who = { actorId: actor.id, actorKind: 'customer', actorBranchId: null };
+  const build = () => {
+    const reads = { read: vi.fn(() => Promise.resolve({ id: 'hub' })) };
+    const bookingView = {
+      read: vi.fn(() => Promise.resolve({ id: 'booking' })),
+    };
+    const controller = new MobileSeriesController(
+      {} as never,
+      reads as never,
+      undefined,
+      undefined,
+      bookingView as never,
+    );
+    return { controller, reads, bookingView };
+  };
+
+  it('flag on and view=booking: the routine as one booking', async () => {
+    process.env.MOBILE_ROUTINE_CONTRACT = 'true';
+    const { controller, reads, bookingView } = build();
+    expect(await controller.read('series-1', actor, 'booking')).toStrictEqual({
+      id: 'booking',
+    });
+    expect(bookingView.read).toHaveBeenCalledWith('series-1', who);
+    expect(reads.read).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['flag off, view=booking', undefined, 'booking'],
+    ['flag on, no view', 'true', undefined],
+    ['flag on, another view', 'true', 'hub'],
+  ] as const)('%s: the hub, exactly as before', async (_n, flag, view) => {
+    if (flag !== undefined) process.env.MOBILE_ROUTINE_CONTRACT = flag;
+    const { controller, reads, bookingView } = build();
+    expect(await controller.read('series-1', actor, view)).toStrictEqual({
+      id: 'hub',
+    });
+    expect(reads.read).toHaveBeenCalledWith('series-1', who);
+    expect(bookingView.read).not.toHaveBeenCalled();
   });
 });

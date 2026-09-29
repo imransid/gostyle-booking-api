@@ -47,9 +47,15 @@ import {
   ROUTINE_RULES,
   applyPicks,
   beyondHorizon,
+  chooseRegularStylist,
   customDays,
+  farPickRefusal,
   frequencyColumn,
+  offeredPickRefusal,
+  MAX_ALTERNATIVES,
+  ROUTINE_ALTERNATIVE_DAYS,
   pickAlternatives,
+  routineAlternatives,
   planDays,
   routineMoney,
   timesFreeOnAll,
@@ -100,9 +106,36 @@ export interface MobileSeriesCommand {
   readonly money: RoutineMoneyClaims | null;
   /** MOBILE_SERIES_DEPOSIT_PERCENT, read by the controller. */
   readonly depositPercent: number;
+  /**
+   * The app team's routine contract (MOBILE_ROUTINE_CONTRACT), sent only by
+   * customer-api's new routes. Absent: exactly the old behaviour. Carried
+   * here from step B1; each option is read from its own step on (B2 to B6).
+   */
+  readonly contract?: RoutineContractOptions;
   /** Test hook: the clock. */
   readonly nowMs?: number;
 }
+
+/** How a routine's alternatives are chosen. Null keeps pickAlternatives (D4). */
+export type AlternativeRule = 'SAME_STYLIST_FORWARD';
+
+/** The new contract's options, in our words. */
+export interface RoutineContractOptions {
+  /** Any Available Expert: who may be picked (customer-api knows skills). */
+  readonly stylistCandidates: readonly string[] | null;
+  /** Check sessions past the 90 day horizon against today's calendar. */
+  readonly checkLater: boolean;
+  /** Say why a session is not free (`stylist_unavailable`). */
+  readonly withReasons: boolean;
+  readonly alternativeRule: AlternativeRule | null;
+  /** How many alternatives to send back, for customer-api to trim. */
+  readonly alternativesMax: number | null;
+  /** A pick must be one the alternatives rule would offer. */
+  readonly strictPicks: boolean;
+}
+
+/** Why a session is not free, as booking-api can tell (step B3). */
+export type SessionReason = 'stylist_unavailable';
 
 export interface AlternativeView {
   readonly date: string;
@@ -119,6 +152,15 @@ export interface PlannedSessionView {
   readonly stylist_id: string | null;
   /** Null past the 90 day horizon, where nothing is checked yet. */
   readonly free: boolean | null;
+  /**
+   * Why a session is not free (step B3, the contract's with_reasons only;
+   * the key is absent otherwise). booking-api knows its diary, not the
+   * salon's closed days or opening hours, so the only reason it can give is
+   * `stylist_unavailable`: the stylist is off, or busy, then. customer-api
+   * puts its own hours reasons first (salon_closed, outside_hours,
+   * too_soon).
+   */
+  readonly reason?: SessionReason;
   /** Past the 90 day horizon: stored as planned, booked later. */
   readonly later: boolean;
   /** The customer chose this one from the alternatives (D4). */
@@ -280,11 +322,37 @@ export class MobileSeriesHandler {
     const nowMs = cmd.nowMs ?? Date.now();
     const today = branchToday(nowMs);
 
+    // Step B2: sessions past the 90 days are checked against today's
+    // calendar, and may be picked past them, only when the contract asks.
+    const checkLater = cmd.contract?.checkLater === true;
+    // Step B3: a session that is not free says why, only when asked.
+    const withReasons = cmd.contract?.withReasons === true;
+    // Step B4: the contract's alternatives rule, and how many to send back.
+    // alternatives_max means nothing without the rule.
+    const routineRule =
+      cmd.contract?.alternativeRule === 'SAME_STYLIST_FORWARD'
+        ? { max: cmd.contract.alternativesMax ?? MAX_ALTERNATIVES }
+        : null;
+    // Step B5, Any Available Expert: no stylist sent, candidates sent, and a
+    // time to judge them by. A stylist_id sent wins; without a time the old
+    // stylist_required stands.
+    // Step B6: every pick must follow the alternatives rule (B4).
+    const strictPicks = cmd.contract?.strictPicks === true;
+    const candidates = cmd.contract?.stylistCandidates ?? null;
+    const anyStylist =
+      candidates !== null &&
+      candidates.length > 0 &&
+      (cmd.claim.stylistId ?? '').trim() === '' &&
+      cmd.claim.time !== null;
+
     // ---- 1. The request on its own ---------------------------------------
-    const checked = checkRoutine(cmd.claim, today);
+    const checked = checkRoutine(cmd.claim, today, {
+      farPicks: checkLater,
+      stylistChosenByServer: anyStylist,
+      strictPicks,
+    });
     if (checked.kind === 'refused') throw refused(checked.refusal);
     const routine = checked.value;
-    const stylistId = cmd.claim.stylistId!.trim();
     const serviceIds = cmd.claim.serviceIds;
 
     // ---- 2. The services must exist at this salon ------------------------
@@ -312,12 +380,47 @@ export class MobileSeriesHandler {
       );
     }
 
+    // The routine's stylist: the one sent, or (B5) the one chosen now. From
+    // here on it is used exactly as if the app had sent it.
+    const stylistId =
+      anyStylist && routine.startMin !== null
+        ? await this.chooseStylist({
+            branchId: cmd.salonId,
+            customerId: cmd.customerId,
+            candidates,
+            planned,
+            startMin: routine.startMin,
+            today,
+            offers,
+            checkLater,
+          })
+        : cmd.claim.stylistId!.trim();
+
     // ---- 5. No time yet: which times are free on every day ---------------
     if (routine.startMin === null) {
       return this.timesPreview(cmd, routine, planned, today, offers, stylistId);
     }
 
     // ---- 6. The slots, with the customer's picks (D4) --------------------
+    if (strictPicks) {
+      // B6: before anything is looked up for the picks, let alone booked.
+      const off = offeredPickRefusal({
+        planned,
+        picks: routine.picks,
+        today,
+        stylistId,
+        checkLater,
+      });
+      if (off !== null) throw refused(off);
+    } else if (checkLater) {
+      const far = farPickRefusal({
+        planned,
+        picks: routine.picks,
+        today,
+        stylistId,
+      });
+      if (far !== null) throw refused(far);
+    }
     const slots = applyPicks(
       planned.map((p, index) => ({
         index,
@@ -337,6 +440,7 @@ export class MobileSeriesHandler {
       today,
       offers,
       money.quotes.map((q) => q.durationMin),
+      { checkLater, withReasons, routineRule },
     );
 
     if (routine.dryRun) {
@@ -976,6 +1080,60 @@ export class MobileSeriesHandler {
   // ------------------------------------------------------------ steps
 
   /**
+   * Step B5: the routine's one stylist, from the contract's candidates
+   * (chooseRegularStylist). Each session is judged at its cadence slot, the
+   * same way in the preview and in the create, so the same diary gives the
+   * same stylist in both. A far session counts only with check_later. The
+   * busy tie reads booking-api's own diary on session 0's day: the minutes
+   * each stylist the engine has that day is already reserved.
+   */
+  private async chooseStylist(input: {
+    readonly branchId: string;
+    readonly customerId: string;
+    readonly candidates: readonly string[];
+    readonly planned: readonly PlannedDay[];
+    readonly startMin: number;
+    readonly today: string;
+    readonly offers: DayOffers;
+    readonly checkLater: boolean;
+  }): Promise<string> {
+    const freeBySession = await Promise.all(
+      input.planned.map(async (p) => {
+        if (beyondHorizon(p.day, input.today) && !input.checkLater) {
+          return null;
+        }
+        const view = await input.offers.get(p.day);
+        if (view.closureReason !== undefined) return new Set<string>();
+        const offer = view.offers.find((o) => o.startMin === input.startMin);
+        return new Set((offer?.staff ?? []).map((s) => s.id));
+      }),
+    );
+    const day = await this.context.loadDay(
+      input.branchId,
+      input.planned[0]!.day,
+    );
+    return (
+      chooseRegularStylist({
+        candidates: input.candidates,
+        freeBySession,
+        bookedMinutesOnFirstDay: new Map(
+          day.professionals.map(
+            (p) =>
+              [
+                p.id,
+                (day.staffBookings.get(p.id) ?? []).reduce(
+                  (sum, b) => sum + Math.max(0, b.endMin - b.startMin),
+                  0,
+                ),
+              ] as const,
+          ),
+        ),
+        customerId: input.customerId,
+      }) ?? input.candidates[0]!
+    );
+  }
+
+  /**
    * The days. DAILY needs to know which days are open (D3), so it loads a
    * window, plans inside it, and widens it until the plan fits inside what
    * was loaded. Every other frequency keeps its cadence whatever the salon
@@ -1059,21 +1217,50 @@ export class MobileSeriesHandler {
     };
   }
 
-  /** Each session: free or not, and up to 3 alternatives when not (D4). */
+  /**
+   * Each session: free or not, and up to 3 alternatives when not (D4).
+   *
+   * Past the 90 day horizon nothing is checked (`free` null), unless the
+   * contract says check_later (step B2): then a far session is checked
+   * against today's calendar exactly as a near one. Nothing is held either
+   * way: this is the availability engine's answer, not a hold.
+   *
+   * With the contract's with_reasons (step B3), a session that is not free
+   * carries `reason`. Without it the key is not there at all.
+   *
+   * With the contract's alternative_rule (step B4), the alternatives follow
+   * routineAlternatives, up to its `max`; without it, pickAlternatives as
+   * before.
+   */
   private async check(
     slots: readonly SessionSlot[],
     planned: readonly PlannedDay[],
     today: string,
     offers: DayOffers,
     durations: readonly number[],
+    horizon: {
+      readonly checkLater: boolean;
+      readonly withReasons?: boolean;
+      readonly routineRule?: { readonly max: number } | null;
+    } = { checkLater: false },
   ): Promise<PlannedSessionView[]> {
     return Promise.all(
       slots.map(async (s): Promise<PlannedSessionView> => {
         const later = beyondHorizon(s.day, today);
-        const free = later ? null : await offers.isFree(s);
+        const free =
+          later && !horizon.checkLater ? null : await offers.isFree(s);
+        const farSession =
+          horizon.checkLater && beyondHorizon(planned[s.index]!.day, today);
         const alternatives =
           free === false
-            ? await this.alternativesFor(s, slots, today, offers)
+            ? await this.alternativesFor(
+                s,
+                slots,
+                today,
+                offers,
+                farSession,
+                horizon.routineRule ?? null,
+              )
             : [];
         return {
           index: s.index,
@@ -1082,6 +1269,9 @@ export class MobileSeriesHandler {
           end_time: iso(s.day, s.startMin + durations[s.index]!),
           stylist_id: s.staffId,
           free,
+          ...(horizon.withReasons === true && free === false
+            ? { reason: 'stylist_unavailable' as const }
+            : {}),
           later,
           picked: s.picked,
           moved_from_day_of_month: planned[s.index]!.movedFromDayOfMonth,
@@ -1096,16 +1286,52 @@ export class MobileSeriesHandler {
     );
   }
 
+  /**
+   * `farSession` (step B2, check_later only): the session is past the 90
+   * days. Its alternatives may be past them too, and only with its own
+   * stylist: a far session is saved, not booked, a saved session has no
+   * stylist of its own, and the job books it with the routine's
+   * (farPickRefusal refuses a far pick naming anyone else).
+   */
   private async alternativesFor(
     slot: SessionSlot,
     slots: readonly SessionSlot[],
     today: string,
     offers: DayOffers,
+    farSession = false,
+    routineRule: { readonly max: number } | null = null,
   ): Promise<SlotChoice[]> {
+    if (routineRule !== null) {
+      // Step B4: the session's day and the 7 after it, nothing before. A
+      // near session is never offered a day past the 90 days (the engine is
+      // not even asked about one).
+      const days = Array.from(
+        { length: ROUTINE_ALTERNATIVE_DAYS + 1 },
+        (_, n) => addDays(slot.day, n),
+      ).filter((d) => d >= today && (farSession || !beyondHorizon(d, today)));
+      const choices = (
+        await Promise.all(days.map((d) => offers.choices(d)))
+      ).flat();
+      return routineAlternatives({
+        wanted: slot,
+        free: choices,
+        otherSessionDays: slots
+          .filter((x) => x.index !== slot.index)
+          .map((x) => x.day),
+        today,
+        pastHorizon: farSession,
+        max: routineRule.max,
+      });
+    }
     const days = ALTERNATIVE_DAYS.map((n) => addDays(slot.day, n)).filter(
-      (d) => d >= today && !beyondHorizon(d, today),
+      (d) => d >= today && (farSession || !beyondHorizon(d, today)),
     );
-    const free = (await Promise.all(days.map((d) => offers.choices(d)))).flat();
+    const choices = (
+      await Promise.all(days.map((d) => offers.choices(d)))
+    ).flat();
+    const free = farSession
+      ? choices.filter((c) => c.staffId === slot.staffId)
+      : choices;
     return pickAlternatives({
       wanted: slot,
       free,

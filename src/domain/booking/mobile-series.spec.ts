@@ -20,6 +20,13 @@ import {
   continueDays,
   customDays,
   effectivePause,
+  farPickRefusal,
+  offeredPickRefusal,
+  chooseRegularStylist,
+  fixedShuffle,
+  routineAlternatives,
+  ALTERNATIVES_PER_DAY,
+  ROUTINE_ALTERNATIVE_DAYS,
   frequencyColumn,
   frequencyFromColumn,
   isLocked,
@@ -1387,5 +1394,465 @@ describe('pickAlternatives (D4)', () => {
         otherSessionDays: [],
       }),
     ).toEqual([]);
+  });
+});
+
+// ------------------------------------------------------------ B2
+
+describe('farPickRefusal (B2, check_later)', () => {
+  const TODAY = '2026-10-01';
+  /** Sessions 0 and 1 inside the 90 days; 2 and 3 past them. */
+  const planned = ['2026-11-06', '2026-12-06', '2027-01-06', '2027-02-06'].map(
+    (day) => ({ day, movedFromDayOfMonth: null }),
+  );
+  const pick = (
+    index: number,
+    day: string,
+    stylistId: string | null = null,
+  ) => ({
+    index,
+    day,
+    startMin: 990,
+    stylistId,
+  });
+  const check = (...picks: ReturnType<typeof pick>[]) =>
+    farPickRefusal({ planned, picks, today: TODAY, stylistId: 'maya' });
+
+  it('a far session picked past the 90 days, same stylist or none: fine', () => {
+    expect(
+      check(pick(2, '2027-01-07'), pick(3, '2027-02-08', 'maya')),
+    ).toBeNull();
+  });
+
+  it('a pick inside the 90 days is not looked at (booked now, as before), whoever it names', () => {
+    expect(
+      check(pick(2, '2026-12-30', 'rana'), pick(0, '2026-11-07', 'rana')),
+    ).toBeNull();
+  });
+
+  it('a NEAR session picked past the 90 days is refused on its date', () => {
+    expect(check(pick(2, '2027-01-07'), pick(1, '2027-01-02'))).toEqual({
+      field: 'picks[1].date',
+      code: 'invalid_pick',
+      message: 'A pick is a day from today to 90 days ahead.',
+    });
+  });
+
+  it('a far pick naming another stylist is refused on its stylist', () => {
+    expect(check(pick(3, '2027-02-08', 'rana'))).toEqual({
+      field: 'picks[0].stylist_id',
+      code: 'invalid_pick',
+      message:
+        "A session more than 90 days away keeps the routine's stylist until it is booked.",
+    });
+  });
+});
+
+// ------------------------------------------------------------ B4
+
+describe('routineAlternatives (B4, SAME_STYLIST_FORWARD)', () => {
+  const TODAY = '2026-10-01';
+  /** Friday 2026-11-06 at 16:30, with maya. */
+  const wanted: SlotChoice = {
+    day: '2026-11-06',
+    startMin: 990,
+    staffId: 'maya',
+  };
+  const maya = (day: string, ...mins: number[]): SlotChoice[] =>
+    mins.map((startMin) => ({ day, startMin, staffId: 'maya' }));
+  const rana = (day: string, ...mins: number[]): SlotChoice[] =>
+    mins.map((startMin) => ({ day, startMin, staffId: 'rana' }));
+  const ALL = Array.from({ length: 22 }, (_, i) => 630 + 30 * i); // 10:30 to 21:00
+  const next = (n: number) => {
+    const d = new Date(`${wanted.day}T00:00:00Z`);
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+  const offered = (
+    free: SlotChoice[],
+    over: Partial<Parameters<typeof routineAlternatives>[0]> = {},
+  ) =>
+    routineAlternatives({
+      wanted,
+      free,
+      otherSessionDays: [],
+      today: TODAY,
+      pastHorizon: false,
+      max: 12,
+      ...over,
+    }).map((c) => `${c.day} ${c.startMin} ${c.staffId}`);
+
+  it('the numbers', () => {
+    expect(ROUTINE_ALTERNATIVE_DAYS).toBe(7);
+    expect(ALTERNATIVES_PER_DAY).toBe(2);
+  });
+
+  it("the session's own stylist only", () => {
+    expect(
+      offered([...rana('2026-11-06', 960, 990), ...maya('2026-11-07', 990)]),
+    ).toStrictEqual(['2026-11-07 990 maya']);
+  });
+
+  it('the same day first, the nearest time first; a tie goes to the earlier time', () => {
+    expect(
+      offered(
+        [
+          ...maya('2026-11-07', 990),
+          ...maya('2026-11-06', 900, 1080, 1020, 960),
+        ],
+        {
+          max: 2,
+        },
+      ),
+    ).toStrictEqual(['2026-11-06 960 maya', '2026-11-06 1020 maya']);
+  });
+
+  it('then the next days, each the same time first, then the nearest time', () => {
+    expect(
+      offered([
+        ...maya('2026-11-08', 960, 990),
+        ...maya('2026-11-07', 1050, 930, 990),
+      ]),
+    ).toStrictEqual([
+      '2026-11-07 990 maya',
+      '2026-11-07 930 maya',
+      '2026-11-08 990 maya',
+      '2026-11-08 960 maya',
+    ]);
+  });
+
+  it('at most 2 on one day, at least 25 minutes apart', () => {
+    expect(
+      offered([
+        ...maya('2026-11-06', 975, 985, 1005, 1020),
+        ...maya('2026-11-07', 990),
+      ]),
+    ).toStrictEqual([
+      '2026-11-06 985 maya',
+      '2026-11-06 1020 maya',
+      '2026-11-07 990 maya',
+    ]);
+  });
+
+  it('a same day full of free times still leaves room for the next days', () => {
+    const free = [0, 1, 2, 3, 4, 5, 6, 7].flatMap((n) => maya(next(n), ...ALL));
+    const list = offered(free);
+    expect(list).toHaveLength(12);
+    const days = list.map((l) => l.slice(0, 10));
+    expect(days).toStrictEqual([
+      '2026-11-06',
+      '2026-11-06',
+      '2026-11-07',
+      '2026-11-07',
+      '2026-11-08',
+      '2026-11-08',
+      '2026-11-09',
+      '2026-11-09',
+      '2026-11-10',
+      '2026-11-10',
+      '2026-11-11',
+      '2026-11-11',
+    ]);
+  });
+
+  it('+7 days is offered, +8 never', () => {
+    expect(next(7)).toBe('2026-11-13');
+    expect(
+      offered([...maya(next(8), 990), ...maya(next(7), 990)]),
+    ).toStrictEqual(['2026-11-13 990 maya']);
+    expect(offered(maya(next(8), 990))).toStrictEqual([]);
+  });
+
+  it("never before the session's own day, never before today", () => {
+    expect(offered(maya('2026-11-05', 990))).toStrictEqual([]);
+    const pastSession = { day: '2026-09-30', startMin: 990, staffId: 'maya' };
+    expect(
+      routineAlternatives({
+        wanted: pastSession,
+        free: [...maya('2026-09-30', 1020), ...maya('2026-10-01', 990)],
+        otherSessionDays: [],
+        today: TODAY,
+        pastHorizon: false,
+        max: 12,
+      }),
+    ).toStrictEqual(maya('2026-10-01', 990));
+  });
+
+  it('never a day another session of the routine already has', () => {
+    expect(
+      offered([...maya('2026-11-07', 990), ...maya('2026-11-08', 990)], {
+        otherSessionDays: ['2026-11-07'],
+      }),
+    ).toStrictEqual(['2026-11-08 990 maya']);
+  });
+
+  it('never the wanted slot itself', () => {
+    expect(offered(maya('2026-11-06', 990, 1020))).toStrictEqual([
+      '2026-11-06 1020 maya',
+    ]);
+  });
+
+  it('a near session never past the 90 days; a far one (check_later) may', () => {
+    const near = { day: '2026-12-29', startMin: 990, staffId: 'maya' };
+    const free = [...maya('2026-12-30', 990), ...maya('2026-12-31', 990)];
+    const run = (pastHorizon: boolean) =>
+      routineAlternatives({
+        wanted: near,
+        free,
+        otherSessionDays: [],
+        today: TODAY,
+        pastHorizon,
+        max: 12,
+      }).map((c) => c.day);
+    expect(run(false)).toStrictEqual(['2026-12-30']);
+    expect(run(true)).toStrictEqual(['2026-12-30', '2026-12-31']);
+  });
+
+  it('up to max, in the same order', () => {
+    const free = [0, 1, 2, 3].flatMap((n) => maya(next(n), ...ALL));
+    const twelve = offered(free);
+    expect(offered(free, { max: 1 })).toStrictEqual(twelve.slice(0, 1));
+    expect(offered(free, { max: 3 })).toStrictEqual(twelve.slice(0, 3));
+  });
+
+  it('a time outside the trading day is never offered', () => {
+    expect(offered(maya('2026-11-07', 540, 1320))).toStrictEqual([]);
+  });
+});
+
+// ------------------------------------------------------------ B5
+
+describe('chooseRegularStylist (B5, Any Available Expert)', () => {
+  const CUSTOMER = '11111111-1111-4111-8111-111111111111';
+  const customer = (n: number) => `cccccccc-cccc-4ccc-8ccc-00000000000${n}`;
+  const free = (...who: string[]) => new Set(who);
+  const choose = (
+    freeBySession: (ReadonlySet<string> | null)[],
+    busy: Record<string, number> = { maya: 0, rana: 0, omar: 0 },
+    candidates = ['maya', 'rana', 'omar'],
+    customerId = CUSTOMER,
+  ) =>
+    chooseRegularStylist({
+      candidates,
+      freeBySession,
+      bookedMinutesOnFirstDay: new Map(Object.entries(busy)),
+      customerId,
+    });
+
+  it('1. the one free on the most sessions wins, whatever session 0 or the diary say', () => {
+    expect(
+      choose([free('maya'), free('rana'), free('rana')], {
+        maya: 0,
+        rana: 480,
+        omar: 0,
+      }),
+    ).toBe('rana');
+  });
+
+  it('2. tie on sessions: free on session 0 wins, whatever the diary says', () => {
+    expect(
+      choose([free('rana'), free('maya'), free('rana', 'maya')], {
+        maya: 0,
+        rana: 480,
+        omar: 0,
+      }),
+    ).toBe('rana');
+  });
+
+  it('3. tie on sessions and session 0: the fewest minutes in the diary that day wins', () => {
+    const both = [free('maya', 'rana'), free('maya', 'rana')];
+    expect(
+      choose(both, { maya: 120, rana: 45, omar: 0 }, ['maya', 'rana']),
+    ).toBe('rana');
+    expect(
+      choose(both, { maya: 45, rana: 120, omar: 0 }, ['maya', 'rana']),
+    ).toBe('maya');
+  });
+
+  it('3. a candidate the engine does not have that day comes after every one it has', () => {
+    expect(
+      choose([free('maya'), free()], { maya: 300 }, ['ghost', 'maya']),
+    ).toBe('maya');
+    // Nobody free anywhere: the one the engine has still comes first.
+    expect(choose([free(), free()], { maya: 300 }, ['ghost', 'maya'])).toBe(
+      'maya',
+    );
+  });
+
+  it('4. tie on everything: a fixed shuffle per customer, so customers are spread over the stylists', () => {
+    const equal = [free('maya', 'rana', 'omar'), free('maya', 'rana', 'omar')];
+    const pickFor = (id: string) => choose(equal, undefined, undefined, id);
+    expect([
+      pickFor(customer(1)),
+      pickFor(customer(2)),
+      pickFor(customer(3)),
+    ]).toStrictEqual(['maya', 'omar', 'rana']);
+    // Over nine customers every stylist gets someone.
+    const nine = [CUSTOMER, 1, 2, 3, 4, 5, 6, 7, 8].map((c) =>
+      pickFor(typeof c === 'string' ? c : customer(c)),
+    );
+    expect(new Set(nine)).toStrictEqual(new Set(['maya', 'rana', 'omar']));
+  });
+
+  it('4. the same customer gets the same stylist every time, whatever order the candidates come in', () => {
+    const equal = [free('maya', 'rana', 'omar')];
+    for (const id of [CUSTOMER, customer(2), customer(3)]) {
+      const answers = [
+        ['maya', 'rana', 'omar'],
+        ['omar', 'rana', 'maya'],
+        ['rana', 'maya', 'omar'],
+      ].map((c) => choose(equal, undefined, c, id));
+      expect(new Set(answers).size).toBe(1);
+      expect(choose(equal, undefined, undefined, id)).toBe(answers[0]);
+    }
+  });
+
+  it('fixedShuffle is a plain function of the two ids', () => {
+    expect(fixedShuffle(CUSTOMER, 'maya')).toBe(fixedShuffle(CUSTOMER, 'maya'));
+    expect(fixedShuffle(CUSTOMER, 'maya')).not.toBe(
+      fixedShuffle(CUSTOMER, 'rana'),
+    );
+    expect(fixedShuffle(customer(1), 'maya')).not.toBe(
+      fixedShuffle(customer(2), 'maya'),
+    );
+    expect(Number.isInteger(fixedShuffle('', ''))).toBe(true);
+  });
+
+  it('a session not checked (null) counts for nobody', () => {
+    // Without the null sessions rana would have 2 to maya's 1.
+    expect(choose([free('maya'), null, null], {}, ['maya', 'rana'])).toBe(
+      'maya',
+    );
+    expect(
+      choose([free('maya'), free('rana'), free('rana')], {}, ['maya', 'rana']),
+    ).toBe('rana');
+  });
+
+  it('nobody free anywhere: still one, by the tie rules', () => {
+    expect(choose([free(), free()], { maya: 60, rana: 90, omar: 30 })).toBe(
+      'omar',
+    );
+  });
+
+  it('only one candidate: that one; none: null', () => {
+    expect(choose([free()], {}, ['ghost'])).toBe('ghost');
+    expect(choose([free('maya')], {}, [])).toBeNull();
+  });
+});
+
+// ------------------------------------------------------------ B6
+
+describe('offeredPickRefusal (B6, strict_picks)', () => {
+  const TODAY = '2026-10-01';
+  const plannedOf = (...days: string[]) =>
+    days.map((day) => ({ day, movedFromDayOfMonth: null }));
+  /** 0 and 1 near; 2 on day 89; 3 past the 90 days (day 97). */
+  const MONTHLY = plannedOf(
+    '2026-10-06',
+    '2026-11-06',
+    '2026-12-29',
+    '2027-01-06',
+  );
+  const pick = (
+    index: number,
+    day: string,
+    startMin = 990,
+    stylistId: string | null = null,
+  ) => ({ index, day, startMin, stylistId });
+  const check = (
+    picks: ReturnType<typeof pick>[],
+    over: Partial<Parameters<typeof offeredPickRefusal>[0]> = {},
+  ) =>
+    offeredPickRefusal({
+      planned: MONTHLY,
+      picks,
+      today: TODAY,
+      stylistId: 'maya',
+      checkLater: false,
+      ...over,
+    });
+  const offRule = (j: number) => ({
+    field: `picks[${j}]`,
+    code: 'session_not_offered',
+  });
+
+  it("a pick equal to its own slot is fine, with no stylist or the routine's", () => {
+    expect(check([pick(1, '2026-11-06')])).toBeNull();
+    expect(check([pick(1, '2026-11-06', 990, 'maya')])).toBeNull();
+  });
+
+  it('its own day at any time, and each day up to +7, are fine', () => {
+    expect(check([pick(1, '2026-11-06', 600)])).toBeNull();
+    for (const day of ['2026-11-07', '2026-11-09', '2026-11-13']) {
+      expect(check([pick(1, day, 1080)])).toBeNull();
+    }
+  });
+
+  it('+8 days, 2 weeks later, and the day before are refused', () => {
+    for (const day of ['2026-11-14', '2026-11-20', '2026-11-05']) {
+      expect(check([pick(1, day)])).toMatchObject(offRule(0));
+    }
+  });
+
+  it('another stylist is refused', () => {
+    expect(check([pick(1, '2026-11-07', 990, 'rana')])).toMatchObject(
+      offRule(0),
+    );
+  });
+
+  it('never before today', () => {
+    const planned = plannedOf('2026-09-30', '2026-10-20');
+    expect(check([pick(0, '2026-09-30', 1020)], { planned })).toMatchObject(
+      offRule(0),
+    );
+    expect(check([pick(0, '2026-10-01')], { planned })).toBeNull();
+  });
+
+  it("never another session's day: its own day, or where its pick moved it", () => {
+    const planned = plannedOf('2026-10-06', '2026-10-08');
+    expect(check([pick(0, '2026-10-08')], { planned })).toMatchObject(
+      offRule(0),
+    );
+    // Session 1 moved to 10-09: its old day is free for session 0...
+    expect(
+      check([pick(1, '2026-10-09'), pick(0, '2026-10-08')], { planned }),
+    ).toBeNull();
+    // ...and its new day is not.
+    expect(
+      check([pick(1, '2026-10-09'), pick(0, '2026-10-09')], { planned }),
+    ).toMatchObject(offRule(0));
+  });
+
+  it('a near session never past the 90 days, even inside its +7', () => {
+    expect(check([pick(2, '2026-12-30')])).toBeNull();
+    expect(check([pick(2, '2026-12-31')])).toMatchObject(offRule(0));
+    expect(check([pick(2, '2026-12-31')], { checkLater: true })).toMatchObject(
+      offRule(0),
+    );
+  });
+
+  it('a far session: only with check_later, and only inside its +7', () => {
+    expect(check([pick(3, '2027-01-07')])).toMatchObject(offRule(0));
+    expect(check([pick(3, '2027-01-07')], { checkLater: true })).toBeNull();
+    expect(check([pick(3, '2027-01-13')], { checkLater: true })).toBeNull();
+    expect(check([pick(3, '2027-01-14')], { checkLater: true })).toMatchObject(
+      offRule(0),
+    );
+  });
+
+  it('a time outside the trading day is refused', () => {
+    expect(check([pick(1, '2026-11-07', 1320)])).toMatchObject(offRule(0));
+  });
+
+  it('names the pick that breaks the rule, with the plain message', () => {
+    expect(check([pick(0, '2026-10-07'), pick(1, '2026-11-20')])).toStrictEqual(
+      {
+        field: 'picks[1]',
+        code: 'session_not_offered',
+        message:
+          'Session 2 is neither on its cadence nor at a time the alternatives rule ' +
+          "allows (same stylist, same day or up to 7 days after, not another session's day).",
+      },
+    );
   });
 });

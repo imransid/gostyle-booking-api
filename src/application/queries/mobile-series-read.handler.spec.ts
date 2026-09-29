@@ -115,6 +115,9 @@ function harness(
       findUnique: vi.fn(() =>
         Promise.resolve(over.series === undefined ? series() : over.series),
       ),
+      findMany: vi.fn(() =>
+        Promise.resolve([over.series === undefined ? series() : over.series]),
+      ),
     },
     booking: {
       findMany: vi.fn(() => Promise.resolve(over.bookings ?? BOOKINGS)),
@@ -469,5 +472,37 @@ describe('the desk moves or reschedules a routine visit', () => {
     const { handler } = moved({ startMinute: 1080 });
     const hub = await handler.read(SERIES, owner, NOW);
     expect(hub.sessions[4]!.start_time).not.toContain('16:30');
+  });
+});
+
+// ------------------------------------------------------------ B7
+
+/**
+ * STEP B7: the hub and the Recurring rows must answer exactly as before
+ * without view=booking. Recorded on the code before B7 (commit fb0e039).
+ */
+describe('B7: the hub and the Recurring rows, as they were before B7', () => {
+  it('the hub', async () => {
+    const { handler } = harness();
+    expect(await handler.read(SERIES, owner, NOW)).toMatchSnapshot();
+  });
+
+  it('a paused routine with nothing booked past today', async () => {
+    const { handler } = harness({
+      series: series({
+        status: 'paused',
+        pausedUntil: new Date('2026-11-20T00:00:00Z'),
+        pauseReason: 'travel',
+        pauseNote: 'Away',
+      }),
+    });
+    expect(await handler.read(SERIES, owner, NOW)).toMatchSnapshot();
+  });
+
+  it('the Recurring rows', async () => {
+    const { handler } = harness();
+    expect(
+      await handler.listForCustomer(CUSTOMER, { page: 1, pageSize: 20 }, NOW),
+    ).toMatchSnapshot();
   });
 });

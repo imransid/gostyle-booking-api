@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { NotFoundException, type ExecutionContext } from '@nestjs/common';
 import {
   DEFAULT_SERIES_DEPOSIT_PERCENT,
+  MOBILE_ROUTINE_CONTRACT,
   MOBILE_SERIES_BOOKING,
   MobileSeriesEnabledGuard,
   ROUTINE_COUNT_AUTO_NO_SHOWS,
@@ -18,6 +19,31 @@ const contextFor = (method: string, path: string) =>
 afterEach(() => {
   delete process.env.MOBILE_SERIES_BOOKING;
   delete process.env.ROUTINE_COUNT_AUTO_NO_SHOWS;
+  delete process.env.MOBILE_ROUTINE_CONTRACT;
+});
+
+describe('MOBILE_ROUTINE_CONTRACT', () => {
+  it('is OFF when unset', () => {
+    expect(MOBILE_ROUTINE_CONTRACT()).toBe(false);
+  });
+
+  it.each(['false', '1', 'yes', ''])('is OFF for %j', (v) => {
+    process.env.MOBILE_ROUTINE_CONTRACT = v;
+    expect(MOBILE_ROUTINE_CONTRACT()).toBe(false);
+  });
+
+  it.each(['true', ' TRUE '])('is ON for %j', (v) => {
+    process.env.MOBILE_ROUTINE_CONTRACT = v;
+    expect(MOBILE_ROUTINE_CONTRACT()).toBe(true);
+  });
+
+  it('is its own switch: neither flag follows the other', () => {
+    process.env.MOBILE_SERIES_BOOKING = 'true';
+    expect(MOBILE_ROUTINE_CONTRACT()).toBe(false);
+    delete process.env.MOBILE_SERIES_BOOKING;
+    process.env.MOBILE_ROUTINE_CONTRACT = 'true';
+    expect(MOBILE_SERIES_BOOKING()).toBe(false);
+  });
 });
 
 describe('MOBILE_SERIES_BOOKING', () => {
