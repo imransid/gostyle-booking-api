@@ -315,6 +315,37 @@ describe('the hourly job, 8c: far-off visits the diary now reaches (R8)', () => 
     expect(report).toMatchObject({ booked: 1, needsAction: 0, failed: 0 });
   });
 
+  it('a visit saved OFF the cadence (a pick, step B2) is booked at its saved day and time', async () => {
+    // The cadence is the 20th at 11:00. The customer picked the 21st at
+    // 17:00 for this one; that is what the create saved in the row.
+    const picked = loaded([
+      visit('booked', 0, Date.parse('2026-11-20T11:00:00+06:00')),
+      visit('picked', 1, Date.parse('2026-12-21T17:00:00+06:00'), null),
+    ]);
+    const row = picked.series.occurrences[1]!;
+    const saved = {
+      ...picked,
+      series: {
+        ...picked.series,
+        occurrences: [
+          picked.series.occurrences[0]!,
+          { ...row, plannedStartMin: 1020 },
+        ],
+      },
+    };
+    const { job, creates } = build([routine('r')], { r: saved });
+    await job.run(NOW);
+    expect(creates.bookSession).toHaveBeenCalledTimes(1);
+    expect(creates.bookSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        occurrenceId: 'picked',
+        day: '2026-12-21',
+        startMin: 1020,
+        stylistId: 'pref',
+      }),
+    );
+  });
+
   it('leaves it "needs action", with one event, when its time is not free', async () => {
     const { job, repo, creates } = build([routine('r')], { r: monthly() });
     creates.bookSession.mockResolvedValue('not_free');

@@ -3,12 +3,15 @@ import {
   MobileSeriesHandler,
   type MobileSeriesCommand,
   type MobileSeriesPreview,
+  type RoutineContractOptions,
 } from './mobile-series.handler';
 import {
   MobileContractError,
   isMobileContractError,
 } from './mobile-booking.error';
 import type { RoutineClaim } from '@domain/booking/mobile-series-contract';
+import { MobileSeriesJobHandler } from './mobile-series-job.handler';
+import { branchInstant } from '@infrastructure/persistence/hold.repository';
 
 /**
  * HANDLER SPEC: orchestration only, every collaborator faked.
@@ -592,5 +595,483 @@ describe('create', () => {
     expect(
       await refusal(handler.execute(command({ serviceIds: ['nope'] }))),
     ).toMatchObject({ code: 'unknown_service' });
+  });
+});
+
+// ------------------------------------------------------------ B2
+
+/**
+ * STEP B2 (gostyle-customer-api docs/ROUTINE_FE_CONTRACT_AUDIT.md, 4.1):
+ * sessions past the 90 day horizon, checked against today's calendar, only
+ * when the contract says `check_later` (the flag is the controller's gate:
+ * with it off, no option reaches the handler at all, B1).
+ *
+ * "AS BEFORE" IS RECORDED, NOT WRITTEN DOWN. The snapshots below were
+ * recorded on the code before B2 (commit bb4dcbd). Every run without
+ * check_later must still match them, whole: the answer, every single
+ * create, the rows saved and anything released.
+ */
+
+/** The contract with every option off: exactly the old behaviour. */
+const OPTIONS_OFF: RoutineContractOptions = {
+  stylistCandidates: null,
+  checkLater: false,
+  withReasons: false,
+  alternativeRule: null,
+  alternativesMax: null,
+  strictPicks: false,
+};
+const LATER: RoutineContractOptions = { ...OPTIONS_OFF, checkLater: true };
+
+/**
+ * MONTHLY from Tuesday 2026-10-06, six sessions: 10-06, 11-06 and 12-06
+ * inside the 90 days (today is 2026-10-01); 2027-01-06 (97 days), 02-06 and
+ * 03-06 past them.
+ */
+const SIX_MONTHLY: Partial<RoutineClaim> = {
+  frequency: 'MONTHLY',
+  startDate: '2026-10-06',
+  sessions: 6,
+};
+const SIX_MONEY = {
+  amountWithoutTax: 600,
+  taxAmount: 30,
+  discount: 0,
+  total: 630,
+};
+
+/** Maya has nothing that day; Rana is free all day. */
+const mayaOff = (...days: string[]): Diary => ({
+  starts: Object.fromEntries(days.map((d) => [d, { rana: ALL_DAY }])),
+});
+
+/** Everything a run did: the answer or refusal, each single create, the rows. */
+async function everything(
+  h: ReturnType<typeof harness>,
+  cmd: MobileSeriesCommand,
+) {
+  let answer: unknown;
+  try {
+    answer = await h.handler.execute(cmd);
+  } catch (e) {
+    if (!isMobileContractError(e)) throw e;
+    answer = { status: e.status, errors: e.errors };
+  }
+  return {
+    answer,
+    booked: h.single.execute.mock.calls.map((c) => c[0]),
+    saved: h.repo.create.mock.calls.map((c) => c[0]),
+    released: h.lifecycle.transition.mock.calls.map((c) => c[0]),
+  };
+}
+
+const AS_BEFORE: readonly (readonly [string, Diary, Partial<RoutineClaim>])[] =
+  [
+    ['preview, six monthly', {}, { ...SIX_MONTHLY, dryRun: true }],
+    [
+      'preview, maya busy on a near day and a far day',
+      mayaOff('2026-11-06', '2027-01-06'),
+      { ...SIX_MONTHLY, dryRun: true },
+    ],
+    ['create, six monthly', {}, SIX_MONTHLY],
+    ['create, maya busy on a far day', mayaOff('2027-01-06'), SIX_MONTHLY],
+    [
+      'create, a far session picked past 90 days',
+      {},
+      {
+        ...SIX_MONTHLY,
+        picks: [
+          { index: 3, date: '2027-01-07', time: '16:30', stylistId: null },
+        ],
+      },
+    ],
+    [
+      'create, a far session picked inside 90 days',
+      {},
+      {
+        ...SIX_MONTHLY,
+        picks: [
+          { index: 3, date: '2026-12-30', time: '17:00', stylistId: null },
+        ],
+      },
+    ],
+    [
+      'preview, a near session busy on day 89',
+      mayaOff('2026-12-29'),
+      {
+        frequency: 'MONTHLY',
+        startDate: '2026-10-29',
+        sessions: 4,
+        dryRun: true,
+      },
+    ],
+  ];
+
+describe('B2 off: without check_later, exactly as before', () => {
+  it.each(AS_BEFORE)('%s', async (_name, diary, over) => {
+    const plain = await everything(
+      harness({ diary }),
+      command(over, { money: SIX_MONEY }),
+    );
+    const off = await everything(
+      harness({ diary }),
+      command(over, { money: SIX_MONEY, contract: OPTIONS_OFF }),
+    );
+    expect(off).toStrictEqual(plain);
+    expect(plain).toMatchSnapshot();
+  });
+});
+
+describe('B2 on: check_later, sessions past the 90 days', () => {
+  const withLater = (over: Partial<RoutineClaim>, diary: Diary = {}) =>
+    everything(
+      harness({ diary }),
+      command(over, { money: SIX_MONEY, contract: LATER }),
+    );
+  const asBefore = (over: Partial<RoutineClaim>, diary: Diary = {}) =>
+    everything(harness({ diary }), command(over, { money: SIX_MONEY }));
+  const sessionsOf = (r: { answer: unknown }) =>
+    (r.answer as MobileSeriesPreview).sessions;
+
+  // ---- 1. The preview
+
+  it("checks a far session against today's calendar, like a near one, and holds nothing", async () => {
+    const h = harness();
+    const now = await everything(
+      h,
+      command({ ...SIX_MONTHLY, dryRun: true }, { contract: LATER }),
+    );
+    expect(sessionsOf(now).map((s) => [s.date, s.later, s.free])).toStrictEqual(
+      [
+        ['2026-10-06', false, true],
+        ['2026-11-06', false, true],
+        ['2026-12-06', false, true],
+        ['2027-01-06', true, true],
+        ['2027-02-06', true, true],
+        ['2027-03-06', true, true],
+      ],
+    );
+    const asked = h.availability.execute.mock.calls.map((c) => c[0].tradingDay);
+    expect(asked).toEqual(
+      expect.arrayContaining(['2027-01-06', '2027-02-06', '2027-03-06']),
+    );
+    expect(now.booked).toStrictEqual([]);
+    expect(now.saved).toStrictEqual([]);
+  });
+
+  it("the rest of the preview is exactly as before: only a far session's `free` changes", async () => {
+    const before = await asBefore({ ...SIX_MONTHLY, dryRun: true });
+    const now = await withLater({ ...SIX_MONTHLY, dryRun: true });
+    const blank = (r: { answer: unknown }) => ({
+      ...(r.answer as MobileSeriesPreview),
+      sessions: sessionsOf(r).map((s) => (s.later ? { ...s, free: null } : s)),
+    });
+    expect(blank(now)).toStrictEqual(blank(before));
+  });
+
+  it('a far session that is not free says so, with alternatives past the 90 days, all with its own stylist', async () => {
+    const now = await withLater(
+      { ...SIX_MONTHLY, dryRun: true },
+      mayaOff('2027-01-06'),
+    );
+    const far = sessionsOf(now)[3]!;
+    expect(far.free).toBe(false);
+    expect(far.alternatives).toStrictEqual([
+      {
+        date: '2027-01-05',
+        time: '16:30',
+        start_time: '2027-01-05T16:30:00+06:00',
+        stylist_id: 'maya',
+      },
+      {
+        date: '2027-01-07',
+        time: '16:30',
+        start_time: '2027-01-07T16:30:00+06:00',
+        stylist_id: 'maya',
+      },
+      {
+        date: '2027-01-04',
+        time: '16:30',
+        start_time: '2027-01-04T16:30:00+06:00',
+        stylist_id: 'maya',
+      },
+    ]);
+    expect((now.answer as MobileSeriesPreview).all_free).toBe(false);
+  });
+
+  it('a near session never gets an alternative past the 90 days: exactly as before', async () => {
+    const over: Partial<RoutineClaim> = {
+      frequency: 'MONTHLY',
+      startDate: '2026-10-29',
+      sessions: 4,
+      dryRun: true,
+    };
+    const before = await asBefore(over, mayaOff('2026-12-29'));
+    const now = await withLater(over, mayaOff('2026-12-29'));
+    const near = sessionsOf(now)[2]!;
+    expect(near.date).toBe('2026-12-29');
+    expect(near.free).toBe(false);
+    expect(near).toStrictEqual(sessionsOf(before)[2]);
+    expect(near.alternatives.every((a) => a.date <= '2026-12-30')).toBe(true);
+    // Its far neighbour, 2027-01-29, is checked now.
+    expect(sessionsOf(now)[3]!.free).toBe(true);
+  });
+
+  // ---- 2. Picks
+
+  it('a far session may be picked past the 90 days, and the pick is checked like any', async () => {
+    const now = await withLater(
+      {
+        ...SIX_MONTHLY,
+        dryRun: true,
+        picks: [
+          { index: 3, date: '2027-01-07', time: '17:00', stylistId: null },
+        ],
+      },
+      mayaOff('2027-01-06'),
+    );
+    expect(sessionsOf(now)[3]).toMatchObject({
+      date: '2027-01-07',
+      start_time: '2027-01-07T17:00:00+06:00',
+      stylist_id: 'maya',
+      picked: true,
+      later: true,
+      free: true,
+    });
+  });
+
+  it('the pick is checked too: a far pick that is not free is not free', async () => {
+    const now = await withLater(
+      {
+        ...SIX_MONTHLY,
+        dryRun: true,
+        picks: [
+          { index: 3, date: '2027-01-07', time: '17:00', stylistId: null },
+        ],
+      },
+      mayaOff('2027-01-06', '2027-01-07'),
+    );
+    expect(sessionsOf(now)[3]).toMatchObject({
+      date: '2027-01-07',
+      free: false,
+    });
+  });
+
+  it.each([
+    [
+      'a pick past the 90 days for a NEAR session: refused, as before',
+      { index: 2, date: '2027-01-07', time: '16:30', stylistId: null },
+      'picks[0].date',
+      'A pick is a day from today to 90 days ahead.',
+    ],
+    [
+      "a far pick naming another stylist: a saved session keeps the routine's",
+      { index: 3, date: '2027-01-07', time: '16:30', stylistId: 'rana' },
+      'picks[0].stylist_id',
+      "A session more than 90 days away keeps the routine's stylist until it is booked.",
+    ],
+    [
+      'a pick more than 366 days ahead',
+      { index: 5, date: '2027-10-05', time: '16:30', stylistId: null },
+      'picks[0].date',
+      'A pick is a day from today to 90 days ahead, or up to 366 days ahead for a session past them.',
+    ],
+  ])('%s', async (_name, pick, field, message) => {
+    const now = await withLater({ ...SIX_MONTHLY, picks: [pick] });
+    expect(now.answer).toStrictEqual({
+      status: 422,
+      errors: [{ field, code: 'invalid_pick', message }],
+    });
+    expect(now.booked).toStrictEqual([]);
+    expect(now.saved).toStrictEqual([]);
+  });
+
+  it("a far pick naming the routine's own stylist is fine", async () => {
+    const now = await withLater({
+      ...SIX_MONTHLY,
+      dryRun: true,
+      picks: [
+        { index: 3, date: '2027-01-07', time: '16:30', stylistId: 'maya' },
+      ],
+    });
+    expect(sessionsOf(now)[3]).toMatchObject({
+      date: '2027-01-07',
+      free: true,
+    });
+  });
+
+  it('a far session picked INSIDE the 90 days is booked now, exactly as before', async () => {
+    const over: Partial<RoutineClaim> = {
+      ...SIX_MONTHLY,
+      picks: [{ index: 3, date: '2026-12-30', time: '17:00', stylistId: null }],
+    };
+    expect(await withLater(over)).toStrictEqual(await asBefore(over));
+  });
+
+  // ---- 3. The create
+
+  it('books the near sessions exactly as before and saves the far ones PLANNED, at their own day and time', async () => {
+    const before = await asBefore(SIX_MONTHLY);
+    const now = await withLater(SIX_MONTHLY);
+    expect(now).toStrictEqual(before);
+    expect(now.booked.map((b) => b.date)).toStrictEqual([
+      '2026-10-06',
+      '2026-11-06',
+      '2026-12-06',
+    ]);
+    const saved = now.saved[0] as {
+      stylistId: string;
+      sessions: { day: string; startMin: number; bookingId: string | null }[];
+    };
+    expect(saved.stylistId).toBe('maya');
+    expect(saved.sessions.slice(3)).toMatchObject([
+      { day: '2027-01-06', startMin: 990, bookingId: null },
+      { day: '2027-02-06', startMin: 990, bookingId: null },
+      { day: '2027-03-06', startMin: 990, bookingId: null },
+    ]);
+  });
+
+  it('a far pick is saved at the picked day and time, and not booked', async () => {
+    const now = await withLater(
+      {
+        ...SIX_MONTHLY,
+        picks: [
+          { index: 4, date: '2027-02-07', time: '17:00', stylistId: null },
+        ],
+      },
+      mayaOff('2027-02-06'),
+    );
+    expect(now.booked).toHaveLength(3);
+    const saved = now.saved[0] as {
+      sessions: {
+        index: number;
+        day: string;
+        startMin: number;
+        bookingId: string | null;
+      }[];
+    };
+    expect(saved.sessions[4]).toStrictEqual({
+      index: 4,
+      day: '2027-02-07',
+      startMin: 1020,
+      movedFromDayOfMonth: null,
+      bookingId: null,
+    });
+    expect(now.answer).toMatchObject({ id: 'series-1' });
+  });
+
+  it.each([
+    [
+      'a far session that is not free and not picked',
+      mayaOff('2027-01-06'),
+      [],
+    ],
+    [
+      'a far pick that is not free',
+      mayaOff('2027-01-06', '2027-01-07'),
+      [{ index: 3, date: '2027-01-07', time: '16:30', stylistId: null }],
+    ],
+  ] as const)(
+    '%s is refused like a near one, and nothing is booked',
+    async (_n, diary, picks) => {
+      const now = await withLater({ ...SIX_MONTHLY, picks: [...picks] }, diary);
+      expect(now.answer).toMatchObject({
+        status: 409,
+        errors: [{ field: 'sessions[3]', code: 'session_not_free' }],
+      });
+      expect(now.booked).toStrictEqual([]);
+      expect(now.saved).toStrictEqual([]);
+      expect(now.released).toStrictEqual([]);
+    },
+  );
+
+  // ---- 4. The hourly job, unchanged
+
+  it('the hourly job books each far session at its SAVED day and time, the picked one included', async () => {
+    const made = await withLater(
+      {
+        ...SIX_MONTHLY,
+        picks: [
+          { index: 4, date: '2027-02-07', time: '17:00', stylistId: null },
+        ],
+      },
+      mayaOff('2027-02-06'),
+    );
+    const saved = made.saved[0] as {
+      stylistId: string;
+      sessions: {
+        index: number;
+        day: string;
+        startMin: number;
+        bookingId: string | null;
+      }[];
+    };
+
+    // The rows as they come back to the job (MobileSeriesReadHandler
+    // .factsForJob): a planned row is its saved day and minute.
+    const occurrences = saved.sessions.map((s) => ({
+      id: `occ-${s.index}`,
+      bookingId: s.bookingId,
+      plannedStartMin: s.startMin,
+    }));
+    const facts = saved.sessions.map((s) => ({
+      id: `occ-${s.index}`,
+      index: s.index,
+      day: s.day,
+      startAtMs: branchInstant(s.day, s.startMin).getTime(),
+      state: s.bookingId === null ? 'planned' : 'materialised',
+      bookingStatus: s.bookingId === null ? null : 'confirmed',
+      noShowBy: null,
+    }));
+    const bookSession = vi.fn((_input: unknown) => Promise.resolve('booked'));
+    const job = new MobileSeriesJobHandler(
+      {
+        keepDeskAway: vi.fn().mockResolvedValue(0),
+        openRoutines: vi.fn().mockResolvedValue([
+          {
+            id: 'S',
+            customerId: CUSTOMER,
+            status: 'active',
+            pausedUntil: null,
+          },
+        ]),
+        missStreakAfter: vi.fn().mockResolvedValue(null),
+        claimPlanned: vi.fn().mockResolvedValue(true),
+        writeEvents: vi.fn().mockResolvedValue(0),
+        completeByJob: vi.fn().mockResolvedValue(true),
+      } as never,
+      {
+        factsForJob: vi.fn().mockResolvedValue({
+          series: {
+            id: 'S',
+            status: 'active',
+            tenantId: 'T1',
+            branchId: 'marina-walk',
+            customerId: CUSTOMER,
+            frequency: 'monthly',
+            serviceIds: ['haircut-finish'],
+            preferredStaffId: saved.stylistId,
+            occurrences,
+          },
+          facts,
+        }),
+      } as never,
+      { transition: vi.fn() } as never,
+      { bookSession } as never,
+      { run: (_t: unknown, f: () => unknown) => f() } as never,
+    );
+
+    // 2026-12-01 at the branch: 2027-01-06 and 2027-02-07 are inside the
+    // 90 days now, 2027-03-06 is not yet.
+    await job.run(Date.parse('2026-12-01T09:00:00+06:00'));
+    expect(
+      bookSession.mock.calls.map((c) => {
+        const i = c[0] as { day: string; startMin: number; stylistId: string };
+        return [i.day, i.startMin, i.stylistId];
+      }),
+    ).toStrictEqual([
+      ['2027-01-06', 990, 'maya'],
+      ['2027-02-07', 1020, 'maya'],
+    ]);
   });
 });

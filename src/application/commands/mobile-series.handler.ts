@@ -48,6 +48,7 @@ import {
   applyPicks,
   beyondHorizon,
   customDays,
+  farPickRefusal,
   frequencyColumn,
   pickAlternatives,
   planDays,
@@ -304,8 +305,12 @@ export class MobileSeriesHandler {
     const nowMs = cmd.nowMs ?? Date.now();
     const today = branchToday(nowMs);
 
+    // Step B2: sessions past the 90 days are checked against today's
+    // calendar, and may be picked past them, only when the contract asks.
+    const checkLater = cmd.contract?.checkLater === true;
+
     // ---- 1. The request on its own ---------------------------------------
-    const checked = checkRoutine(cmd.claim, today);
+    const checked = checkRoutine(cmd.claim, today, { farPicks: checkLater });
     if (checked.kind === 'refused') throw refused(checked.refusal);
     const routine = checked.value;
     const stylistId = cmd.claim.stylistId!.trim();
@@ -342,6 +347,15 @@ export class MobileSeriesHandler {
     }
 
     // ---- 6. The slots, with the customer's picks (D4) --------------------
+    if (checkLater) {
+      const far = farPickRefusal({
+        planned,
+        picks: routine.picks,
+        today,
+        stylistId,
+      });
+      if (far !== null) throw refused(far);
+    }
     const slots = applyPicks(
       planned.map((p, index) => ({
         index,
@@ -361,6 +375,7 @@ export class MobileSeriesHandler {
       today,
       offers,
       money.quotes.map((q) => q.durationMin),
+      { checkLater },
     );
 
     if (routine.dryRun) {
@@ -1083,21 +1098,32 @@ export class MobileSeriesHandler {
     };
   }
 
-  /** Each session: free or not, and up to 3 alternatives when not (D4). */
+  /**
+   * Each session: free or not, and up to 3 alternatives when not (D4).
+   *
+   * Past the 90 day horizon nothing is checked (`free` null), unless the
+   * contract says check_later (step B2): then a far session is checked
+   * against today's calendar exactly as a near one. Nothing is held either
+   * way: this is the availability engine's answer, not a hold.
+   */
   private async check(
     slots: readonly SessionSlot[],
     planned: readonly PlannedDay[],
     today: string,
     offers: DayOffers,
     durations: readonly number[],
+    horizon: { readonly checkLater: boolean } = { checkLater: false },
   ): Promise<PlannedSessionView[]> {
     return Promise.all(
       slots.map(async (s): Promise<PlannedSessionView> => {
         const later = beyondHorizon(s.day, today);
-        const free = later ? null : await offers.isFree(s);
+        const free =
+          later && !horizon.checkLater ? null : await offers.isFree(s);
+        const farSession =
+          horizon.checkLater && beyondHorizon(planned[s.index]!.day, today);
         const alternatives =
           free === false
-            ? await this.alternativesFor(s, slots, today, offers)
+            ? await this.alternativesFor(s, slots, today, offers, farSession)
             : [];
         return {
           index: s.index,
@@ -1120,16 +1146,29 @@ export class MobileSeriesHandler {
     );
   }
 
+  /**
+   * `farSession` (step B2, check_later only): the session is past the 90
+   * days. Its alternatives may be past them too, and only with its own
+   * stylist: a far session is saved, not booked, a saved session has no
+   * stylist of its own, and the job books it with the routine's
+   * (farPickRefusal refuses a far pick naming anyone else).
+   */
   private async alternativesFor(
     slot: SessionSlot,
     slots: readonly SessionSlot[],
     today: string,
     offers: DayOffers,
+    farSession = false,
   ): Promise<SlotChoice[]> {
     const days = ALTERNATIVE_DAYS.map((n) => addDays(slot.day, n)).filter(
-      (d) => d >= today && !beyondHorizon(d, today),
+      (d) => d >= today && (farSession || !beyondHorizon(d, today)),
     );
-    const free = (await Promise.all(days.map((d) => offers.choices(d)))).flat();
+    const choices = (
+      await Promise.all(days.map((d) => offers.choices(d)))
+    ).flat();
+    const free = farSession
+      ? choices.filter((c) => c.staffId === slot.staffId)
+      : choices;
     return pickAlternatives({
       wanted: slot,
       free,

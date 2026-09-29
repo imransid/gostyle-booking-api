@@ -529,6 +529,49 @@ export function applyPicks(
   return { kind: 'ok', slots };
 }
 
+/**
+ * Step B2 (the contract's check_later): a pick past the 90 day horizon.
+ *
+ * Such a pick is SAVED, not booked (the job books it when the diary reaches
+ * it), so:
+ *   - its session must itself be past the horizon. A near session is booked
+ *     now, and 90 days is as far as a booking goes;
+ *   - it keeps the routine's stylist. A saved session has no stylist of its
+ *     own (series_occurrence has no column for one), and the job books it
+ *     with the routine's. Another stylist would be lost without a word.
+ * A pick inside the 90 days is booked now, as before, and is not looked at
+ * here.
+ */
+export function farPickRefusal(input: {
+  /** The session days as planned, before any pick. */
+  readonly planned: readonly PlannedDay[];
+  readonly picks: readonly PickChoice[];
+  readonly today: TradingDay;
+  /** The routine's stylist. */
+  readonly stylistId: string;
+}): RuleRefusal | null {
+  for (const [i, p] of input.picks.entries()) {
+    if (!beyondHorizon(p.day, input.today)) continue;
+    const session = input.planned[p.index];
+    if (session === undefined || !beyondHorizon(session.day, input.today)) {
+      return refuse(
+        `picks[${i}].date`,
+        'invalid_pick',
+        `A pick is a day from today to ${BOOKING_HORIZON_DAYS} days ahead.`,
+      );
+    }
+    if (p.stylistId !== null && p.stylistId !== input.stylistId) {
+      return refuse(
+        `picks[${i}].stylist_id`,
+        'invalid_pick',
+        `A session more than ${BOOKING_HORIZON_DAYS} days away keeps the ` +
+          "routine's stylist until it is booked.",
+      );
+    }
+  }
+  return null;
+}
+
 // ------------------------------------------------------------ the lock
 
 const HOUR_MS = 60 * 60 * 1000;

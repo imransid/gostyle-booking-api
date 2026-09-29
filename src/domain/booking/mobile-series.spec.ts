@@ -20,6 +20,7 @@ import {
   continueDays,
   customDays,
   effectivePause,
+  farPickRefusal,
   frequencyColumn,
   frequencyFromColumn,
   isLocked,
@@ -1387,5 +1388,56 @@ describe('pickAlternatives (D4)', () => {
         otherSessionDays: [],
       }),
     ).toEqual([]);
+  });
+});
+
+// ------------------------------------------------------------ B2
+
+describe('farPickRefusal (B2, check_later)', () => {
+  const TODAY = '2026-10-01';
+  /** Sessions 0 and 1 inside the 90 days; 2 and 3 past them. */
+  const planned = ['2026-11-06', '2026-12-06', '2027-01-06', '2027-02-06'].map(
+    (day) => ({ day, movedFromDayOfMonth: null }),
+  );
+  const pick = (
+    index: number,
+    day: string,
+    stylistId: string | null = null,
+  ) => ({
+    index,
+    day,
+    startMin: 990,
+    stylistId,
+  });
+  const check = (...picks: ReturnType<typeof pick>[]) =>
+    farPickRefusal({ planned, picks, today: TODAY, stylistId: 'maya' });
+
+  it('a far session picked past the 90 days, same stylist or none: fine', () => {
+    expect(
+      check(pick(2, '2027-01-07'), pick(3, '2027-02-08', 'maya')),
+    ).toBeNull();
+  });
+
+  it('a pick inside the 90 days is not looked at (booked now, as before), whoever it names', () => {
+    expect(
+      check(pick(2, '2026-12-30', 'rana'), pick(0, '2026-11-07', 'rana')),
+    ).toBeNull();
+  });
+
+  it('a NEAR session picked past the 90 days is refused on its date', () => {
+    expect(check(pick(2, '2027-01-07'), pick(1, '2027-01-02'))).toEqual({
+      field: 'picks[1].date',
+      code: 'invalid_pick',
+      message: 'A pick is a day from today to 90 days ahead.',
+    });
+  });
+
+  it('a far pick naming another stylist is refused on its stylist', () => {
+    expect(check(pick(3, '2027-02-08', 'rana'))).toEqual({
+      field: 'picks[0].stylist_id',
+      code: 'invalid_pick',
+      message:
+        "A session more than 90 days away keeps the routine's stylist until it is booked.",
+    });
   });
 });

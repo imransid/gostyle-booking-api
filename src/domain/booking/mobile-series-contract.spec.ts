@@ -820,6 +820,48 @@ describe('picks on EXTEND, PAUSE and RESUME (D4)', () => {
 });
 
 describe('checkPicks', () => {
+  const pickOn = (date: string): PickClaim => ({
+    index: 3,
+    date,
+    time: '18:00',
+    stylistId: null,
+  });
+
+  it('by default a pick is inside the 90 days, as before', () => {
+    expect(checkPicks([pickOn('2026-12-30')], TODAY, 6).kind).toBe('ok');
+    expect(checkPicks([pickOn('2026-12-31')], TODAY, 6)).toEqual({
+      kind: 'refused',
+      refusal: {
+        field: 'picks[0].date',
+        code: 'invalid_pick',
+        message: 'A pick is a day from today to 90 days ahead.',
+      },
+    });
+  });
+
+  it('B2 farPicks: a pick may be up to 366 days ahead, never before today', () => {
+    const far = { farPicks: true };
+    expect(checkPicks([pickOn('2026-12-31')], TODAY, 6, far).kind).toBe('ok');
+    expect(checkPicks([pickOn('2027-10-02')], TODAY, 6, far).kind).toBe('ok');
+    for (const date of ['2027-10-03', '2026-09-30']) {
+      expect(checkPicks([pickOn(date)], TODAY, 6, far)).toEqual({
+        kind: 'refused',
+        refusal: {
+          field: 'picks[0].date',
+          code: 'invalid_pick',
+          message:
+            'A pick is a day from today to 90 days ahead, or up to 366 days ahead for a session past them.',
+        },
+      });
+    }
+  });
+
+  it('checkRoutine passes farPicks on; without it a far pick is refused as before', () => {
+    const claim = weekly({ picks: [pickOn('2027-01-07')] });
+    expect(checkRoutine(claim, TODAY).kind).toBe('refused');
+    expect(checkRoutine(claim, TODAY, { farPicks: true }).kind).toBe('ok');
+  });
+
   it('the create knows its range; an action checks its range on the rows', () => {
     const p: PickClaim = {
       index: 6,
