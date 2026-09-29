@@ -100,8 +100,32 @@ export interface MobileSeriesCommand {
   readonly money: RoutineMoneyClaims | null;
   /** MOBILE_SERIES_DEPOSIT_PERCENT, read by the controller. */
   readonly depositPercent: number;
+  /**
+   * The app team's routine contract (MOBILE_ROUTINE_CONTRACT), sent only by
+   * customer-api's new routes. Absent: exactly the old behaviour. Carried
+   * here from step B1; each option is read from its own step on (B2 to B6).
+   */
+  readonly contract?: RoutineContractOptions;
   /** Test hook: the clock. */
   readonly nowMs?: number;
+}
+
+/** How a routine's alternatives are chosen. Null keeps pickAlternatives (D4). */
+export type AlternativeRule = 'SAME_STYLIST_FORWARD';
+
+/** The new contract's options, in our words. */
+export interface RoutineContractOptions {
+  /** Any Available Expert: who may be picked (customer-api knows skills). */
+  readonly stylistCandidates: readonly string[] | null;
+  /** Check sessions past the 90 day horizon against today's calendar. */
+  readonly checkLater: boolean;
+  /** Say why a session is not free (`stylist_unavailable`). */
+  readonly withReasons: boolean;
+  readonly alternativeRule: AlternativeRule | null;
+  /** How many alternatives to send back, for customer-api to trim. */
+  readonly alternativesMax: number | null;
+  /** A pick must be one the alternatives rule would offer. */
+  readonly strictPicks: boolean;
 }
 
 export interface AlternativeView {

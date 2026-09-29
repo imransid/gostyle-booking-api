@@ -18,6 +18,19 @@ export const MOBILE_SERIES_BOOKING = (): boolean =>
   (process.env.MOBILE_SERIES_BOOKING ?? '').trim().toLowerCase() === 'true';
 
 /**
+ * The app team's routine contract (gostyle-customer-api
+ * docs/ROUTINE_FE_CONTRACT_AUDIT.md): the extra options customer-api's new
+ * routes send on POST /v1/mobile-booking/series.
+ *
+ * OFF BY DEFAULT. `MOBILE_ROUTINE_CONTRACT=true` turns it on. Off, the create
+ * body is validated against the old MobileSeriesDto exactly as before, so a
+ * body carrying any of the new options is refused as an unknown property,
+ * word for word as today. Read on every request, as MOBILE_SERIES_BOOKING is.
+ */
+export const MOBILE_ROUTINE_CONTRACT = (): boolean =>
+  (process.env.MOBILE_ROUTINE_CONTRACT ?? '').trim().toLowerCase() === 'true';
+
+/**
  * D9: which no-shows count toward "two in a row pauses the routine" (D5).
  *
  * OFF BY DEFAULT: only a no-show marked by staff counts. The sweeper marks a

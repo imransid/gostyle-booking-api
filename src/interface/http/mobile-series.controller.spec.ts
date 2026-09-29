@@ -4,6 +4,7 @@ import {
   INTERCEPTORS_METADATA,
 } from '@nestjs/common/constants';
 import {
+  MobileRoutineContractDto,
   MobileSeriesController,
   type MobileSeriesDto,
 } from './mobile-series.controller';
@@ -132,6 +133,44 @@ describe('MobileSeriesController', () => {
       actorId: actor.id,
       actorKind: 'customer',
       actorBranchId: null,
+    });
+  });
+
+  describe('the routine contract options (step B1)', () => {
+    const commandFor = async (dto: MobileSeriesDto) => {
+      const { controller, handler, res } = harness();
+      await controller.create(dto, actor, res as never);
+      return handler.execute.mock.calls[0]![0] as Record<string, unknown>;
+    };
+
+    it('an old body makes exactly the old command: no contract key at all', async () => {
+      const cmd = await commandFor(body());
+      expect('contract' in cmd).toBe(false);
+    });
+
+    it('the contract class with no option sent: still no contract key', async () => {
+      const dto = Object.assign(new MobileRoutineContractDto(), body());
+      const cmd = await commandFor(dto);
+      expect('contract' in cmd).toBe(false);
+      expect(cmd).toStrictEqual(await commandFor(body()));
+    });
+
+    it('the options reach the handler in our words; nothing else changes', async () => {
+      const dto = Object.assign(new MobileRoutineContractDto(), body(), {
+        stylist_candidates: ['maya', 'omar'],
+        check_later: true,
+        strict_picks: true,
+      });
+      const { contract, ...rest } = await commandFor(dto);
+      expect(contract).toStrictEqual({
+        stylistCandidates: ['maya', 'omar'],
+        checkLater: true,
+        withReasons: false,
+        alternativeRule: null,
+        alternativesMax: null,
+        strictPicks: true,
+      });
+      expect(rest).toStrictEqual(await commandFor(body()));
     });
   });
 });

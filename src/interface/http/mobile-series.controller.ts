@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   HttpCode,
+  Injectable,
   Param,
   Post,
   Res,
@@ -11,8 +12,13 @@ import {
   UsePipes,
   Optional,
   Patch,
+  ValidationPipe,
+  createParamDecorator,
+  type ExecutionContext,
+  type PipeTransform,
 } from '@nestjs/common';
 import {
+  ApiBody,
   ApiConflictResponse,
   ApiCreatedResponse,
   ApiHeader,
@@ -26,19 +32,26 @@ import {
 } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  ArrayNotEmpty,
   IsArray,
   IsBoolean,
+  IsIn,
   IsInt,
+  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
+  Max,
   Min,
   ValidateNested,
 } from 'class-validator';
 import type { Response } from 'express';
 import {
   MobileSeriesHandler,
+  type AlternativeRule,
   type MobileSeriesPreview,
+  type RoutineContractOptions,
 } from '@application/commands/mobile-series.handler';
 import {
   MobileSeriesReadHandler,
@@ -50,6 +63,7 @@ import { IdempotentInterceptor } from './idempotent.interceptor';
 import { mobileValidationPipe } from './mobile-validation.pipe';
 import { MobileProductLineDto } from './mobile-booking.controller';
 import {
+  MOBILE_ROUTINE_CONTRACT,
   MobileSeriesEnabledGuard,
   seriesDepositPercent,
 } from './mobile-series.flag';
@@ -197,6 +211,147 @@ export class MobileSeriesDto {
   total?: number;
 }
 
+export const ALTERNATIVE_RULES: readonly AlternativeRule[] = [
+  'SAME_STYLIST_FORWARD',
+];
+
+/** The most alternatives one session may ask for (customer-api keeps 3). */
+export const ALTERNATIVES_MAX = 12;
+
+/**
+ * The create body with the app team's routine contract options
+ * (MOBILE_ROUTINE_CONTRACT). Only customer-api's new routes send them; the
+ * old route never does. All optional.
+ *
+ * Step B1 accepts them and carries them to the handler. Each one is read
+ * from its own step on (B2 to B6); until then it changes nothing.
+ */
+export class MobileRoutineContractDto extends MobileSeriesDto {
+  @ApiPropertyOptional({
+    type: [String],
+    description:
+      'Any Available Expert: the stylists who can do every service, as ' +
+      'customer-api measures skills.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayNotEmpty()
+  @ArrayMaxSize(100)
+  @IsString({ each: true })
+  @IsNotEmpty({ each: true })
+  stylist_candidates?: string[];
+
+  @ApiPropertyOptional({
+    description: "Check sessions past 90 days against today's calendar.",
+  })
+  @IsOptional()
+  @IsBoolean()
+  check_later?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'Say why a session is not free.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  with_reasons?: boolean;
+
+  @ApiPropertyOptional({ enum: ALTERNATIVE_RULES })
+  @IsOptional()
+  @IsIn(ALTERNATIVE_RULES)
+  alternative_rule?: AlternativeRule;
+
+  @ApiPropertyOptional({ minimum: 1, maximum: ALTERNATIVES_MAX })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(ALTERNATIVES_MAX)
+  alternatives_max?: number;
+
+  @ApiPropertyOptional({
+    description: 'A pick must be one the alternatives rule would offer.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  strict_picks?: boolean;
+}
+
+/**
+ * The options every body at the edge is validated with: main.ts's global
+ * ValidationPipe, word for word. The create body is validated by
+ * MobileSeriesBodyPipe instead of that pipe (see SeriesBody), so it must be
+ * validated exactly as that pipe would: same options, same 400.
+ */
+export const EDGE_VALIDATION = {
+  transform: true,
+  whitelist: true,
+  forbidNonWhitelisted: true,
+} as const;
+
+/**
+ * The create body, validated against the class the flag says.
+ *
+ * Off (MOBILE_ROUTINE_CONTRACT): the old MobileSeriesDto, with the global
+ * pipe's own options, so every body gets exactly today's answer, a body
+ * with a new option included ("property check_later should not exist").
+ * On: MobileRoutineContractDto, which adds the options and nothing else.
+ *
+ * Why not simply add the fields to MobileSeriesDto: the global pipe runs
+ * first and reads the param's declared class, fixed at boot, so it would
+ * accept the options whatever the flag says.
+ */
+@Injectable()
+export class MobileSeriesBodyPipe implements PipeTransform {
+  private readonly edge = new ValidationPipe(EDGE_VALIDATION);
+
+  transform(value: unknown): Promise<unknown> {
+    return this.edge.transform(value, {
+      type: 'body',
+      data: undefined,
+      metatype: MOBILE_ROUTINE_CONTRACT()
+        ? MobileRoutineContractDto
+        : MobileSeriesDto,
+    });
+  }
+}
+
+/**
+ * The raw request body, exactly as @Body() gives it, as a CUSTOM param. The
+ * global ValidationPipe and the controller's mobile pipe both pass a custom
+ * param over untouched (validateCustomDecorators is off), which leaves the
+ * validation to MobileSeriesBodyPipe alone.
+ */
+export const SeriesBody = createParamDecorator(
+  (_data: unknown, ctx: ExecutionContext): unknown =>
+    ctx.switchToHttp().getRequest<{ body?: unknown }>().body,
+);
+
+/**
+ * The contract's options in our words, or null when none was sent: the old
+ * route's command stays exactly as it was.
+ */
+export function routineContractOf(
+  dto: MobileSeriesDto,
+): RoutineContractOptions | null {
+  if (!(dto instanceof MobileRoutineContractDto)) return null;
+  const sent = [
+    dto.stylist_candidates,
+    dto.check_later,
+    dto.with_reasons,
+    dto.alternative_rule,
+    dto.alternatives_max,
+    dto.strict_picks,
+  ].some((v) => v !== undefined && v !== null);
+  if (!sent) return null;
+  return {
+    stylistCandidates: dto.stylist_candidates ?? null,
+    checkLater: dto.check_later === true,
+    withReasons: dto.with_reasons === true,
+    alternativeRule: dto.alternative_rule ?? null,
+    alternativesMax: dto.alternatives_max ?? null,
+    strictPicks: dto.strict_picks === true,
+  };
+}
+
 /**
  * The mobile app's routine (series) booking.
  *
@@ -246,8 +401,12 @@ export class MobileSeriesController {
     description: 'session_not_free: nothing was booked.',
   })
   @ApiUnprocessableEntityResponse({ description: 'The contract envelope.' })
+  // The published body is the old one: the contract's options are
+  // customer-api's to send, behind MOBILE_ROUTINE_CONTRACT.
+  @ApiBody({ type: MobileSeriesDto })
   create(
-    @Body() dto: MobileSeriesDto,
+    // NOT @Body(): see MobileSeriesBodyPipe for why the flag needs this.
+    @SeriesBody(MobileSeriesBodyPipe) dto: MobileSeriesDto,
     @CurrentActor() actor: Actor,
     @Res({ passthrough: true }) res: Response,
   ): Promise<MobileSeriesPreview | MobileSeriesView> {
@@ -260,6 +419,7 @@ export class MobileSeriesController {
       dto.tax_amount !== undefined ||
       dto.discount !== undefined ||
       dto.total !== undefined;
+    const contract = routineContractOf(dto);
 
     return this.handler.execute({
       salonId: dto.salon_id,
@@ -293,6 +453,9 @@ export class MobileSeriesController {
           }
         : null,
       depositPercent: seriesDepositPercent(),
+      // Only when an option was sent, so the old route's command is
+      // exactly what it was.
+      ...(contract === null ? {} : { contract }),
     });
   }
 
