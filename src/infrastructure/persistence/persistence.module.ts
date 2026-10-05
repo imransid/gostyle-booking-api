@@ -48,6 +48,9 @@ import { StylistRepository } from './stylist.repository';
 import { PlatformProductCatalogue } from './platform-product-catalogue';
 import { ProductsGrpcModule } from '../grpc/products-grpc.module';
 
+import { PushListener } from '../messaging/push-listener';
+import { PushNotificationClient } from '../messaging/push-notification.client';
+
 /**
  * Global on purpose. One connection pool per process, shared by every module
  * that needs it. Importing PersistenceModule in five places would still give
@@ -107,24 +110,27 @@ import { ProductsGrpcModule } from '../grpc/products-grpc.module';
     // inject the token it also provides, and Nest would fail at boot with a
     // circular dependency rather than at compile time.
     LoggingEventPublisher,
+    PushNotificationClient,
     {
       provide: EVENT_PUBLISHER,
-      // The chain, innermost last: an event passes the group listener, then
-      // the waitlist listener, then reaches the real publisher. Each link
-      // does its own job and forwards, so adding a third changes one line.
+      // The chain, innermost last: group, walk-in seated, walk-in gap,
+      // waitlist, push, then the real publisher.
       useFactory: (
         next: LoggingEventPublisher,
         waitlist: WaitlistRepository,
         prisma: PrismaService,
         walkIns: WalkInRepository,
+        push: PushNotificationClient,
       ) =>
-        // Innermost last. A freeing event passes the group listener, then
-        // the walk-in nudge, then the waitlist offer, then reaches the real
-        // publisher. Walk-ins and the waitlist both hear about the same gap
-        // off the same event, which is what "together" means here.
         new GroupStatusListener(
           new WalkInSeatedListener(
-            new WalkInGapListener(new WaitlistListener(next, waitlist), prisma),
+            new WalkInGapListener(
+              new WaitlistListener(
+                new PushListener(next, prisma, push),
+                waitlist,
+              ),
+              prisma,
+            ),
             walkIns,
           ),
           prisma,
@@ -134,6 +140,7 @@ import { ProductsGrpcModule } from '../grpc/products-grpc.module';
         WaitlistRepository,
         PrismaService,
         WalkInRepository,
+        PushNotificationClient,
       ],
     },
     LifecycleRepository,
