@@ -208,8 +208,8 @@ discount and overpayment credited rather than kept.
 illegal transition is refused with a typed error naming both ends.
 
 **Timers** — hold expiry (30s sweep), auto no-show at start+30 (60s), payment
-link windows (60s), waitlist offer lapse (30s), the reminder ladder (60s), and
-a nightly series materialiser.
+link windows (60s), waitlist offer lapse (30s), the reminder ladder (60s) and
+its delivery dispatcher (10s), and a nightly series materialiser.
 
 **Reschedule** — the booking moves rather than being replaced, so the deposit
 stays attached; late moves forfeit, and a serial rescheduler acquires a deposit.
@@ -528,10 +528,17 @@ column is involved.
 
 Honestly, so you do not discover it in an incident.
 
-**Notifications.** Nothing is ever sent. The reminder ladder claims each rung
-under `FOR UPDATE SKIP LOCKED` and stamps `reminded_24h_at`, `reminded_3h_at`
-or `nudged_15m_at` — but there is no WhatsApp client behind it, and no outbox
-row either. The scheduling is real; the delivery is absent.
+**Notifications: reminders only, and only when switched on.** The reminder
+ladder claims each rung (24h, 3h, 15m) under `FOR UPDATE SKIP LOCKED`, stamps
+`reminded_24h_at` / `reminded_3h_at` / `nudged_15m_at` and writes a
+`reminder.<rung>` outbox event. With `REMINDER_DELIVERY=true` each event
+becomes one `notification_delivery` row per channel, and a dispatcher sends
+them: push through push-app, email over SMTP to the address customer-api's
+`ConsumerDirectory` returns. Each row records sent / failed / skipped /
+superseded and retries on its own. The stamps are the claim, never proof of
+delivery. Still absent: WhatsApp, SMS, the payment-link and routine 48h
+reminders (claimed and written to the outbox, not delivered), and per-branch
+timezones (one `BRANCH_TIMEZONE` for the process).
 
 **A real payment provider.** `PAYMENT_GATEWAY` is wired to `SimulatedGateway`,
 which moves no money. It does sign its webhooks with a genuine HMAC, so the

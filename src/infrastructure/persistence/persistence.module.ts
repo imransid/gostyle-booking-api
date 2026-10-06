@@ -50,6 +50,13 @@ import { ProductsGrpcModule } from '../grpc/products-grpc.module';
 
 import { PushListener } from '../messaging/push-listener';
 import { PushNotificationClient } from '../messaging/push-notification.client';
+import { ReminderDeliveryListener } from '../messaging/reminder-delivery-listener';
+import { SmtpEmailClient } from '../messaging/smtp-email.client';
+import { NotificationDeliveryRepository } from './notification-delivery.repository';
+import { ConsumerDirectoryGrpcModule } from '../grpc/consumer-directory-grpc.module';
+import { BranchClockCheck } from '../tenancy/branch-clock.check';
+import { PUSH_SENDER } from '@application/ports/push-sender.port';
+import { EMAIL_SENDER } from '@application/ports/email-sender.port';
 
 /**
  * Global on purpose. One connection pool per process, shared by every module
@@ -65,8 +72,17 @@ import { PushNotificationClient } from '../messaging/push-notification.client';
    * because a Nest token is not a type.
    *
    * PlatformStaffRoster and StaffGrpcModule are the same pair for the roster.
+   *
+   * ConsumerDirectoryGrpcModule provides CUSTOMER_CONTACT, the reminder
+   * dispatcher's way to an email address; it is re-exported below so the
+   * handler can inject it from anywhere this global module reaches.
    */
-  imports: [ServicesGrpcModule, StaffGrpcModule, ProductsGrpcModule],
+  imports: [
+    ServicesGrpcModule,
+    StaffGrpcModule,
+    ProductsGrpcModule,
+    ConsumerDirectoryGrpcModule,
+  ],
   providers: [
     TenantContext,
     BranchContext,
@@ -111,22 +127,48 @@ import { PushNotificationClient } from '../messaging/push-notification.client';
     // circular dependency rather than at compile time.
     LoggingEventPublisher,
     PushNotificationClient,
+    SmtpEmailClient,
+    NotificationDeliveryRepository,
+    BranchClockCheck,
+    // The reminder dispatcher's ports. Push makes ONE attempt per claim: the
+    // dispatcher retries with backoff, and three in-line tries per row would
+    // hold a whole batch behind a push-app outage. PushListener keeps the
+    // client's own three quick tries, because nothing retries for it.
+    {
+      provide: PUSH_SENDER,
+      useFactory: (push: PushNotificationClient) => ({
+        configured: () => push.configured(),
+        send: (request: Parameters<PushNotificationClient['send']>[0]) =>
+          push.send(request, 1),
+      }),
+      inject: [PushNotificationClient],
+    },
+    { provide: EMAIL_SENDER, useExisting: SmtpEmailClient },
     {
       provide: EVENT_PUBLISHER,
       // The chain, innermost last: group, walk-in seated, walk-in gap,
-      // waitlist, push, then the real publisher.
+      // waitlist, push, reminder delivery, then the real publisher.
+      //
+      // Reminder delivery is innermost because it is the one link that
+      // throws (a lost reminder is worse than a re-delivered event); every
+      // link outside it has already done its idempotent work by then.
       useFactory: (
         next: LoggingEventPublisher,
         waitlist: WaitlistRepository,
         prisma: PrismaService,
         walkIns: WalkInRepository,
         push: PushNotificationClient,
+        deliveries: NotificationDeliveryRepository,
       ) =>
         new GroupStatusListener(
           new WalkInSeatedListener(
             new WalkInGapListener(
               new WaitlistListener(
-                new PushListener(next, prisma, push),
+                new PushListener(
+                  new ReminderDeliveryListener(next, deliveries),
+                  prisma,
+                  push,
+                ),
                 waitlist,
               ),
               prisma,
@@ -141,6 +183,7 @@ import { PushNotificationClient } from '../messaging/push-notification.client';
         PrismaService,
         WalkInRepository,
         PushNotificationClient,
+        NotificationDeliveryRepository,
       ],
     },
     LifecycleRepository,
@@ -191,6 +234,10 @@ import { PushNotificationClient } from '../messaging/push-notification.client';
     FixtureBookingContext,
     StylistRepository,
     PlatformProductCatalogue,
+    NotificationDeliveryRepository,
+    PUSH_SENDER,
+    EMAIL_SENDER,
+    ConsumerDirectoryGrpcModule,
   ],
 })
 export class PersistenceModule {}

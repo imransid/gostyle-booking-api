@@ -71,6 +71,9 @@ import { MobileSeriesManageHandler } from '@application/commands/mobile-series-m
 import { MobileSeriesCancelHandler } from '@application/commands/mobile-series-cancel.handler';
 import { MobileSeriesJobHandler } from '@application/commands/mobile-series-job.handler';
 import { MobileSeriesJob } from '@infrastructure/scheduling/mobile-series-job.service';
+import { DispatchRemindersHandler } from '@application/commands/dispatch-reminders.handler';
+import { ReminderDispatchJob } from '@infrastructure/scheduling/reminder-dispatch.service';
+import { ReminderHealth } from '@infrastructure/scheduling/reminder-health';
 import { MobileSeriesJobController } from '@interface/http/mobile-series-job.controller';
 import { MobileGroupBookingHandler } from '@application/commands/mobile-group-booking.handler';
 import { MobileGroupReadHandler } from '@application/queries/mobile-group-read.handler';
@@ -152,6 +155,9 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     MobileSeriesCancelHandler,
     MobileSeriesJobHandler,
     MobileSeriesJob,
+    DispatchRemindersHandler,
+    ReminderDispatchJob,
+    ReminderHealth,
     DeskExtrasHandler,
     DeskActionsHandler,
     ReadModelRepository,

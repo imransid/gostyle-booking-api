@@ -240,6 +240,7 @@ model Booking {
   ledger          DepositLedger[]
   statusHistory   BookingStatusHistory[]
   idempotencyKeys IdempotencyKey[]
+  deliveries      NotificationDelivery[]
 
   @@index([branchId, tradingDay, status], map: "booking_branch_day_idx")
   @@index([customerId, startAt(sort: Desc)], map: "booking_customer_idx")
@@ -544,6 +545,79 @@ model EventOutbox {
   /// Without this it scans the whole table on every poll, forever.
   @@index([createdAt], map: "event_outbox_unpublished_idx")
   @@map("event_outbox")
+}
+
+// ============================================================ notification_delivery
+
+/// How a reminder reaches the customer.
+enum NotificationChannel {
+  push
+  email
+
+  @@map("notification_channel")
+}
+
+/// pending    claimed or waiting to be (next_attempt_at says when)
+/// sent       the channel accepted it
+/// failed     gave up: a permanent refusal, or the retries ran out
+/// skipped    nothing to send to, not wanted, or no longer about a live visit
+/// superseded the booking moved after the claim; the new time has its own
+enum DeliveryStatus {
+  pending
+  sent
+  failed
+  skipped
+  superseded
+
+  @@map("delivery_status")
+}
+
+/// One reminder on one channel, and whether the customer was actually told.
+///
+/// THE BOOKING'S reminded_*_at STAMPS ARE THE CLAIM, NOT THE DELIVERY. They
+/// say the ladder took a rung and wrote its event; this row says what became
+/// of it on push and on email, separately, so one channel failing never holds
+/// up or repeats the other.
+///
+/// Written by ReminderDeliveryListener from a reminder.<rung> outbox event,
+/// sent by the dispatcher. UNIQUE (source_event_id, channel) is what makes the
+/// outbox's at-least-once delivery harmless: the same event relayed twice
+/// finds its rows already there.
+///
+/// customer_id is the booking's, captured with the claim. No email address is
+/// stored: customer-api owns it and is asked at send time.
+model NotificationDelivery {
+  id            String              @id @default(uuid(7)) @db.Uuid
+  /// The event_outbox row this came from. No FK: the outbox may be pruned.
+  sourceEventId String              @map("source_event_id") @db.Uuid
+  channel       NotificationChannel
+  /// reminder.confirm_24h, reminder.day_of_3h, reminder.running_late_15m
+  eventType     String              @map("event_type")
+  bookingId     String              @map("booking_id") @db.Uuid
+  booking       Booking             @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  customerId    String              @map("customer_id") @db.Uuid
+  /// The booking start this reminder was claimed for. A booking whose
+  /// start_at no longer matches has moved, and this row is superseded.
+  scheduledFor  DateTime            @map("scheduled_for") @db.Timestamptz(6)
+  /// After this, sending would be noise: the next rung has taken over.
+  expiresAt     DateTime            @map("expires_at") @db.Timestamptz(6)
+  status        DeliveryStatus      @default(pending)
+  /// Claims so far. One per claim, so a worker killed mid-send still counts.
+  attempts      Int                 @default(0) @db.SmallInt
+  /// When it is next due. A claim pushes it out by the lease, so a row
+  /// abandoned mid-send comes due again on its own.
+  nextAttemptAt DateTime            @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  lastError     String?             @map("last_error")
+  skipReason    String?             @map("skip_reason")
+  /// What the channel said back: push-app's device count, SMTP's message id.
+  providerRef   String?             @map("provider_ref")
+  sentAt        DateTime?           @map("sent_at") @db.Timestamptz(6)
+  createdAt     DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@unique([sourceEventId, channel], map: "notification_delivery_event_channel_uq")
+  @@index([bookingId], map: "notification_delivery_booking_idx")
+  @@map("notification_delivery")
 }
 
 // A retried request returns the original result instead of charging twice.

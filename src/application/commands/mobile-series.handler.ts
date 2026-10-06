@@ -24,7 +24,7 @@ import {
 } from '@infrastructure/persistence/mobile-series.repository';
 import { PlatformProductCatalogue } from '@infrastructure/persistence/platform-product-catalogue';
 import {
-  BRANCH_UTC_OFFSET_MIN,
+  branchUtcOffsetMin,
   branchInstant,
   branchToday,
 } from '@infrastructure/persistence/hold.repository';
@@ -229,7 +229,7 @@ export function refused(r: SeriesRefusal): MobileContractError {
 }
 
 const iso = (day: string, minute: number): string =>
-  toOffsetIso(branchInstant(day, minute), BRANCH_UTC_OFFSET_MIN);
+  toOffsetIso(branchInstant(day, minute), branchUtcOffsetMin());
 
 /** One request's availability, one engine call per day at most. */
 class DayOffers {

@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { PrismaService } from '@infrastructure/persistence/prisma.service';
 import {
-  BRANCH_UTC_OFFSET_MIN,
+  branchUtcOffsetMin,
   branchInstant,
   toUuid,
 } from '@infrastructure/persistence/hold.repository';
@@ -515,14 +515,14 @@ export class MobileSeriesReadHandler {
         date: f.day,
         start_time: toOffsetIso(
           branchInstant(f.day, minute),
-          BRANCH_UTC_OFFSET_MIN,
+          branchUtcOffsetMin(),
         ),
         end_time:
           b === undefined
             ? null
             : toOffsetIso(
                 branchInstant(f.day, b.startMinute + b.durationMin),
-                BRANCH_UTC_OFFSET_MIN,
+                branchUtcOffsetMin(),
               ),
         state: sessionWord(f, nowMs),
         booking_id: b?.id ?? null,
@@ -600,7 +600,7 @@ export class MobileSeriesReadHandler {
       money: { total: filsToAed(totalFils), pay_now: 0 },
       can: routineCan(status, facts, nowMs),
       rules: RULES_VIEW,
-      created_at: toOffsetIso(series.createdAt, BRANCH_UTC_OFFSET_MIN),
+      created_at: toOffsetIso(series.createdAt, branchUtcOffsetMin()),
     };
   }
 

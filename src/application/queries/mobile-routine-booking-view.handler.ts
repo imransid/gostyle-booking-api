@@ -9,7 +9,7 @@ import {
   type SessionView,
 } from '@application/queries/mobile-series-read.handler';
 import {
-  BRANCH_UTC_OFFSET_MIN,
+  branchUtcOffsetMin,
   branchInstant,
   toUuid,
 } from '@infrastructure/persistence/hold.repository';
@@ -327,7 +327,7 @@ export class MobileRoutineBookingViewHandler {
           session.date,
           occurrence.plannedStartMin + quote.durationMin,
         ),
-        BRANCH_UTC_OFFSET_MIN,
+        branchUtcOffsetMin(),
       ),
     };
   }

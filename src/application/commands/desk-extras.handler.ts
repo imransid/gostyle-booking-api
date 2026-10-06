@@ -66,12 +66,16 @@ export class DeskExtrasHandler {
           ? 'Queued for delivery now.'
           : verdict.explanation,
       /**
-       * HONEST ABOUT THE LAST MILE. The event is written and will be
-       * relayed; nothing in this service actually sends a WhatsApp. A `sent:
-       * true` that means "we wrote a row" would be a lie the desk acts on.
+       * HONEST ABOUT THE LAST MILE. The event is written now; the push and
+       * the email are sent a few seconds later by the reminder dispatcher,
+       * each recorded in notification_delivery, and only while
+       * REMINDER_DELIVERY is on. A `delivered: true` that means "we wrote a
+       * row" would be a lie the desk acts on.
        */
       delivered: false,
-      note: 'No message transport is wired yet; the event is queued in the outbox.',
+      note:
+        'Queued. Push and email are sent by the reminder dispatcher ' +
+        '(REMINDER_DELIVERY), at the queued time when quiet hours apply.',
     };
   }
 

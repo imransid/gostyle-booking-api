@@ -1,23 +1,56 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
 import { isExclusionViolation } from './pg-errors';
-
-/** Asia/Dhaka is UTC+6 all year. A branch with DST would need a real tz lib. */
-export const BRANCH_UTC_OFFSET_MIN = 360;
+import { fixedUtcOffsetMinutes } from '@domain/shared/time-zone';
 
 /**
- * The SAME fact, spelled the way a browser can use it.
+ * The zone when BRANCH_TIMEZONE is not set.
  *
- * Every read model returns branch-local minutes -- `nowMinute: 597` -- and
- * published no timezone anywhere, so a client could read "now" and still had
- * to guess "today" from the machine it was running on. A desk open in Dubai
- * looking at a Dhaka branch guesses wrong for four hours a day.
- *
- * Kept beside the offset it describes, for the same reason `branchToday` is:
- * two spellings of one fact, in one place, so a branch that moves timezone is
- * one edit (CLAUDE.md 4).
+ * Asia/Dhaka since 2026-09-18 (b723088, "for current test salons"): every
+ * booking written since was converted at UTC+06:00, so the default stays
+ * there. A deployment whose branch is elsewhere says so in BRANCH_TIMEZONE.
  */
-export const BRANCH_TIMEZONE = 'Asia/Dhaka';
+export const DEFAULT_BRANCH_TIMEZONE = 'Asia/Dhaka';
+
+/**
+ * The branch's IANA zone, from BRANCH_TIMEZONE.
+ *
+ * READ ON EVERY CALL, like the feature flags, and for the same reason: a
+ * value read when this module loads is read before ConfigModule has put
+ * .env into process.env, so a laptop would silently run on the default.
+ *
+ * The variable was set in .env and docker-compose for months and read by
+ * nothing; three files each hard-coded their own copy instead. This is the
+ * one place now, so a branch that moves timezone is one setting.
+ *
+ * Every read model returns branch-local minutes -- `nowMinute: 597` -- so
+ * the settings endpoint publishes this alongside them; a client should never
+ * guess "today" from the machine it runs on.
+ */
+export function branchTimeZone(): string {
+  const raw = (process.env.BRANCH_TIMEZONE ?? '').trim();
+  return raw === '' ? DEFAULT_BRANCH_TIMEZONE : raw;
+}
+
+const offsetByZone = new Map<string, number>();
+
+/**
+ * Minutes east of UTC, derived from the zone rather than typed beside it.
+ *
+ * Throws for an unknown zone or one with daylight saving: the conversions
+ * below use one fixed offset, which is exact only for a zone that never
+ * moves. BranchClockCheck calls this at boot so a bad value stops the
+ * process there, not on the first request.
+ */
+export function branchUtcOffsetMin(): number {
+  const zone = branchTimeZone();
+  let offset = offsetByZone.get(zone);
+  if (offset === undefined) {
+    offset = fixedUtcOffsetMinutes(zone);
+    offsetByZone.set(zone, offset);
+  }
+  return offset;
+}
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -57,7 +90,7 @@ export function toUuid(id: string): string {
 export function branchInstant(tradingDay: string, minuteOfDay: number): Date {
   const [y, m, d] = tradingDay.split('-').map(Number);
   const midnightUtc = Date.UTC(y ?? 1970, (m ?? 1) - 1, d ?? 1);
-  return new Date(midnightUtc + (minuteOfDay - BRANCH_UTC_OFFSET_MIN) * 60_000);
+  return new Date(midnightUtc + (minuteOfDay - branchUtcOffsetMin()) * 60_000);
 }
 
 /**
@@ -70,14 +103,14 @@ export function branchInstant(tradingDay: string, minuteOfDay: number): Date {
  * wrong date for four hours every night.
  */
 export function branchToday(nowMs = Date.now()): string {
-  return new Date(nowMs + BRANCH_UTC_OFFSET_MIN * 60_000)
+  return new Date(nowMs + branchUtcOffsetMin() * 60_000)
     .toISOString()
     .slice(0, 10);
 }
 
 /** Minutes past branch-local midnight, right now. */
 export function branchNowMinute(nowMs = Date.now()): number {
-  const shifted = new Date(nowMs + BRANCH_UTC_OFFSET_MIN * 60_000);
+  const shifted = new Date(nowMs + branchUtcOffsetMin() * 60_000);
   return shifted.getUTCHours() * 60 + shifted.getUTCMinutes();
 }
 

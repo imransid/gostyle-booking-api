@@ -45,8 +45,8 @@ import {
   MIN_STRANDED_GAIN_MIN,
 } from '@domain/availability/compaction';
 import {
-  BRANCH_TIMEZONE,
-  BRANCH_UTC_OFFSET_MIN,
+  branchTimeZone,
+  branchUtcOffsetMin,
   branchNowMinute,
   branchToday,
 } from '@infrastructure/persistence/hold.repository';
@@ -175,8 +175,8 @@ export class GetSettingsHandler {
       branch: {
         id: branch.branchId,
         source: branch.source,
-        timezone: BRANCH_TIMEZONE,
-        utcOffsetMinutes: BRANCH_UTC_OFFSET_MIN,
+        timezone: branchTimeZone(),
+        utcOffsetMinutes: branchUtcOffsetMin(),
         tradingDay: branchToday(),
         nowMinute: branchNowMinute(),
       },

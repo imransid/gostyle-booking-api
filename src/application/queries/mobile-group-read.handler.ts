@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { PrismaService } from '@infrastructure/persistence/prisma.service';
 import {
-  BRANCH_UTC_OFFSET_MIN,
+  branchUtcOffsetMin,
   branchInstant,
   toUuid,
 } from '@infrastructure/persistence/hold.repository';
@@ -194,7 +194,7 @@ export class MobileGroupReadHandler {
     const { index, staff } = await this.namesFor(group, day);
 
     const at = (minute: number): string =>
-      toOffsetIso(branchInstant(day, minute), BRANCH_UTC_OFFSET_MIN);
+      toOffsetIso(branchInstant(day, minute), branchUtcOffsetMin());
 
     const members = group.members.map(({ participant: p, lane }) => {
       const products = productMoney(lane.products);
@@ -290,8 +290,8 @@ export class MobileGroupReadHandler {
       expires_at:
         booker.linkExpiresAt === null
           ? null
-          : toOffsetIso(booker.linkExpiresAt, BRANCH_UTC_OFFSET_MIN),
-      created_at: toOffsetIso(group.createdAt, BRANCH_UTC_OFFSET_MIN),
+          : toOffsetIso(booker.linkExpiresAt, branchUtcOffsetMin()),
+      created_at: toOffsetIso(group.createdAt, branchUtcOffsetMin()),
     };
   }
 

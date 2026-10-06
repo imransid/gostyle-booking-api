@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { SeriesRepository } from '../persistence/series.repository';
 import { MaterialiseSeriesHandler } from '@application/commands/materialise-series.handler';
+import { branchTimeZone, branchToday } from '../persistence/hold.repository';
 
 /**
  * The nightly occurrence horizon job: 02:00 branch time.
@@ -16,9 +17,6 @@ import { MaterialiseSeriesHandler } from '@application/commands/materialise-seri
  * existed an hour earlier.
  */
 export const MATERIALISE_CRON = '0 2 * * *';
-
-/** Asia/Dubai is UTC+4 all year, matching the rest of the service. */
-const BRANCH_TIMEZONE = 'Asia/Dhaka';
 
 /**
  * How many series one run will touch.
@@ -42,7 +40,12 @@ export class SeriesMaterialiser {
 
   @Cron(MATERIALISE_CRON, {
     name: 'series-materialise',
-    timeZone: BRANCH_TIMEZONE,
+    // The one place the zone is read when this module loads, because a
+    // decorator cannot wait: in Docker and production BRANCH_TIMEZONE is
+    // real process env by then; on a laptop, where .env is loaded later by
+    // ConfigModule, this is the default -- 02:00 an hour or two off, on a
+    // dev machine, for a job whose point is "while the salon is shut".
+    timeZone: branchTimeZone(),
   })
   async nightly(): Promise<void> {
     await this.run();
@@ -55,7 +58,7 @@ export class SeriesMaterialiser {
     if (this.running) return { series: 0, materialised: 0 };
     this.running = true;
 
-    const today = todayOverride ?? this.branchToday();
+    const today = todayOverride ?? branchToday();
     let series = 0;
     let materialised = 0;
 
@@ -98,14 +101,5 @@ export class SeriesMaterialiser {
     }
 
     return { series, materialised };
-  }
-
-  private branchToday(): string {
-    return new Intl.DateTimeFormat('en-CA', {
-      timeZone: BRANCH_TIMEZONE,
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).format(new Date());
   }
 }

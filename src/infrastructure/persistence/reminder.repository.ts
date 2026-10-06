@@ -1,6 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
-import { LADDER, due, type RungSpec } from '@domain/booking/reminders';
+import {
+  LADDER,
+  LADDER_STATUSES,
+  claimVerdict,
+  earlierColumns,
+  paymentPending,
+  type RungSpec,
+} from '@domain/booking/reminders';
 
 /** One booking claimed for one rung. Named: a heredoc eats a trailing `<`. */
 interface ClaimedRow {
@@ -18,10 +25,9 @@ export interface RungResult {
   readonly rung: string;
   readonly sent: number;
   readonly skipped: number;
+  /** Claims given back because they were not this rung's turn. */
+  readonly released: number;
 }
-
-/** Only a live booking is worth reminding. */
-const LIVE = ['confirmed', 'pending_payment'];
 
 @Injectable()
 export class ReminderRepository {
@@ -52,6 +58,14 @@ export class ReminderRepository {
   async runRung(spec: RungSpec, nowMs: number): Promise<RungResult> {
     const column = COLUMN_SQL[spec.column];
     const horizon = new Date(nowMs + spec.leadMs);
+    // ONE RUNG AT A TIME, IN ORDER. A rung is claimable only once every
+    // earlier rung is stamped (domain `earlierColumns`, the same predicate as
+    // `claimable`), so a booking created or moved between two passes of a
+    // tick waits one tick for its earlier rungs to be judged, instead of
+    // having this rung stamped while `due` was talking about another.
+    const earlierStamped = earlierColumns(spec)
+      .map((c) => `AND ${COLUMN_SQL[c]} IS NOT NULL`)
+      .join(' ');
 
     return this.prisma.$transaction(async (tx) => {
       const claimed = await tx.$queryRawUnsafe<ClaimedRow[]>(
@@ -61,6 +75,7 @@ export class ReminderRepository {
          WHERE id IN (
            SELECT id FROM booking
             WHERE ${column} IS NULL
+              ${earlierStamped}
               AND status = ANY($1::booking_status[])
               AND start_at <= $2
             ORDER BY start_at
@@ -69,34 +84,42 @@ export class ReminderRepository {
          )
         RETURNING id, code, start_at, customer_id, payment_status,
                   reminded_24h_at, reminded_3h_at, nudged_15m_at`,
-        LIVE,
+        [...LADDER_STATUSES],
         horizon,
       );
 
       let sent = 0;
       let skipped = 0;
+      const released: string[] = [];
 
       for (const row of claimed) {
         // The claim is deliberately broad: it grabs everything past the lead
-        // time. The DOMAIN decides whether this rung is the right one, so a
-        // booking made inside the window is marked without being messaged.
-        const verdict = due(
+        // time. The DOMAIN decides whether this rung sends or skips, so a
+        // booking made inside the window is marked without being messaged --
+        // and it answers for THIS rung only.
+        const verdict = claimVerdict(
+          spec,
           {
             startAtMs: row.start_at.getTime(),
-            // The claim already stamped this rung, so read it as outstanding
-            // and let `due` judge the window rather than the flag.
-            reminded24hAt: asMs(
-              row.reminded_24h_at,
-              spec.column,
-              'reminded24hAt',
-            ),
-            reminded3hAt: asMs(row.reminded_3h_at, spec.column, 'reminded3hAt'),
-            nudged15mAt: asMs(row.nudged_15m_at, spec.column, 'nudged15mAt'),
+            reminded24hAt: row.reminded_24h_at?.getTime() ?? null,
+            reminded3hAt: row.reminded_3h_at?.getTime() ?? null,
+            nudged15mAt: row.nudged_15m_at?.getTime() ?? null,
           },
           nowMs,
         );
 
-        if (verdict.kind !== 'send') {
+        if (verdict.kind === 'release') {
+          // Unreachable while the claim keeps its order. If it is ever
+          // reached, the stamp goes back rather than recording a rung as
+          // handled that nothing judged.
+          released.push(row.id);
+          ReminderRepository.log.error(
+            `${spec.rung} claim on ${row.code} released: ${verdict.why}`,
+          );
+          continue;
+        }
+
+        if (verdict.kind === 'skip') {
           skipped += 1;
           continue;
         }
@@ -110,22 +133,32 @@ export class ReminderRepository {
               code: row.code,
               rung: spec.rung,
               purpose: spec.purpose,
+              // The start this reminder was claimed FOR. Delivery compares it
+              // with the booking at send time: a booking moved since then is
+              // superseded, and the moved booking gets its own ladder.
               startAt: row.start_at.toISOString(),
               customerId: row.customer_id,
-              // "with a payment prompt when anything is pending"
-              paymentPending: row.payment_status === 'unpaid',
+              paymentPending: paymentPending(row.payment_status),
             },
           },
         });
         sent += 1;
       }
 
-      if (sent > 0 || skipped > 0) {
-        ReminderRepository.log.log(
-          `${spec.rung}: ${sent} sent, ${skipped} passed over`,
+      if (released.length > 0) {
+        await tx.$executeRawUnsafe(
+          `UPDATE booking SET ${column} = NULL WHERE id = ANY($1::uuid[])`,
+          released,
         );
       }
-      return { rung: spec.rung, sent, skipped };
+
+      if (sent > 0 || skipped > 0 || released.length > 0) {
+        ReminderRepository.log.log(
+          `${spec.rung}: ${sent} sent, ${skipped} passed over` +
+            (released.length > 0 ? `, ${released.length} released` : ''),
+        );
+      }
+      return { rung: spec.rung, sent, skipped, released: released.length };
     });
   }
 
@@ -144,18 +177,3 @@ const COLUMN_SQL: Record<RungSpec['column'], string> = {
   reminded3hAt: 'reminded_3h_at',
   nudged15mAt: 'nudged_15m_at',
 };
-
-/**
- * The claim stamped this rung's column a microsecond ago, so reading it back
- * would tell `due` the rung is already handled and it would answer 'nothing'
- * for every row. This rung is presented as outstanding; the others are read
- * as they are.
- */
-function asMs(
-  value: Date | null,
-  claimedColumn: RungSpec['column'],
-  thisColumn: RungSpec['column'],
-): number | null {
-  if (claimedColumn === thisColumn) return null;
-  return value === null ? null : value.getTime();
-}
