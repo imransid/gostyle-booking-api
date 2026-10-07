@@ -182,8 +182,8 @@ describe('the difference array counts concurrency correctly', () => {
     }
   });
 
-  it('a booking running past closing is clipped, not dropped', () => {
-    const t = usageTimeline({ ...NAIL, units: 99 }, [occ('nail', 1300, 1400)]);
+  it('a booking running past the end of the grid is clipped, not dropped', () => {
+    const t = usageTimeline({ ...NAIL, units: 99 }, [occ('nail', 1400, 1500)]);
     expect(t[SLOTS - 1]).toBe(1);
     expect(t.length).toBe(SLOTS);
   });
@@ -247,13 +247,16 @@ describe('the chain needs a chair for every segment, at the right moment', () =>
     expect(freeAt(chainCapacityMask(busy, held), 900)).toBe(false);
   });
 
-  it('the last segment must also finish before closing', () => {
+  it('the last segment must also finish before the grid ends', () => {
+    // The GRID, 24:00. Closing time is not capacity's to know: the trading
+    // window is applied by alignmentMask (feasible.spec, "the branch's own
+    // hours").
     const segs: ChainSegment[] = [
       { offsetMin: 0, durationMin: 60, resourceType: 'nail' },
       { offsetMin: 60, durationMin: 60, resourceType: 'nail' },
     ];
     const m = chainCapacityMask(free(), segs);
-    expect(toSlots(m).map(toMin).pop()).toBe(1200);
+    expect(toSlots(m).map(toMin).pop()).toBe(1320);
   });
 
   it('a busier salon can only lose starts, never gain them', () => {

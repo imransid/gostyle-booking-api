@@ -25,7 +25,11 @@ import {
   daysBetween,
   type TradingDay,
 } from './recurrence';
-import { SLOT_MIN, isInsideDay } from '../availability/grid';
+import {
+  DEFAULT_TRADING_WINDOW,
+  SLOT_MIN,
+  isInsideWindow,
+} from '../availability/grid';
 
 /**
  * The rules a routine request must meet before anything is looked up, held
@@ -215,15 +219,19 @@ export function isTradingDay(value: string): boolean {
 /**
  * 'HH:MM' to minutes past midnight, or null.
  *
- * On the 5 minute grid, and inside the desk's trading day (10:00 to 21:55):
- * booking_series and series_occurrence both CHECK that, so a routine at
- * 09:00 would fail at the insert. Refused here, in the app's words, instead.
+ * On the 5 minute grid, and inside the default trading day (10:00 to 21:55).
+ * A series spans many dates and is parsed before any of them is loaded, so
+ * it is checked against the default rather than one date's hours; each
+ * occurrence still meets its own day's window in the engine.
  */
 export function parseRoutineTime(value: string): number | null {
   const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(value);
   if (m === null) return null;
   const minute = Number(m[1]) * 60 + Number(m[2]);
-  return minute % SLOT_MIN === 0 && isInsideDay(minute) ? minute : null;
+  return minute % SLOT_MIN === 0 &&
+    isInsideWindow(minute, DEFAULT_TRADING_WINDOW)
+    ? minute
+    : null;
 }
 
 /** A session day: today at the earliest, inside the 90 day horizon. */

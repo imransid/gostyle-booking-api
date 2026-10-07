@@ -189,6 +189,7 @@ export class WalkInHandler {
           occupations: day.occupations,
           channel: DESK_CHANNEL,
           window: WHOLE_DAY,
+          tradingWindow: day.window,
           preferredStaffId: null,
           isToday: true,
           nowMin,

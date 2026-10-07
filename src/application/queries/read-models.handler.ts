@@ -17,11 +17,7 @@ import {
   branchToday,
 } from '@infrastructure/persistence/hold.repository';
 import { SlugIndex } from '@infrastructure/persistence/slug-uuid';
-import {
-  formatMinute,
-  DAY_START_MIN,
-  DAY_END_MIN,
-} from '@domain/availability/grid';
+import { formatMinute } from '@domain/availability/grid';
 import { Money } from '@domain/shared/money';
 import {
   kpi,
@@ -678,8 +674,8 @@ export class BookingReadHandler {
 
     return {
       date,
-      openMinute: DAY_START_MIN,
-      closeMinute: DAY_END_MIN,
+      openMinute: ctx.window.openMin,
+      closeMinute: ctx.window.closeMin,
       nowMinute: nowMinute(),
       closureReason: ctx.closureReason ?? null,
       columns,

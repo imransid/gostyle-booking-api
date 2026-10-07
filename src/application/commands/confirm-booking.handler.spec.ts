@@ -65,6 +65,7 @@ function handlerWith(
   const context = {
     loadServices: () => Promise.resolve([HAIRCUT]),
     loadDay: () => Promise.reject(new Error('not used')),
+    loadTradingWindow: () => Promise.reject(new Error('not used')),
     loadCatalogue: () => Promise.reject(new Error('not used')),
   };
 

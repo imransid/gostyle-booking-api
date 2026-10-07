@@ -6,9 +6,12 @@ import {
   weekdayOf,
   type RosterCandidate,
 } from './roster';
-import { DAY_END_MIN, DAY_START_MIN } from './grid';
+import { DEFAULT_TRADING_WINDOW } from './grid';
 
-const BRANCH = { startMin: DAY_START_MIN, endMin: DAY_END_MIN };
+const BRANCH = {
+  startMin: DEFAULT_TRADING_WINDOW.openMin,
+  endMin: DEFAULT_TRADING_WINDOW.closeMin,
+};
 
 function stylist(over: Partial<RosterCandidate> = {}): RosterCandidate {
   return {

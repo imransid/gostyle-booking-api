@@ -1,5 +1,5 @@
 import { Mask, ALL, NONE, runsAtLeast } from './mask';
-import { DAY_START_MIN, SLOTS, SLOT_MIN, toSlot } from './grid';
+import { GRID_START_MIN, SLOTS, SLOT_MIN, toSlot } from './grid';
 
 /**
  * A physical unit of capacity: a styling chair, a colour station, a nail
@@ -58,7 +58,7 @@ export function effectiveUnits(resource: ResourceType): number {
  *
  * Instead we write +1 where a booking starts and -1 where it ends, which is
  * two writes per booking regardless of length. Then one pass over the day
- * carries a running total. 200 bookings becomes 400 writes plus 144 adds.
+ * carries a running total. 200 bookings becomes 400 writes plus 288 adds.
  *
  * Same answer, and the cost stops depending on how long the bookings are.
  */
@@ -75,14 +75,14 @@ export function usageTimeline(
     const endWithTurnover = o.endMin + resource.changeoverMin;
 
     const from = Math.max(0, toSlot(o.startMin));
-    // DAY_START_MIN, not a literal 600. This was a second copy of the day's
+    // GRID_START_MIN, not a literal. This was a second copy of the grid's
     // origin and it worked only while the constant happened to equal it --
     // the exact drift CLAUDE.md 4 is about. Widening the trading day moved
     // the constant and left this line pointing at the old midnight, so every
     // occupation landed 24 slots late.
     const to = Math.min(
       SLOTS,
-      Math.ceil((endWithTurnover - DAY_START_MIN) / SLOT_MIN),
+      Math.ceil((endWithTurnover - GRID_START_MIN) / SLOT_MIN),
     );
     if (to <= from) continue;
 

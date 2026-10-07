@@ -56,7 +56,7 @@ import {
   MOBILE_ROUTINE_CONTRACT,
   MOBILE_SERIES_BOOKING,
 } from './mobile-series.flag';
-import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
+import { DEFAULT_TRADING_WINDOW } from '@domain/availability/grid';
 import { BookingRepository } from '@infrastructure/persistence/booking.repository';
 import { MobileContractError } from '@application/commands/mobile-booking.error';
 import { MobileGroupReadHandler } from '@application/queries/mobile-group-read.handler';
@@ -564,19 +564,22 @@ export class MobileBookingController {
       /**
        * THE ENGINE'S OWN BOOKABLE DAY, so callers stop guessing it.
        *
-       * `feasibleSet` searches DAY_START_MIN..DAY_END_MIN and nothing
-       * outside it, whatever hours a branch keeps. The customer app's picker
-       * reads the branch's real hours, so a salon opening at 09:00 had its
-       * first hour offered and then refused -- "09:00 is no longer
-       * available" about a slot that was never reachable.
+       * `feasibleSet` offers nothing outside the branch's trading window,
+       * whatever hours the picker believes. The customer app's picker reads
+       * the branch's real hours, so a salon opening at 09:00 had its first
+       * hour offered and then refused -- "09:00 is no longer available"
+       * about a slot that was never reachable.
        *
        * Sent with the busy window because the caller is already here, and
        * READ rather than copied: a constant repeated in another service is
-       * the one that goes stale (CLAUDE.md 4). The right fix is a per-branch
-       * trading day; until then this at least means only one service
-       * believes it knows the hours.
+       * the one that goes stale (CLAUDE.md 4). Still the DEFAULT window for
+       * every branch: this answer spans a from/to range, not one trading
+       * day, and becomes per-branch when loadTradingWindow does.
        */
-      day: { from_min: DAY_START_MIN, to_min: DAY_END_MIN },
+      day: {
+        from_min: DEFAULT_TRADING_WINDOW.openMin,
+        to_min: DEFAULT_TRADING_WINDOW.closeMin,
+      },
       busy: busy.map((b) => ({
         staff_id: b.staffId,
         start_at: b.startAt.toISOString(),

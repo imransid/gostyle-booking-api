@@ -4,6 +4,7 @@ import type {
   ChairOccupation,
   ResourceType,
 } from '@domain/availability/capacity';
+import type { TradingWindow } from '@domain/availability/grid';
 
 /**
  * Everything the availability engine needs to know about one branch on one
@@ -15,6 +16,14 @@ export interface DayContext {
   readonly staffBookings: ReadonlyMap<string, readonly StaffBooking[]>;
   readonly resources: readonly ResourceType[];
   readonly occupations: readonly ChairOccupation[];
+  /**
+   * The hours the branch trades on this date. The engine never offers a
+   * start before `openMin` or a chain that ends after `closeMin`.
+   *
+   * Always present, even when `closureReason` is set: a shut day still has
+   * a window, it is just never consulted.
+   */
+  readonly window: TradingWindow;
   /** Set when the branch is shut. No offers are made and this is the reason. */
   readonly closureReason?: string;
 }
@@ -40,6 +49,18 @@ export interface BookingContextReader {
 
   /** The branch's people and places for one trading day. */
   loadDay(branchId: string, tradingDay: string): Promise<DayContext>;
+
+  /**
+   * Only the branch's hours on one date: the same value loadDay puts on
+   * DayContext.window, for a caller that needs nothing else from the day.
+   *
+   * DEFAULT_TRADING_WINDOW for every branch until per-branch hours arrive
+   * from platform. This is the one method that changes when they do.
+   */
+  loadTradingWindow(
+    branchId: string,
+    tradingDay: string,
+  ): Promise<TradingWindow>;
 
   /** Everything on the menu. Used by the catalogue endpoint. */
   loadCatalogue(branchId: string): Promise<Service[]>;

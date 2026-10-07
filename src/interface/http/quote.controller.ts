@@ -23,7 +23,7 @@ import {
   GetQuoteHandler,
   type QuoteView,
 } from '@application/queries/get-quote.handler';
-import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
+import { DEFAULT_TRADING_WINDOW } from '@domain/availability/grid';
 import { unshout } from '@application/contract/wire';
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
@@ -75,8 +75,8 @@ export class QuoteDto {
   })
   @IsOptional()
   @IsInt()
-  @Min(DAY_START_MIN)
-  @Max(DAY_END_MIN - 1)
+  @Min(DEFAULT_TRADING_WINDOW.openMin)
+  @Max(DEFAULT_TRADING_WINDOW.closeMin - 1)
   startMin: number = 900;
 }
 

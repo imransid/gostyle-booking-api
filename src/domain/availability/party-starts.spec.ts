@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { DEFAULT_TRADING_WINDOW } from './grid';
 import { planParty, type PartyContext, type PartyParticipant } from './party';
 import {
   MAX_PARTY_STARTS,
@@ -56,7 +57,7 @@ function deepFreeze<T>(value: T): T {
 
 describe('planning one party at many starts', () => {
   it('answers each start exactly as planParty does alone', () => {
-    const starts = halfHourStarts();
+    const starts = halfHourStarts(DEFAULT_TRADING_WINDOW);
     const each = planPartyAtEach(party, starts, 'arrive_together', day());
 
     expect(each).toEqual(
@@ -69,7 +70,7 @@ describe('planning one party at many starts', () => {
     // above pass for a function that ignored the start entirely.
     const kinds = planPartyAtEach(
       party,
-      halfHourStarts(),
+      halfHourStarts(DEFAULT_TRADING_WINDOW),
       'arrive_together',
       day(),
     ).map((p) => p.kind);
@@ -99,7 +100,12 @@ describe('planning one party at many starts', () => {
   it('never writes to the context, so every start sees the same day', () => {
     const frozen = deepFreeze(day());
     expect(() =>
-      planPartyAtEach(party, halfHourStarts(), 'arrive_together', frozen),
+      planPartyAtEach(
+        party,
+        halfHourStarts(DEFAULT_TRADING_WINDOW),
+        'arrive_together',
+        frozen,
+      ),
     ).not.toThrow();
     expect(frozen).toEqual(day());
   });
@@ -111,7 +117,7 @@ describe('planning one party at many starts', () => {
 
 describe('the cap', () => {
   it('is the engine day at half-hour steps, and no more', () => {
-    const starts = halfHourStarts();
+    const starts = halfHourStarts(DEFAULT_TRADING_WINDOW);
     expect(starts[0]).toBe(600);
     expect(starts.at(-1)).toBe(1290);
     expect(MAX_PARTY_STARTS).toBe(starts.length);

@@ -15,6 +15,10 @@ import type {
   ResourceType,
 } from '@domain/availability/capacity';
 import { occupationsFor } from '@domain/availability/capacity';
+import {
+  DEFAULT_TRADING_WINDOW,
+  type TradingWindow,
+} from '@domain/availability/grid';
 
 // Table 6.2, per resource class.
 const COLOUR: BufferClaims = { preMin: 10, postMin: 20 };
@@ -440,7 +444,16 @@ export class FixtureBookingContext implements BookingContextReader {
       staffBookings,
       resources: RESOURCES,
       occupations,
+      window: DEFAULT_TRADING_WINDOW,
     });
+  }
+
+  /** Every fixture branch trades the default hours, every day. */
+  loadTradingWindow(
+    _branchId: string,
+    _tradingDay: string,
+  ): Promise<TradingWindow> {
+    return Promise.resolve(DEFAULT_TRADING_WINDOW);
   }
 
   loadCatalogue(_branchId: string): Promise<Service[]> {

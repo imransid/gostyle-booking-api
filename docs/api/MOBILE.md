@@ -1341,7 +1341,7 @@ Every constant the front end would otherwise hard-code -- trading grid, channel 
 **Response**
 
 ```
-200 OK. `SettingsView` (get-settings.handler.ts:62-134). The handler is SYNCHRONOUS, takes no input, touches no I/O -- the body is compiled-in constants. Every value below was read from the module it is imported from and verified: tradingWindow: { fromMin: 600, toMin: 1320, slotMin: 5, slots: 144 } (DAY_START_MIN, DAY_END_MIN, SLOT_MIN, SLOTS = (1320-600)/5) channels: { DESK: { grainMin: 5, leadMin: 15 }, ONLINE: { grainMin: 15, leadMin: 60 } } <- keys are UPPERCASE; see the case trap in notes horizons: { bookingDays: 90, seriesDays: 70 } (BOOKING_HORIZON_DAYS, SERIES_HORIZON_DAYS) money: { currency: 'AED', minorUnitsPerMajor: 100, vatPercent: 5, tierDiscountPercentGold: 10, defaultPromoPercent: 10, depositFloorMinor: 1000, depositCeilingMinor: 50000, firstVisitPercent: 20, requireDepositFlagPercent: 50, highRiskPercent: 30, peakEscalationPercent: 20 } (depositFloorMinor is Money.aed(10)...
+200 OK. `SettingsView` (get-settings.handler.ts:62-134). The handler is SYNCHRONOUS, takes no input, touches no I/O -- the body is compiled-in constants. Every value below was read from the module it is imported from and verified: tradingWindow: { fromMin: 600, toMin: 1320, slotMin: 5, slots: 144 } (DEFAULT_TRADING_WINDOW, SLOT_MIN, and the window's own slot count (1320-600)/5; the engine grid itself is 288 slots, 00:00-24:00) channels: { DESK: { grainMin: 5, leadMin: 15 }, ONLINE: { grainMin: 15, leadMin: 60 } } <- keys are UPPERCASE; see the case trap in notes horizons: { bookingDays: 90, seriesDays: 70 } (BOOKING_HORIZON_DAYS, SERIES_HORIZON_DAYS) money: { currency: 'AED', minorUnitsPerMajor: 100, vatPercent: 5, tierDiscountPercentGold: 10, defaultPromoPercent: 10, depositFloorMinor: 1000, depositCeilingMinor: 50000, firstVisitPercent: 20, requireDepositFlagPercent: 50, highRiskPercent: 30, peakEscalationPercent: 20 } (depositFloorMinor is Money.aed(10)...
 ```
 
 **Errors**
@@ -1449,8 +1449,8 @@ Which start times the salon can actually deliver for a chain of services on one 
 | `services` | string (comma-separated) -> string[] | yes | @Transform(({value}) => typeof value === 'string' ? value.split(',').map(s=>s.trim()).filter(Boolean) : []) then @IsArray() @ArrayNotEmpty({ message: 'pick at least one service' }) @IsString({ each: true }). |
 | `channel` | 'desk' \| 'online' | no | @IsOptional() @IsIn(['desk','online']) — THIS IS @IsIn, NOT @WireEnum. It is strictly case-sensitive and lowercase-only: ?channel=DESK returns 400 "channel must be one of the following values: desk, online" (VERIFIED LIVE). |
 | `staff` | string \| null | no | @IsOptional() then @Transform(({value}) => typeof value === 'string' && value !== 'any' && value !== '' ? value : null) then @IsString(). Field default is `staff: string \| null = null`. |
-| `from` | integer (minutes from midnight) | no | @IsOptional() @Transform(({value}) => Number(value)) @IsInt() @Min(600) @Max(1320). Default 600 (DAY_START_MIN). GOTCHA: @IsOptional only skips null/undefined, and Number('') is 0 — so an EMPTY ?from= becomes 0 and fails with "from must not be less than 600" (... |
-| `to` | integer (minutes from midnight) | no | @IsOptional() @Transform(({value}) => Number(value)) @IsInt() @Min(600) @Max(1320). Default 1320 (DAY_END_MIN). Same empty-string gotcha as `from`. ?to=1400 gives "to must not be greater than 1320" (VERIFIED LIVE). |
+| `from` | integer (minutes from midnight) | no | @IsOptional() @Transform(({value}) => Number(value)) @IsInt() @Min(600) @Max(1320). Default 600 (DEFAULT_TRADING_WINDOW.openMin). GOTCHA: @IsOptional only skips null/undefined, and Number('') is 0 — so an EMPTY ?from= becomes 0 and fails with "from must not be less than 600" (... |
+| `to` | integer (minutes from midnight) | no | @IsOptional() @Transform(({value}) => Number(value)) @IsInt() @Min(600) @Max(1320). Default 1320 (DEFAULT_TRADING_WINDOW.closeMin). Same empty-string gotcha as `from`. ?to=1400 gives "to must not be greater than 1320" (VERIFIED LIVE). |
 | `now` | integer | no | @IsOptional() @Transform(({value}) => Number(value)) @IsInt() — NO @Min and NO @Max, so negatives and values far outside the trading day are accepted (?now=-500 VERIFIED LIVE, 200; ?now=999999 VERIFIED LIVE, 200 with count 0). |
 
 **Response**
@@ -1470,11 +1470,11 @@ Which start times the salon can actually deliver for a chain of services on one 
 | `400` | channel must be one of the following values: desk, online | Default @IsIn message. Any value other than the exact lowercase 'desk' or 'online' — including 'DESK', 'Desk', 'ONLINE', and an EMPTY ?channel= . |
 | `400` | branch must be a string | Default @IsString message. `branch` sent as a repeated query param, so Express hands over an array. VERIFIED LIVE. An empty ?branch= does NOT error. |
 | `400` | from must be an integer number | Default @IsInt message. Number(value) produced NaN ('abc') or a fraction ('600.5'). VERIFIED LIVE with 600.5. |
-| `400` | from must not be less than 600 | Default @Min(DAY_START_MIN) message. Any from below 600 — including an EMPTY ?from= , since Number('') is 0 and @IsOptional does not skip 0. VERIFIED LIVE with ?from= . |
-| `400` | from must not be greater than 1320 | Default @Max(DAY_END_MIN) message. |
+| `400` | from must not be less than 600 | Default @Min(DEFAULT_TRADING_WINDOW.openMin) message. Any from below 600 — including an EMPTY ?from= , since Number('') is 0 and @IsOptional does not skip 0. VERIFIED LIVE with ?from= . |
+| `400` | from must not be greater than 1320 | Default @Max(DEFAULT_TRADING_WINDOW.closeMin) message. |
 | `400` | to must be an integer number | Default @IsInt message on `to`. |
-| `400` | to must not be less than 600 | Default @Min(DAY_START_MIN) message on `to`. Includes the empty ?to= case (Number('') === 0). |
-| `400` | to must not be greater than 1320 | Default @Max(DAY_END_MIN) message on `to`. VERIFIED LIVE with ?to=1400. |
+| `400` | to must not be less than 600 | Default @Min(DEFAULT_TRADING_WINDOW.openMin) message on `to`. Includes the empty ?to= case (Number('') === 0). |
+| `400` | to must not be greater than 1320 | Default @Max(DEFAULT_TRADING_WINDOW.closeMin) message on `to`. VERIFIED LIVE with ?to=1400. |
 | `400` | now must be an integer number | Default @IsInt message. `now` has no @Min/@Max, so only non-integers are rejected. VERIFIED LIVE with ?now=abc; ?now=-500 and ?now=999999 both return 200. |
 | `400` | property <name> should not exist | Global ValidationPipe forbidNonWhitelisted:true (src/main.ts:29-34). ANY query parameter not declared on AvailabilityQueryDto — a typo like ?serivces=, a tracking param like ?utm_source=, ?b... |
 | `404` | Unknown service: <comma-joined MISSING ids> | src/application/queries/get-availability.handler.ts:184. Thrown when context.loadServices returns fewer rows than the resolved selection asked for; only the ids that could NOT be resolved ar... |
@@ -1498,7 +1498,7 @@ Place a hold: re-runs the availability engine on fresh data, picks the least-loa
 | `branch` | string | no | @IsOptional() @IsString(). Class default `branch = 'marina-walk'` (holds.controller.ts:41) -- because ValidationPipe has transform:true, omitting it yields 'marina-walk'. |
 | `day` | string | yes | @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'day must be YYYY-MM-DD' }). That is the ONLY validator -- there is no @IsString and no calendar check, so '2026-13-45' passes the regex. |
 | `services` | string[] | yes | @IsArray() @ArrayNotEmpty({ message: 'pick at least one service' }) @IsString({ each: true }). A real JSON array in the body -- NOT comma-separated (that form is only used by GET /v1/bookings/eligible-staff). |
-| `startMin` | integer | yes | @IsInt() @Min(DAY_START_MIN) @Max(DAY_END_MIN) -- literally 600 and 1320, imported from @domain/availability/grid (grid.ts:14,17). transform:true does NOT coerce here: there is no @Type(() => Number), so a quoted "1105" in a JSON body stays a string and fails... |
+| `startMin` | integer | yes | @IsInt() @Min(DEFAULT_TRADING_WINDOW.openMin) @Max(DEFAULT_TRADING_WINDOW.closeMin) -- literally 600 and 1320, imported from @domain/availability/grid (grid.ts:14,17). transform:true does NOT coerce here: there is no @Type(() => Number), so a quoted "1105" in a JSON body stays a string and fails... |
 | `staffId` | string | no | @IsOptional() @IsString(). No @IsIn, no existence check at the edge. |
 | `customerId` | string | no | @IsOptional() @IsString(). No format check, no existence check. |
 | `channel` | 'desk' \| 'online' | no | @IsOptional() @IsIn(['desk','online']) -- STRICT @IsIn, NOT @WireEnum. Lowercase ONLY. 'DESK' is a 400. Class default `channel: 'desk' \| 'online' = 'desk'` (holds.controller.ts:78). |
@@ -1587,7 +1587,7 @@ Price a basket without holding or charging anything: every intermediate the arit
 | `serviceIds` | string[] | yes | @IsArray() @ArrayNotEmpty({ message: 'pick at least one service' }) @IsString({ each: true }). The empty-array message is CUSTOM: 'pick at least one service'. |
 | `customerId` | string | yes | @IsString() — REQUIRED, no @IsOptional and no initializer. Omitting it is a 400: 'customerId must be a string'. (POST /v1/bookings makes the same concept optional with a default of 'dana'.) |
 | `channel` | string enum | no | @IsOptional() @WireEnum(['DESK','ONLINE']) — CASE-INSENSITIVE: @Transform uppercases, then @IsIn checks. 'desk', 'Desk' and 'DESK' all work; 'walk_in' does not: 'channel must be one of the following values: DESK, ONLINE'. |
-| `startMin` | integer | no | @IsOptional() @IsInt() @Min(DAY_START_MIN) @Max(DAY_END_MIN - 1), i.e. @Min(600) @Max(1319) after the grid constants (grid.ts:14, :17). |
+| `startMin` | integer | no | @IsOptional() @IsInt() @Min(DEFAULT_TRADING_WINDOW.openMin) @Max(DEFAULT_TRADING_WINDOW.closeMin - 1), i.e. @Min(600) @Max(1319) after the grid constants (grid.ts:14, :17). |
 
 **Response**
 
@@ -2103,7 +2103,7 @@ Plan a party WITHOUT holding it. Runs the identical planParty() over the identic
 | --- | --- | --- | --- |
 | `branchId` | string | no | @IsOptional() @IsString() with a REAL CLASS-PROPERTY DEFAULT: `branchId: string = 'marina-walk'` (line 59). VERIFIED: omitting the key yields 'marina-walk' in the transformed DTO — class-transformer does not clobber the initializer. |
 | `day` | string | yes | @Matches(DAY, { message: 'day must be YYYY-MM-DD' }) where `const DAY = /^\d{4}-\d{2}-\d{2}$/` is defined once at the top of the file (line 36). Again no @IsString and no @IsDateString, so the regex is the only gate. |
-| `targetMin` | integer | yes | @IsInt() @Min(DAY_START_MIN=600) @Max(DAY_END_MIN - 1 = 1319) — EXCLUSIVE of 1320. THE HOLD ENDPOINT USES @Max(1320), INCLUSIVE. Verified: targetMin=1320 is accepted by /v1/groups/holds and rejected here with 'targetMin must not be greater than 1319'. |
+| `targetMin` | integer | yes | @IsInt() @Min(DEFAULT_TRADING_WINDOW.openMin=600) @Max(DEFAULT_TRADING_WINDOW.closeMin - 1 = 1319) — EXCLUSIVE of 1320. THE HOLD ENDPOINT USES @Max(1320), INCLUSIVE. Verified: targetMin=1320 is accepted by /v1/groups/holds and rejected here with 'targetMin must not be greater than 1319'. |
 | `mode` | string enum | yes | @WireEnum(['TOGETHER','FINISH']) — CASE-INSENSITIVE ON INPUT (uppercased by @Transform, then @IsIn). Verified: 'together' is accepted and echoed back as 'TOGETHER'. Non-strings fail @IsIn. |
 | `finishWindowMin` | integer | no | @IsOptional() @IsInt() @Min(0). No @Max, no class default — the @ApiPropertyOptional `default: 0` is documentation only; DEFAULT_FINISH_WINDOW_MIN supplies the 0. Explicit null passes and collapses to 0 downstream. |
 | `maxStaggerMin` | integer | no | @IsOptional() @IsInt() @Min(0). Omitted or null → DEFAULT_MAX_STAGGER_MIN = 720. |
@@ -2153,7 +2153,7 @@ Hold every lane of a party, or none of them. Plans the party under a Postgres ad
 | `finishWindowMin` | integer | no | @IsOptional() @IsInt() @Min(0). NO @Max. NO class-property initializer — the @ApiPropertyOptional `default: 0` is documentation only; the 0 comes from DEFAULT_FINISH_WINDOW_MIN in the domain planner and the key is omitted from the command when undefined. |
 | `maxStaggerMin` | integer | no | @IsOptional() @IsInt() @Min(0). NO @Max. Omitted (or null) → DEFAULT_MAX_STAGGER_MIN = 720, the whole trading day, i.e. no practical cap. 0 is a legal value and means 'no stagger at all'. |
 | `day` | string | yes | @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'day must be YYYY-MM-DD' }). There is NO @IsString and NO @IsDateString — the regex is the ONLY check. |
-| `targetMin` | integer | yes | @IsInt() @Min(DAY_START_MIN=600) @Max(DAY_END_MIN=1320). The bound is INCLUSIVE of 1320 here — verified accepted — unlike POST /v1/bookings/availability/group which uses @Max(1319). Must be a JSON NUMBER: '600' as a string is rejected with three messages. |
+| `targetMin` | integer | yes | @IsInt() @Min(DEFAULT_TRADING_WINDOW.openMin=600) @Max(DEFAULT_TRADING_WINDOW.closeMin=1320). The bound is INCLUSIVE of 1320 here — verified accepted — unlike POST /v1/bookings/availability/group which uses @Max(1319). Must be a JSON NUMBER: '600' as a string is rejected with three messages. |
 | `mode` | string enum | yes | @WireEnum(['TOGETHER','FINISH']) — CASE-INSENSITIVE ON INPUT. The decorator composes @Transform(v => typeof v === 'string' ? v.toUpperCase() : v) then @IsIn(values). So 'together', 'Finish', 'TOGETHER' all pass (verified). |
 | `arrangement` | string enum | yes | @WireEnum(['ORGANIZER','SPLIT','OWN']) — CASE-INSENSITIVE ON INPUT, same uppercase-then-@IsIn mechanism. Note the AMERICAN spelling: 'ORGANISER' with an S is REJECTED (verified) with 'arrangement must be one of the following values: ORGANIZER, SPLIT, OWN'. |
 | `participants` | ParticipantDto[] | yes | @IsArray() @ArrayMinSize(2) @ArrayMaxSize(8) @ValidateNested({ each: true }) @Type(() => ParticipantDto) |
@@ -2454,7 +2454,7 @@ Dry-run every occurrence a series WOULD create, against the real availability en
 | `serviceId` | string | yes | @IsString(). |
 | `preferredStaffId` | string | no | @IsOptional() @IsString(). Not checked against the roster. |
 | `anchorDay` | string (YYYY-MM-DD) | yes | @Matches(DAY, { message: 'anchorDay must be YYYY-MM-DD' }) — a CUSTOM message, unlike the identically-named field on CreateSeriesDto which uses class-validator's default regex message. The FE cannot match on one error string across both routes. |
-| `startMin` | integer | yes | @IsInt() @Min(DAY_START_MIN = 600) @Max(DAY_END_MIN - 1 = 1319). |
+| `startMin` | integer | yes | @IsInt() @Min(DEFAULT_TRADING_WINDOW.openMin = 600) @Max(DEFAULT_TRADING_WINDOW.closeMin - 1 = 1319). |
 | `pattern` | PatternDto (object) | yes | @ValidateNested() @Type(() => PatternDto) — the SAME PatternDto class imported from series.controller.ts (booking-series.controller.ts:29), so the decorators are byte-identical to the create route's. |
 | `pattern.kind` | 'WEEKLY' \| 'EVERY_N_WEEKS' \| 'MONTHLY_ON_DATE' \| 'CUSTOM' | yes | @WireEnum([...]) — EITHER CASE accepted on input. |
 | `pattern.weekdays` | number[] | no | @IsOptional() @IsArray() @IsInt({each:true}) @Min(0,{each:true}) @Max(6,{each:true}). 0 = Sunday. |
@@ -2501,7 +2501,7 @@ Create a recurring series. Expands the pattern to the 70-day series horizon and 
 | `branchId` | string | yes | @IsString(). No @IsOptional, no default — must be sent. Any non-empty string passes: it is NEVER checked against a real branch. Folded to a uuid by toUuid() on write (series.repository.ts:137). |
 | `customerId` | string | yes | @IsString(). No default. Fixture slug. Folded through toUuid() on write. |
 | `anchorDay` | string (YYYY-MM-DD) | yes | @Matches(/^\d{4}-\d{2}-\d{2}$/) with class-validator's DEFAULT message: "anchorDay must match /^\d{4}-\d{2}-\d{2}$/ regular expression". No @IsString and no @IsOptional. |
-| `startMin` | integer | yes | @IsInt() @Min(DAY_START_MIN = 600) @Max(DAY_END_MIN - 1 = 1319). So 600..1319 inclusive (grid.ts:14,17). 1080 = 18:00. |
+| `startMin` | integer | yes | @IsInt() @Min(DEFAULT_TRADING_WINDOW.openMin = 600) @Max(DEFAULT_TRADING_WINDOW.closeMin - 1 = 1319). So 600..1319 inclusive (grid.ts:14,17). 1080 = 18:00. |
 | `pattern` | PatternDto (object) | yes | @ValidateNested() @Type(() => PatternDto). No @IsOptional — omitting it yields "nested property pattern must be either object or array". |
 | `pattern.kind` | 'WEEKLY' \| 'EVERY_N_WEEKS' \| 'MONTHLY_ON_DATE' \| 'CUSTOM' | yes | @WireEnum(['WEEKLY','EVERY_N_WEEKS','MONTHLY_ON_DATE','CUSTOM']) — EITHER CASE accepted on input. WireEnum = @Transform(uppercase-if-string) then @IsIn(values) (wire-enum.decorator.ts:26-29), so "weekly" is normalised to "WEEKLY" before validation. |
 | `pattern.weekdays` | number[] | no | @IsOptional() @IsArray() @IsInt({each:true}) @Min(0,{each:true}) @Max(6,{each:true}). 0 = Sunday, 6 = Saturday (matches Date.getUTCDay). |
@@ -2887,7 +2887,7 @@ Add somebody to the walk-in queue. Package ids in serviceIds are expanded to pla
 | `customerId` | string | no | @IsOptional() @IsString(). EXACTLY ONE of customerId / guestName must be present — that rule lives ONLY in the database (CHECK walk_in_is_customer_or_guest: num_nonnulls(customer_id, guest_name) = 1, migration 20260828130134_walk_in_queue), not in the DTO and... |
 | `guestName` | string | no | @IsOptional() @IsString(). See customerId — exactly one of the two. Stored raw (no toUuid, no length limit, TEXT column) and echoed back as the queue row's `label`. |
 | `serviceIds` | string[] | yes | @IsArray() @ArrayNotEmpty() @IsString({ each: true }). MAY CONTAIN PACKAGE IDS: resolveSelection(cmd.serviceIds, PACKAGES, priceOf) expands them in WalkInHandler.join before any catalogue lookup or write. |
-| `joinedMin` | integer | yes | @IsInt() @Min(DAY_START_MIN) @Max(DAY_END_MIN - 1) = @Min(600) @Max(1319). The ceiling is 1319, one LOWER than the waitlist window fields' 1320. It matches the DB CHECK walk_in_joined_inside_trading_day (joined_min >= 600 AND joined_min < 1320) exactly. |
+| `joinedMin` | integer | yes | @IsInt() @Min(DEFAULT_TRADING_WINDOW.openMin) @Max(DEFAULT_TRADING_WINDOW.closeMin - 1) = @Min(600) @Max(1319). The ceiling is 1319, one LOWER than the waitlist window fields' 1320. It matches the DB CHECK walk_in_joined_inside_trading_day (joined_min >= 600 AND joined_min < 1320) exactly. |
 
 **Response**
 
@@ -2924,7 +2924,7 @@ Seat a walk-in: place an ordinary hold on a chosen start and professional. Retur
 | Field | Type | Required | Rules |
 | --- | --- | --- | --- |
 | `id` | string (path param, declared as :id) | yes | @Param('id', ResourceIdPipe) — a ParseUUIDPipe with a custom exceptionFactory (interface/http/resource-id.pipe.ts). NO version is configured, so it uses ParseUUIDPipe's 'all' regex /^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$/i: ANY 8-4-4-4-... |
-| `startMin` | integer | yes | @IsInt() @Min(DAY_START_MIN) @Max(DAY_END_MIN - 1) = @Min(600) @Max(1319). Swagger example: 900. Not a @WireEnum, not an @IsIn. |
+| `startMin` | integer | yes | @IsInt() @Min(DEFAULT_TRADING_WINDOW.openMin) @Max(DEFAULT_TRADING_WINDOW.closeMin - 1) = @Min(600) @Max(1319). Swagger example: 900. Not a @WireEnum, not an @IsIn. |
 | `staffId` | string | yes | @IsString(). No @IsIn, no @WireEnum, no roster check — folded through toUuid() inside HoldRepository.place, so any string is accepted and an unknown professional simply produces a hold nobody can honour. Swagger example: 'maya'. |
 
 **Response**
@@ -2999,7 +2999,7 @@ Join the waitlist for a day that is full. Returns the queue position; it does NO
 | `branchId` | string | yes | @IsString(). No format or existence check. Folded through toUuid() in WaitlistRepository.join, so a slug like "marina-walk" is hashed to a deterministic uuid and a branch that does not exist is accepted silently. |
 | `serviceId` | string | yes | @IsString(). Single service only (not an array, not a package id — packages are NOT expanded on this route, unlike POST /v1/walk-ins). |
 | `day` | string | yes | @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'day must be YYYY-MM-DD' }). Custom message, so a bad value returns exactly 'day must be YYYY-MM-DD'. THE REGEX IS SHAPE-ONLY: it accepts impossible dates — see errors (500) and notes. |
-| `windowFromMin` | integer | yes | @IsInt() @Min(DAY_START_MIN) @Max(DAY_END_MIN) = @Min(600) @Max(1320) (domain/availability/grid.ts). transform:true means the string "840" is coerced to 840. NOT a @WireEnum and NOT an @IsIn — no enum semantics on this route. |
+| `windowFromMin` | integer | yes | @IsInt() @Min(DEFAULT_TRADING_WINDOW.openMin) @Max(DEFAULT_TRADING_WINDOW.closeMin) = @Min(600) @Max(1320) (domain/availability/grid.ts). transform:true means the string "840" is coerced to 840. NOT a @WireEnum and NOT an @IsIn — no enum semantics on this route. |
 | `windowToMin` | integer | yes | @IsInt() @Min(600) @Max(1320) — note the ceiling is 1320 here, one HIGHER than the walk-in fields' 1319. The cross-field rule (must be > windowFromMin) is NOT a decorator; it is enforced in WaitlistHandler.join as a 409. |
 | `preferredStaffId` | string | no | @IsOptional() @IsString(). Omit for 'any professional' (stored null), which matches more. Folded through toUuid() when present. No roster check. |
 | `customerId` | string | no | @IsOptional() @IsString(). IGNORED when the caller's token is a customer token — the handler overrides it with actor.id. Only meaningful for staff/manager tokens. Folded through toUuid(). |

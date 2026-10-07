@@ -72,8 +72,14 @@ export class CompactionHandler {
   ) {}
 
   async plan(branchId: string, tradingDay: string): Promise<CompactionView> {
-    const diary = await this.repo.diaryFor(branchId, tradingDay);
-    const plan = planCompaction(diary.map((d) => d.booking));
+    const [diary, hours] = await Promise.all([
+      this.repo.diaryFor(branchId, tradingDay),
+      this.context.loadTradingWindow(branchId, tradingDay),
+    ]);
+    const plan = planCompaction(
+      diary.map((d) => d.booking),
+      hours,
+    );
     return this.toView(branchId, tradingDay, plan);
   }
 
@@ -91,8 +97,14 @@ export class CompactionHandler {
     codes: readonly string[],
     actor: { kind: ActorKind; id: string | null },
   ): Promise<ApplyCompactionView> {
-    const diary = await this.repo.diaryFor(branchId, tradingDay);
-    const fresh = planCompaction(diary.map((d) => d.booking));
+    const [diary, hours] = await Promise.all([
+      this.repo.diaryFor(branchId, tradingDay),
+      this.context.loadTradingWindow(branchId, tradingDay),
+    ]);
+    const fresh = planCompaction(
+      diary.map((d) => d.booking),
+      hours,
+    );
 
     const wanted = new Set(codes);
     const results: AppliedMove[] = [];

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { DEFAULT_TRADING_WINDOW } from '@domain/availability/grid';
 import { HttpException } from '@nestjs/common';
 import {
   GroupAvailabilityHandler,
@@ -293,7 +294,7 @@ describe('one start: the answer as it was before targetMins existed', () => {
 
 /** The day view's own list, and an awkward one: unsorted, with a repeat. */
 const LISTS: Readonly<Record<string, readonly number[]>> = {
-  'every half hour': halfHourStarts(),
+  'every half hour': halfHourStarts(DEFAULT_TRADING_WINDOW),
   'unsorted, with a repeat': [1319, 605, 1000, 1000, 600, 900],
 };
 
@@ -349,7 +350,7 @@ describe('many starts: loaded once, not once per start', () => {
     const { handler, context, calls } = rig();
     await handler.executeMany({
       ...PARTIES['trio with a preference']!,
-      targetMins: halfHourStarts(),
+      targetMins: halfHourStarts(DEFAULT_TRADING_WINDOW),
     });
     expect({
       days: context.days,
@@ -366,7 +367,7 @@ describe('many starts: loaded once, not once per start', () => {
 
   it('where asking one at a time reads them 24 times', async () => {
     const { handler, context, calls } = rig();
-    for (const targetMin of halfHourStarts()) {
+    for (const targetMin of halfHourStarts(DEFAULT_TRADING_WINDOW)) {
       await handler.execute({
         ...PARTIES['trio with a preference']!,
         targetMin,
@@ -444,7 +445,9 @@ describe('many starts: the cap, below the HTTP layer too', () => {
       .then((v) => `answered ${v.starts.length}`, refusal);
 
   it(`answers ${MAX_PARTY_STARTS}`, async () => {
-    expect(await ask(halfHourStarts())).toBe(`answered ${MAX_PARTY_STARTS}`);
+    expect(await ask(halfHourStarts(DEFAULT_TRADING_WINDOW))).toBe(
+      `answered ${MAX_PARTY_STARTS}`,
+    );
   });
 
   it(`refuses ${MAX_PARTY_STARTS + 1}, before loading anything`, async () => {
@@ -452,7 +455,7 @@ describe('many starts: the cap, below the HTTP layer too', () => {
     const answer = await handler
       .executeMany({
         ...PARTIES.pair!,
-        targetMins: [...halfHourStarts(), 1319],
+        targetMins: [...halfHourStarts(DEFAULT_TRADING_WINDOW), 1319],
       })
       .then(() => 'accepted', refusal);
     expect(answer).toContain('"status":422');

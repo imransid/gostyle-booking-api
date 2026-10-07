@@ -24,7 +24,6 @@ import {
   branchInstant,
 } from '@infrastructure/persistence/hold.repository';
 import type { Service } from '@domain/availability/feasible';
-import { DAY_END_MIN, DAY_START_MIN } from '@domain/availability/grid';
 import { toBranchMoment } from '@domain/booking/mobile-contract';
 import {
   checkProducts,
@@ -183,9 +182,13 @@ export class MobileGroupBookingHandler {
       list.reduce((n, s) => n + s.durationMin, 0),
     );
     const longest = Math.max(...durations);
+    const hours = await this.context.loadTradingWindow(
+      cmd.salonId,
+      start.tradingDay,
+    );
     if (
-      start.minuteOfDay < DAY_START_MIN ||
-      start.minuteOfDay + longest > DAY_END_MIN
+      start.minuteOfDay < hours.openMin ||
+      start.minuteOfDay + longest > hours.closeMin
     ) {
       throw MobileContractError.of(
         'start_time',

@@ -45,7 +45,7 @@ import {
   MaterialiseSeriesHandler,
   type MaterialiseResult,
 } from '@application/commands/materialise-series.handler';
-import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
+import { DEFAULT_TRADING_WINDOW } from '@domain/availability/grid';
 import type { EditScope } from '@domain/booking/series-edit';
 import type {
   EndCondition,
@@ -154,8 +154,8 @@ export class CreateSeriesDto {
 
   @ApiProperty({ example: 1080, description: '1080 is 18:00.' })
   @IsInt()
-  @Min(DAY_START_MIN)
-  @Max(DAY_END_MIN - 1)
+  @Min(DEFAULT_TRADING_WINDOW.openMin)
+  @Max(DEFAULT_TRADING_WINDOW.closeMin - 1)
   startMin!: number;
 
   @ApiProperty({ type: PatternDto })
@@ -237,8 +237,8 @@ export class ApplyPatternDto {
   @ApiPropertyOptional({ example: 1080, description: 'New time of day.' })
   @IsOptional()
   @IsInt()
-  @Min(DAY_START_MIN)
-  @Max(DAY_END_MIN)
+  @Min(DEFAULT_TRADING_WINDOW.openMin)
+  @Max(DEFAULT_TRADING_WINDOW.closeMin)
   startMin?: number;
 
   @ApiProperty({ example: 'customer moved to Thursdays' })

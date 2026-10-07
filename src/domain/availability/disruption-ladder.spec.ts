@@ -6,7 +6,12 @@ import {
   type DisruptedBooking,
   type DisruptionRequest,
 } from './disruption-ladder';
-import { partOfDay, samePartOfDay, PART_OF_DAY_MIN } from './grid';
+import {
+  partOfDay,
+  samePartOfDay,
+  AFTERNOON_FROM_MIN,
+  EVENING_FROM_MIN,
+} from './grid';
 import type { RepairCandidate } from './repair';
 
 const AT = 900; // 15:00, an afternoon booking
@@ -34,14 +39,23 @@ const req = (
 ): DisruptionRequest => ({ booking: booking(over), candidates });
 
 describe('parts of the day', () => {
-  it('cuts the trading day into three four-hour blocks', () => {
-    expect(PART_OF_DAY_MIN).toBe(240);
+  it('cuts the default day into the three four-hour blocks it always had', () => {
+    expect(AFTERNOON_FROM_MIN).toBe(840);
+    expect(EVENING_FROM_MIN).toBe(1080);
     expect(partOfDay(600)).toBe('morning'); // 10:00
     expect(partOfDay(839)).toBe('morning');
     expect(partOfDay(840)).toBe('afternoon'); // 14:00
     expect(partOfDay(1079)).toBe('afternoon');
     expect(partOfDay(1080)).toBe('evening'); // 18:00
     expect(partOfDay(1319)).toBe('evening');
+  });
+
+  it('keeps fixed clock boundaries outside the default day', () => {
+    // A branch open from 08:00 or until 23:00 does not move "evening".
+    expect(partOfDay(480)).toBe('morning'); // 08:00
+    expect(partOfDay(0)).toBe('morning'); // midnight, on a 24-hour day
+    expect(partOfDay(1350)).toBe('evening'); // 22:30
+    expect(partOfDay(1435)).toBe('evening'); // 23:55
   });
 
   it('agrees with itself', () => {

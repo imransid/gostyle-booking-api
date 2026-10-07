@@ -28,11 +28,8 @@ import {
   branchInstant,
   branchToday,
 } from '@infrastructure/persistence/hold.repository';
-import {
-  DAY_END_MIN,
-  DAY_START_MIN,
-  formatMinute,
-} from '@domain/availability/grid';
+import { formatMinute } from '@domain/availability/grid';
+import { WHOLE_DAY } from '@domain/availability/feasible';
 import { filsToAed, toOffsetIso } from '@domain/booking/mobile-contract';
 import {
   NO_PRODUCTS,
@@ -253,8 +250,9 @@ class DayOffers {
         // slot the create then refuses.
         channel: 'online',
         preferredStaffId: null,
-        fromMin: DAY_START_MIN,
-        toMin: DAY_END_MIN,
+        // The whole day; the engine keeps it inside that date's hours.
+        fromMin: WHOLE_DAY.fromMin,
+        toMin: WHOLE_DAY.toMin,
       });
       this.seen.set(day, view);
     }

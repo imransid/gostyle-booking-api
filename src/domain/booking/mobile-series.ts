@@ -42,7 +42,11 @@ import {
   type Pattern,
   type TradingDay,
 } from './recurrence';
-import { OFFER_SPACING_MIN, isInsideDay } from '../availability/grid';
+import {
+  DEFAULT_TRADING_WINDOW,
+  OFFER_SPACING_MIN,
+  isInsideWindow,
+} from '../availability/grid';
 
 // ------------------------------------------------------------ the numbers
 
@@ -619,7 +623,7 @@ export function offeredPickRefusal(input: {
       ahead <= ROUTINE_ALTERNATIVE_DAYS &&
       p.day >= input.today &&
       !final.some((d, i) => i !== p.index && d === p.day) &&
-      isInsideDay(p.startMin) &&
+      isInsideWindow(p.startMin, DEFAULT_TRADING_WINDOW) &&
       (far ? input.checkLater : !beyondHorizon(p.day, input.today));
     if (!allowed) {
       return refuse(
@@ -1305,7 +1309,9 @@ export function timesFreeOnAll(
   perDay: readonly (readonly number[])[],
 ): number[] {
   if (perDay.length === 0) return [];
-  let common = new Set(perDay[0]!.filter(isInsideDay));
+  let common = new Set(
+    perDay[0]!.filter((m) => isInsideWindow(m, DEFAULT_TRADING_WINDOW)),
+  );
   for (const day of perDay.slice(1)) {
     const here = new Set(day);
     common = new Set([...common].filter((m) => here.has(m)));
@@ -1357,7 +1363,11 @@ export function pickAlternatives(input: {
   };
 
   const ranked = input.free
-    .filter((c) => isInsideDay(c.startMin) && !blocked.has(c.day))
+    .filter(
+      (c) =>
+        isInsideWindow(c.startMin, DEFAULT_TRADING_WINDOW) &&
+        !blocked.has(c.day),
+    )
     .map((c) => ({ c, r: rank(c) }))
     .filter(
       (x): x is { c: SlotChoice; r: [number, number, number] } => x.r !== null,
@@ -1428,7 +1438,7 @@ export function routineAlternatives(input: {
     .filter(
       ({ c, ahead, minutes }) =>
         c.staffId === wanted.staffId &&
-        isInsideDay(c.startMin) &&
+        isInsideWindow(c.startMin, DEFAULT_TRADING_WINDOW) &&
         ahead >= 0 &&
         ahead <= ROUTINE_ALTERNATIVE_DAYS &&
         !(ahead === 0 && minutes === 0) &&

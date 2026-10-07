@@ -1,26 +1,71 @@
 /**
- * The trading day, as a grid.
+ * The clock day, as a grid, and the trading window that sits on it.
  *
  * Everything in the availability engine works in minutes-from-midnight,
  * never Date objects. 600 is 10:00. 1320 is 22:00. The day is cut into
- * 5-minute slots, so slot 0 is 10:00 and slot 143 is 21:55.
+ * 5-minute slots, so slot 0 is 00:00 and slot 287 is 23:55.
  *
  * Why not Date: a Date carries a timezone, a calendar, and leap seconds,
  * none of which the engine needs. An integer is comparable, hashable,
  * and shiftable. That is the whole job.
+ *
+ * TWO IDEAS, KEPT APART. The GRID is the space the bit maths runs on, and it
+ * is the same for every branch: the whole clock day. The TRADING WINDOW is
+ * the hours one branch sells on one date, and it is data (DayContext.window).
+ * They used to be one pair of constants, DAY_START_MIN and DAY_END_MIN, which
+ * fixed every branch to 10:00-22:00 -- a salon that closes at 23:00 could not
+ * sell its last hour. Those constants are gone on purpose rather than given
+ * new values: every place that read them had to say which of the two it
+ * meant, and the compiler is what made it say.
  */
 
-/** First bookable minute of the trading day. 600 = 10:00. */
-export const DAY_START_MIN = 600;
+/** First minute of the grid. Midnight, for every branch. */
+export const GRID_START_MIN = 0;
 
-/** Last minute of the trading day. 1320 = 22:00. Exclusive as a start. */
-export const DAY_END_MIN = 1320;
+/** End of the grid, exclusive. 1440 = 24:00. */
+export const GRID_END_MIN = 1440;
 
 /** Grid resolution. Every mask bit is this many minutes. */
 export const SLOT_MIN = 5;
 
-/** (1320 - 600) / 5 = 144 bits per professional per day. */
-export const SLOTS = (DAY_END_MIN - DAY_START_MIN) / SLOT_MIN;
+/** (1440 - 0) / 5 = 288 bits per professional per day. */
+export const SLOTS = (GRID_END_MIN - GRID_START_MIN) / SLOT_MIN;
+
+/**
+ * The hours one branch trades on one date, as minutes of that date.
+ *
+ * Half-open, like everything else here: a start must be at or after
+ * `openMin`, and a chain must END at or before `closeMin`. Both lie on the
+ * grid, so 00:00-24:00 is a branch that trades all day.
+ *
+ * PAST MIDNIGHT IS NOT REPRESENTABLE, deliberately. A Friday that trades
+ * 18:00-02:00 needs minutes past 1440 on Friday's trading day, and nothing
+ * else in this service (the diary, the minute columns, the day's masks) can
+ * hold those yet. Whoever supplies a window caps the close at 24:00.
+ */
+export interface TradingWindow {
+  readonly openMin: number;
+  readonly closeMin: number;
+}
+
+/**
+ * The hours a branch trades when nobody has said otherwise: 10:00-22:00.
+ *
+ * Every branch, today. Two kinds of reader use it directly, and both are
+ * places per-branch hours still have to reach:
+ *
+ *   - loading a day (the fixture, and DbBookingContext), which puts it on
+ *     DayContext.window for the engine to use;
+ *   - the edges that do not load a day at all: the request validators,
+ *     `/busy`, `/v1/settings`, and the series and group checks that run
+ *     before one is loaded.
+ *
+ * Code that already holds a DayContext must use `day.window`, not this.
+ */
+export const DEFAULT_TRADING_WINDOW: TradingWindow = {
+  openMin: 600,
+  closeMin: 1320,
+};
 
 /** Guard on each end of a hands-free processing band. */
 export const PROCESSING_GUARD_MIN = 5;
@@ -49,12 +94,12 @@ export const DAILY_BOOKING_CAP = 8;
  * a null check at forty call sites for a case the mask handles for free.
  */
 export function toSlot(minuteOfDay: number): number {
-  return Math.floor((minuteOfDay - DAY_START_MIN) / SLOT_MIN);
+  return Math.floor((minuteOfDay - GRID_START_MIN) / SLOT_MIN);
 }
 
-/** Slot index back to minute of day. toMin(60) === 900, which is 15:00. */
+/** Slot index back to minute of day. toMin(180) === 900, which is 15:00. */
 export function toMin(slot: number): number {
-  return DAY_START_MIN + SLOT_MIN * slot;
+  return GRID_START_MIN + SLOT_MIN * slot;
 }
 
 /** How many slots a duration occupies. 105 minutes is 21 slots. */
@@ -62,9 +107,12 @@ export function durationToSlots(durationMin: number): number {
   return Math.ceil(durationMin / SLOT_MIN);
 }
 
-/** True when the minute falls inside the trading day. */
-export function isInsideDay(minuteOfDay: number): boolean {
-  return minuteOfDay >= DAY_START_MIN && minuteOfDay < DAY_END_MIN;
+/** True when a START at this minute falls inside the trading window. */
+export function isInsideWindow(
+  minuteOfDay: number,
+  window: TradingWindow,
+): boolean {
+  return minuteOfDay >= window.openMin && minuteOfDay < window.closeMin;
 }
 
 /** 900 -> "15:00". Display only; the engine never reads this back. */
@@ -77,24 +125,32 @@ export function formatMinute(minuteOfDay: number): string {
 // ---------------------------------------------------------------- parts of day
 
 /**
- * The trading day in three equal blocks.
+ * The clock day in three blocks: before 14:00, before 18:00, and after.
  *
  * "The same part of the day" is rung three of the disruption ladder, and the
- * documentation never defines it. Three four-hour blocks fall straight out of
- * DAY_START_MIN and DAY_END_MIN rather than inventing new boundaries, and they
- * are the version a customer can be told without explanation: a moved booking
- * is still their morning.
+ * documentation never defines it. These are the version a customer can be
+ * told without explanation: a moved booking is still their morning.
+ *
+ * FIXED CLOCK TIMES, not thirds of the branch's hours. They are exactly the
+ * three four-hour blocks the old fixed 10:00-22:00 day produced, so nothing
+ * moved when the day stopped being fixed. And they stay put when a branch's
+ * hours change: thirds of the window would make "evening" start at a
+ * different time on a late Thursday, and a customer moved "within their
+ * evening" would not recognise it.
  *
  * ONE definition, here, because a second one in the ladder would drift.
  */
 export type PartOfDay = 'morning' | 'afternoon' | 'evening';
 
-/** (1320 - 600) / 3 = 240. Four hours each. */
-export const PART_OF_DAY_MIN = (DAY_END_MIN - DAY_START_MIN) / 3;
+/** Afternoon starts here. 840 = 14:00. */
+export const AFTERNOON_FROM_MIN = 840;
+
+/** Evening starts here. 1080 = 18:00. */
+export const EVENING_FROM_MIN = 1080;
 
 export function partOfDay(minuteOfDay: number): PartOfDay {
-  if (minuteOfDay < DAY_START_MIN + PART_OF_DAY_MIN) return 'morning';
-  if (minuteOfDay < DAY_START_MIN + 2 * PART_OF_DAY_MIN) return 'afternoon';
+  if (minuteOfDay < AFTERNOON_FROM_MIN) return 'morning';
+  if (minuteOfDay < EVENING_FROM_MIN) return 'afternoon';
   return 'evening';
 }
 

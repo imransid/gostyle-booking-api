@@ -10,6 +10,7 @@ import {
   type MobileContractError,
 } from './mobile-booking.error';
 import type { Service } from '@domain/availability/feasible';
+import { DEFAULT_TRADING_WINDOW } from '@domain/availability/grid';
 import type { MobileGroupConfirmInput } from '@infrastructure/persistence/mobile-group-confirm.repository';
 import type { CatalogueProduct } from '@application/ports/products-directory.port';
 
@@ -170,6 +171,7 @@ function harness(
         ids.flatMap((id) => (CATALOGUE.has(id) ? [CATALOGUE.get(id)!] : [])),
       ),
     ),
+    loadTradingWindow: vi.fn(() => Promise.resolve(DEFAULT_TRADING_WINDOW)),
   };
   const productCatalogue = {
     enabled: () => over.productsOn ?? false,

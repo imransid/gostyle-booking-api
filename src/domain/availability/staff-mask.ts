@@ -1,5 +1,5 @@
 import { Mask, NONE, rangeMask } from './mask';
-import { SLOT_MIN, PROCESSING_GUARD_MIN, toSlot } from './grid';
+import { GRID_START_MIN, SLOT_MIN, PROCESSING_GUARD_MIN, toSlot } from './grid';
 
 /**
  * Setup time before a job and teardown time after it. Real reservations on
@@ -81,7 +81,10 @@ function slotsFor(minutes: number): number {
  * safe direction. On grid-aligned data the two agree exactly.
  */
 function toSlotCeil(minuteOfDay: number): number {
-  return Math.ceil((minuteOfDay - 600) / SLOT_MIN);
+  // GRID_START_MIN, not a literal: this was a hard-coded 600, the old 10:00
+  // origin, and it would have put every blocked region 120 slots late the
+  // moment the grid moved -- the same drift capacity.ts already paid for.
+  return Math.ceil((minuteOfDay - GRID_START_MIN) / SLOT_MIN);
 }
 
 /**

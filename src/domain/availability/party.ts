@@ -7,7 +7,7 @@
  * answer for the other three.
  */
 
-import { SLOT_MIN } from './grid';
+import { GRID_END_MIN, GRID_START_MIN, SLOT_MIN } from './grid';
 
 export type GroupMode = 'arrive_together' | 'finish_together';
 
@@ -85,13 +85,17 @@ export interface PartyOptions {
 export const DEFAULT_FINISH_WINDOW_MIN = 0;
 
 /**
- * The whole trading day: 1320 - 600. In other words, no practical cap.
+ * The whole grid: 1440 - 0. In other words, no practical cap.
  *
  * A real number rather than Infinity, because it is a duration in the same
  * units as everything else here and it prints in an explanation. The point of
  * the default is that no party that planned yesterday fails today.
+ *
+ * It was 720, the length of the old fixed 10:00-22:00 day, and so "no cap"
+ * only while no branch traded longer. The grid is the longest any branch's
+ * day can be, so the default cannot become a real cap by accident again.
  */
-export const DEFAULT_MAX_STAGGER_MIN = 720;
+export const DEFAULT_MAX_STAGGER_MIN = GRID_END_MIN - GRID_START_MIN;
 
 export interface Lane {
   readonly participantId: string;

@@ -5,7 +5,7 @@ import {
 } from '@application/ports/staff-directory.port';
 import { TenantContext } from '../tenancy/tenant-context';
 import type { Professional } from '@domain/availability/feasible';
-import { DAY_END_MIN, DAY_START_MIN } from '@domain/availability/grid';
+import type { TradingWindow } from '@domain/availability/grid';
 import { parseOffDays, toProfessional } from '@domain/availability/roster';
 
 /**
@@ -40,9 +40,6 @@ import { parseOffDays, toProfessional } from '@domain/availability/roster';
 export const STAFF_FROM_PLATFORM = (): boolean =>
   (process.env.STAFF_FROM_PLATFORM ?? '').trim().toLowerCase() === 'true';
 
-/** The branch's trading window, for a stylist who publishes no hours. */
-const BRANCH_WINDOW = { startMin: DAY_START_MIN, endMin: DAY_END_MIN };
-
 @Injectable()
 export class PlatformStaffRoster {
   private static readonly log = new Logger(PlatformStaffRoster.name);
@@ -67,7 +64,13 @@ export class PlatformStaffRoster {
    * means "platform answered and had nothing" OR "platform is down", and the
    * log line is the only place those two are distinguishable.
    */
-  async resolve(branchId: string, tradingDay: string): Promise<Professional[]> {
+  async resolve(
+    branchId: string,
+    tradingDay: string,
+    window: TradingWindow,
+  ): Promise<Professional[]> {
+    /** The branch's hours that day, for a stylist who publishes none. */
+    const branchShift = { startMin: window.openMin, endMin: window.closeMin };
     const tenantId = this.tenants.current();
     if (tenantId === null) {
       /**
@@ -117,7 +120,7 @@ export class PlatformStaffRoster {
         );
       }
 
-      const verdict = toProfessional(s, BRANCH_WINDOW, tradingDay);
+      const verdict = toProfessional(s, branchShift, tradingDay);
       if (verdict.kind === 'inactive') {
         inactive.push(s.id);
         continue;
@@ -154,7 +157,7 @@ export class PlatformStaffRoster {
       PlatformStaffRoster.log.warn(
         `No published hours for [${defaulted.join(',')}] -- each is being ` +
           `offered across the whole branch window ` +
-          `${BRANCH_WINDOW.startMin}-${BRANCH_WINDOW.endMin}. See ask A3.`,
+          `${branchShift.startMin}-${branchShift.endMin}. See ask A3.`,
       );
     }
 

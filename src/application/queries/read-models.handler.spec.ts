@@ -5,6 +5,7 @@ import type { BookingContextReader } from '@application/ports/booking-context.po
 import type { CustomerContextReader } from '@application/ports/customer-context.port';
 import { CHIP_STATUSES } from '@application/contract/screen-view';
 import type { BookingStatus } from '@domain/booking/lifecycle';
+import { DEFAULT_TRADING_WINDOW } from '@domain/availability/grid';
 
 /**
  * HANDLER SPEC — the month strip, past the ceiling that used to cut it short.
@@ -360,6 +361,7 @@ function gridHandler() {
         staffBookings: new Map(),
         resources: [],
         occupations: [],
+        window: DEFAULT_TRADING_WINDOW,
       }),
   };
   const customers = {

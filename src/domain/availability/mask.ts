@@ -1,7 +1,7 @@
 import { SLOTS, toSlot, durationToSlots } from './grid';
 
 /**
- * A day of availability for one professional, as a 144-bit integer.
+ * A day of availability for one professional, as a 288-bit integer.
  *
  * Bit i set means "slot i is available". Asking "is this professional free
  * for a 105-minute chain starting at 15:00" becomes a handful of shifts and
@@ -68,14 +68,14 @@ export function popcount(mask: Mask): number {
 /**
  * Where a free run of at least `slots` consecutive slots BEGINS.
  *
- * Naive approach: for each of 144 slots, walk forward counting free slots.
- * That is 144 x 21 = ~3000 checks for a 105-minute chain, per professional.
+ * Naive approach: for each of 288 slots, walk forward counting free slots.
+ * That is 288 x 21 = ~6000 checks for a 105-minute chain, per professional.
  *
  * The trick: `mask & (mask >> 1)` sets bit i only when slots i AND i+1 are
  * both free. So one AND turns "runs of 1" into "runs of 2". Do it again
  * with a shift of 2 and you have runs of 4. Then 8. Then 16.
  *
- * Doubling means a 21-slot run takes 5 operations, not 3000.
+ * Doubling means a 21-slot run takes 5 operations, not 6000.
  *
  * The Math.min(step, slots - step) guard stops it overshooting: for
  * slots = 3 it does 1 then 1, never 1 then 2.
@@ -122,7 +122,7 @@ export function firstSlot(mask: Mask): number | null {
   return null;
 }
 
-/** Debug view: 144 characters of '#' and '.'. Never used in production paths. */
+/** Debug view: 288 characters of '#' and '.'. Never used in production paths. */
 export function render(mask: Mask): string {
   let out = '';
   for (let i = 0; i < SLOTS; i++) out += bitAt(mask, i) ? '#' : '.';

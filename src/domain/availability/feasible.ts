@@ -1,5 +1,11 @@
 import { Mask, NONE, ALL, bitAt } from './mask';
-import { SLOTS, DAY_END_MIN, toMin } from './grid';
+import {
+  GRID_END_MIN,
+  GRID_START_MIN,
+  SLOTS,
+  type TradingWindow,
+  toMin,
+} from './grid';
 import {
   BufferClaims,
   ProcessingBand,
@@ -96,13 +102,29 @@ export interface Channel {
 export const DESK_CHANNEL: Channel = { grainMin: 5, leadMin: 15 };
 export const ONLINE_CHANNEL: Channel = { grainMin: 15, leadMin: 60 };
 
-/** Morning, afternoon, evening, or the whole day. */
+/**
+ * The part of the day a caller asked about: morning, afternoon, evening, or
+ * the whole day. A filter on STARTS, and nothing more.
+ *
+ * Not the branch's hours. Those are FeasibilityRequest.tradingWindow, and
+ * they bound every answer whatever window is asked for.
+ */
 export interface DayWindow {
   readonly fromMin: number;
   readonly toMin: number;
 }
 
-export const WHOLE_DAY: DayWindow = { fromMin: 600, toMin: 1320 };
+/**
+ * No filter: the whole grid. The trading window still applies.
+ *
+ * This was `{ fromMin: 600, toMin: 1320 }`, a second literal copy of the
+ * trading day that the constants never reached. As the whole grid it can no
+ * longer disagree with any branch's hours, because it no longer states any.
+ */
+export const WHOLE_DAY: DayWindow = {
+  fromMin: GRID_START_MIN,
+  toMin: GRID_END_MIN,
+};
 
 export interface FeasibilityRequest {
   readonly services: readonly Service[];
@@ -113,6 +135,8 @@ export interface FeasibilityRequest {
   readonly occupations: readonly ChairOccupation[];
   readonly channel: Channel;
   readonly window: DayWindow;
+  /** The branch's hours on this date: DayContext.window. */
+  readonly tradingWindow: TradingWindow;
   /** null or undefined means "any available". */
   readonly preferredStaffId?: string | null;
   readonly isToday: boolean;
@@ -231,34 +255,45 @@ export function expandChain(services: readonly Service[]): ChainSegment[] {
 /**
  * Starts the CHANNEL is willing to offer.
  *
- * Four rules, all about the offer rather than the diary:
+ * Five rules, all about the offer rather than the diary:
  *   1. on the channel grain: 5 minutes at the desk, 15 online
  *   2. at or after the lead time, but only when the day is today
  *   3. inside the requested part of the day
- *   4. the chain still finishes before the branch closes
+ *   4. at or after the branch opens
+ *   5. the chain still finishes before the branch closes
+ *
+ * Rules 4 and 5 are the ONLY place the branch's hours enter the engine.
+ * Every start any caller is offered passes through here, so a branch that
+ * closes at 23:00 sells its last hour, and one that closes at 21:00 cannot
+ * be sold 21:30, without a second check anywhere else.
  */
 export function alignmentMask(
   channel: Channel,
   window: DayWindow,
+  tradingWindow: TradingWindow,
   durationMin: number,
   isToday: boolean,
   nowMin: number,
 ): Mask {
+  const opens = Math.max(window.fromMin, tradingWindow.openMin);
+  // A start AT closing time is out even for a chain that takes no time,
+  // which is what the old grid said by simply ending there.
+  const startsBefore = Math.min(window.toMin, tradingWindow.closeMin);
   const earliest = isToday
     ? Math.max(
-        window.fromMin,
+        opens,
         Math.ceil((nowMin + channel.leadMin) / channel.grainMin) *
           channel.grainMin,
       )
-    : window.fromMin;
+    : opens;
 
   let mask: Mask = NONE;
   for (let i = 0; i < SLOTS; i++) {
     const t = toMin(i);
     if (t % channel.grainMin !== 0) continue;
     if (t < earliest) continue;
-    if (t >= window.toMin) continue;
-    if (t + durationMin > DAY_END_MIN) continue;
+    if (t >= startsBefore) continue;
+    if (t + durationMin > tradingWindow.closeMin) continue;
     mask |= 1n << BigInt(i);
   }
   return mask;
@@ -313,6 +348,7 @@ export function feasibleSet(request: FeasibilityRequest): FeasibilityResult {
   const align = alignmentMask(
     request.channel,
     request.window,
+    request.tradingWindow,
     durationMin,
     request.isToday,
     request.nowMin,

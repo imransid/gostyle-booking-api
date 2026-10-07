@@ -36,7 +36,7 @@ import {
   WIRE_GROUP_MODES,
   type WireGroupMode,
 } from '@application/contract/wire';
-import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
+import { DEFAULT_TRADING_WINDOW } from '@domain/availability/grid';
 import { MAX_PARTY_STARTS } from '@domain/availability/party-starts';
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
@@ -104,8 +104,8 @@ export class GroupAvailabilityDto {
   // they always ran. Skipped only when the caller asks about a list instead.
   @ValidateIf((o: GroupAvailabilityDto) => o.targetMins === undefined)
   @IsInt()
-  @Min(DAY_START_MIN)
-  @Max(DAY_END_MIN - 1)
+  @Min(DEFAULT_TRADING_WINDOW.openMin)
+  @Max(DEFAULT_TRADING_WINDOW.closeMin - 1)
   targetMin!: number;
 
   @ApiPropertyOptional({
@@ -128,8 +128,8 @@ export class GroupAvailabilityDto {
   @ArrayNotEmpty()
   @ArrayMaxSize(MAX_PARTY_STARTS)
   @IsInt({ each: true })
-  @Min(DAY_START_MIN, { each: true })
-  @Max(DAY_END_MIN - 1, { each: true })
+  @Min(DEFAULT_TRADING_WINDOW.openMin, { each: true })
+  @Max(DEFAULT_TRADING_WINDOW.closeMin - 1, { each: true })
   targetMins?: number[];
 
   @ApiProperty({ enum: WIRE_GROUP_MODES })

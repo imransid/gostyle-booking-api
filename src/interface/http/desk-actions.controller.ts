@@ -24,7 +24,7 @@ import {
   Min,
 } from 'class-validator';
 import { DeskActionsHandler } from '@application/commands/desk-actions.handler';
-import { DAY_END_MIN, DAY_START_MIN } from '@domain/availability/grid';
+import { DEFAULT_TRADING_WINDOW } from '@domain/availability/grid';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
 import { DeskOnly } from '../../auth/desk-only.decorator';
@@ -50,8 +50,8 @@ export class MoveBookingDto {
   @ApiPropertyOptional({ example: 960, description: 'Minutes from midnight.' })
   @IsOptional()
   @IsInt()
-  @Min(DAY_START_MIN)
-  @Max(DAY_END_MIN)
+  @Min(DEFAULT_TRADING_WINDOW.openMin)
+  @Max(DEFAULT_TRADING_WINDOW.closeMin)
   startMin?: number;
 
   @ApiPropertyOptional({
@@ -180,5 +180,5 @@ function startMinuteOf(dto: MoveBookingDto): number {
     const [h, m] = dto.startTime.split(':').map(Number);
     return (h ?? 0) * 60 + (m ?? 0);
   }
-  return DAY_START_MIN;
+  return DEFAULT_TRADING_WINDOW.openMin;
 }

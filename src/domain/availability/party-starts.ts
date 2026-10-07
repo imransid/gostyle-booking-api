@@ -15,7 +15,7 @@
  * single answer (CLAUDE.md 4).
  */
 
-import { DAY_END_MIN, DAY_START_MIN } from './grid';
+import type { TradingWindow } from './grid';
 import {
   planParty,
   type GroupMode,
@@ -28,8 +28,10 @@ import {
 /**
  * The most start times one request may ask about.
  *
- * TWENTY-FOUR IS THE ENGINE'S WHOLE DAY AT HALF-HOUR STEPS: 10:00, 10:30, ...
- * 21:30. That is the day view the app draws, so one screen is one call.
+ * TWENTY-FOUR IS THE DEFAULT TRADING DAY AT HALF-HOUR STEPS: 10:00, 10:30,
+ * ... 21:30. That is the day view the app draws, so one screen is one call.
+ * A branch that trades longer has more half hours than one call may ask
+ * about, and that is the denser-grid case below: two calls.
  *
  * Not more, because the planner is cheap for an ordinary party and is NOT
  * cheap for every party. Measured on this machine: forty-eight starts for a
@@ -43,10 +45,10 @@ import {
  */
 export const MAX_PARTY_STARTS = 24;
 
-/** The half-hour starts of the engine's day, which the cap is sized to. */
-export function halfHourStarts(): number[] {
+/** The half-hour starts of a trading window. The default fills the cap. */
+export function halfHourStarts(window: TradingWindow): number[] {
   const out: number[] = [];
-  for (let m = DAY_START_MIN; m < DAY_END_MIN; m += 30) out.push(m);
+  for (let m = window.openMin; m < window.closeMin; m += 30) out.push(m);
   return out;
 }
 

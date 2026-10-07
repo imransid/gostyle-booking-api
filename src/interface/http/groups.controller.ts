@@ -41,7 +41,7 @@ import { Param } from '@nestjs/common';
 import { BranchId } from './branch.decorator';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
-import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
+import { DEFAULT_TRADING_WINDOW } from '@domain/availability/grid';
 import {
   WIRE_GROUP_MODES,
   WIRE_ARRANGEMENTS,
@@ -134,8 +134,8 @@ export class GroupHoldDto {
       'finish-together the lanes stagger backwards to END together.',
   })
   @IsInt()
-  @Min(DAY_START_MIN)
-  @Max(DAY_END_MIN)
+  @Min(DEFAULT_TRADING_WINDOW.openMin)
+  @Max(DEFAULT_TRADING_WINDOW.closeMin)
   targetMin!: number;
 
   @ApiProperty({

@@ -31,7 +31,7 @@ import {
   PlaceHoldHandler,
   type HoldView,
 } from '@application/commands/place-hold.handler';
-import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
+import { DEFAULT_TRADING_WINDOW } from '@domain/availability/grid';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
 
@@ -67,8 +67,8 @@ export class PlaceHoldDto {
     description: 'Minutes from midnight. 1105 is 18:25.',
   })
   @IsInt()
-  @Min(DAY_START_MIN)
-  @Max(DAY_END_MIN)
+  @Min(DEFAULT_TRADING_WINDOW.openMin)
+  @Max(DEFAULT_TRADING_WINDOW.closeMin)
   startMin!: number;
 
   @ApiPropertyOptional({

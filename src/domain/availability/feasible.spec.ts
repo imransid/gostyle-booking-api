@@ -16,7 +16,13 @@ import {
 import { StaffBooking, BufferClaims, Shift } from './staff-mask';
 import { ResourceType, ChairOccupation } from './capacity';
 import { NONE, popcount, toSlots, bitAt } from './mask';
-import { toSlot, toMin, formatMinute } from './grid';
+import {
+  DEFAULT_TRADING_WINDOW,
+  type TradingWindow,
+  toSlot,
+  toMin,
+  formatMinute,
+} from './grid';
 
 // ---------------------------------------------------------------- the salon
 
@@ -104,6 +110,7 @@ function request(over: Partial<FeasibilityRequest> = {}): FeasibilityRequest {
     occupations: [],
     channel: DESK_CHANNEL,
     window: WHOLE_DAY,
+    tradingWindow: DEFAULT_TRADING_WINDOW,
     preferredStaffId: null,
     isToday: false,
     nowMin: 825,
@@ -211,34 +218,76 @@ describe('laying the chain out', () => {
 
 describe('what the channel is willing to offer', () => {
   it('the desk offers every 5 minutes', () => {
-    const m = alignmentMask(DESK_CHANNEL, WHOLE_DAY, 45, false, 0);
+    const m = alignmentMask(
+      DESK_CHANNEL,
+      WHOLE_DAY,
+      DEFAULT_TRADING_WINDOW,
+      45,
+      false,
+      0,
+    );
     expect(bitAt(m, toSlot(905))).toBe(true);
   });
 
   it('online offers only every 15 minutes', () => {
-    const m = alignmentMask(ONLINE_CHANNEL, WHOLE_DAY, 45, false, 0);
+    const m = alignmentMask(
+      ONLINE_CHANNEL,
+      WHOLE_DAY,
+      DEFAULT_TRADING_WINDOW,
+      45,
+      false,
+      0,
+    );
     expect(bitAt(m, toSlot(900))).toBe(true);
     expect(bitAt(m, toSlot(905))).toBe(false);
     expect(bitAt(m, toSlot(915))).toBe(true);
   });
 
   it('the chain must finish before the branch closes', () => {
-    const m = alignmentMask(DESK_CHANNEL, WHOLE_DAY, 45, false, 0);
+    const m = alignmentMask(
+      DESK_CHANNEL,
+      WHOLE_DAY,
+      DEFAULT_TRADING_WINDOW,
+      45,
+      false,
+      0,
+    );
     expect(toSlots(m).map(toMin).pop()).toBe(1275);
   });
 
   it('today, the desk lead time is 15 minutes', () => {
-    const m = alignmentMask(DESK_CHANNEL, WHOLE_DAY, 45, true, 825);
+    const m = alignmentMask(
+      DESK_CHANNEL,
+      WHOLE_DAY,
+      DEFAULT_TRADING_WINDOW,
+      45,
+      true,
+      825,
+    );
     expect(firstOffer(m)).toBe('14:00');
   });
 
   it('today, online lead time is 60 minutes and rounds up to the grain', () => {
-    const m = alignmentMask(ONLINE_CHANNEL, WHOLE_DAY, 45, true, 825);
+    const m = alignmentMask(
+      ONLINE_CHANNEL,
+      WHOLE_DAY,
+      DEFAULT_TRADING_WINDOW,
+      45,
+      true,
+      825,
+    );
     expect(firstOffer(m)).toBe('14:45');
   });
 
   it('a future day ignores the lead time entirely', () => {
-    const m = alignmentMask(DESK_CHANNEL, WHOLE_DAY, 45, false, 825);
+    const m = alignmentMask(
+      DESK_CHANNEL,
+      WHOLE_DAY,
+      DEFAULT_TRADING_WINDOW,
+      45,
+      false,
+      825,
+    );
     expect(firstOffer(m)).toBe('10:00');
   });
 
@@ -246,12 +295,88 @@ describe('what the channel is willing to offer', () => {
     const m = alignmentMask(
       DESK_CHANNEL,
       { fromMin: 840, toMin: 1020 },
+      DEFAULT_TRADING_WINDOW,
       45,
       false,
       0,
     );
     expect(firstOffer(m)).toBe('14:00');
     expect(toSlots(m).map(toMin).pop()).toBe(1015);
+  });
+});
+
+// ---------------------------------------------------------------- trading window
+
+describe("the branch's own hours", () => {
+  const LATE: TradingWindow = { openMin: 600, closeMin: 1380 };
+  const EARLY: TradingWindow = { openMin: 540, closeMin: 1260 };
+  const ALL_DAY: TradingWindow = { openMin: 0, closeMin: 1440 };
+
+  it('a branch that closes at 23:00 sells its last hour', () => {
+    const m = alignmentMask(DESK_CHANNEL, WHOLE_DAY, LATE, 45, false, 0);
+    expect(toSlots(m).map(toMin).pop()).toBe(1335);
+  });
+
+  it('a branch that opens at 09:00 sells its first hour', () => {
+    const m = alignmentMask(DESK_CHANNEL, WHOLE_DAY, EARLY, 45, false, 0);
+    expect(firstOffer(m)).toBe('09:00');
+  });
+
+  it('and never sells past its own close, even where the default would', () => {
+    const m = alignmentMask(DESK_CHANNEL, WHOLE_DAY, EARLY, 45, false, 0);
+    // A 21:00 close: the last 45-minute start is 20:15, not the default 21:15.
+    expect(toSlots(m).map(toMin).pop()).toBe(1215);
+  });
+
+  it('a branch open 00:00-24:00 sells from midnight to a chain ending at 24:00', () => {
+    const m = alignmentMask(DESK_CHANNEL, WHOLE_DAY, ALL_DAY, 45, false, 0);
+    expect(firstOffer(m)).toBe('00:00');
+    expect(toSlots(m).map(toMin).pop()).toBe(1395);
+  });
+
+  it('a part of the day cannot reach past the branch closing', () => {
+    const evening = { fromMin: 1080, toMin: 1440 };
+    const m = alignmentMask(
+      DESK_CHANNEL,
+      evening,
+      DEFAULT_TRADING_WINDOW,
+      45,
+      false,
+      0,
+    );
+    expect(firstOffer(m)).toBe('18:00');
+    expect(toSlots(m).map(toMin).pop()).toBe(1275);
+  });
+
+  it('no start at closing time, even for a chain that takes no time', () => {
+    const m = alignmentMask(
+      DESK_CHANNEL,
+      WHOLE_DAY,
+      DEFAULT_TRADING_WINDOW,
+      0,
+      false,
+      0,
+    );
+    expect(bitAt(m, toSlot(1315))).toBe(true);
+    expect(bitAt(m, toSlot(1320))).toBe(false);
+  });
+
+  it('feasibleSet sells 22:00 on a late day, to a stylist rostered that late', () => {
+    // 22:00 + 45 min + the 10-minute styling clean-up = 22:55, inside both
+    // her shift and the branch's 23:00 close. On the default day, 22:00 is
+    // closing time and nobody can start then, however late they work.
+    const nora = pro(
+      'nora',
+      'Nora L.',
+      { hair: 3 },
+      { shift: { startMin: 600, endMin: 1380 } },
+    );
+    const late = feasibleSet(
+      request({ professionals: [nora], tradingWindow: LATE }),
+    );
+    const usual = feasibleSet(request({ professionals: [nora] }));
+    expect(bitAt(late.union, toSlot(1320))).toBe(true);
+    expect(bitAt(usual.union, toSlot(1320))).toBe(false);
   });
 });
 
@@ -313,10 +438,11 @@ describe('the feasible set', () => {
   });
 
   it('no chair means no offer, however free the staff are', () => {
+    // Taken for the whole grid, so there is no chair at ANY minute.
     const allStations: ChairOccupation[] = [
-      { resourceType: 'nail', startMin: 600, endMin: 1320 },
-      { resourceType: 'nail', startMin: 600, endMin: 1320 },
-      { resourceType: 'nail', startMin: 600, endMin: 1320 },
+      { resourceType: 'nail', startMin: 0, endMin: 1440 },
+      { resourceType: 'nail', startMin: 0, endMin: 1440 },
+      { resourceType: 'nail', startMin: 0, endMin: 1440 },
     ];
     const r = feasibleSet(
       request({
@@ -326,6 +452,25 @@ describe('the feasible set', () => {
     );
     expect(r.pool).toEqual(['lina']);
     expect(r.capacityMask).toBe(NONE);
+    expect(isEmpty(r)).toBe(true);
+  });
+
+  it('chairs taken for the whole trading day leave nothing to offer', () => {
+    // The grid outside 10:00-22:00 still has free chairs. Nothing there may
+    // be sold, because the branch is shut.
+    const tradingDay: ChairOccupation[] = [
+      { resourceType: 'nail', startMin: 600, endMin: 1320 },
+      { resourceType: 'nail', startMin: 600, endMin: 1320 },
+      { resourceType: 'nail', startMin: 600, endMin: 1320 },
+    ];
+    const r = feasibleSet(
+      request({
+        services: [MANICURE],
+        occupations: tradingDay,
+      }),
+    );
+    expect(r.capacityMask).not.toBe(NONE);
+    expect(r.capacityMask & r.alignmentMask).toBe(NONE);
     expect(isEmpty(r)).toBe(true);
   });
 

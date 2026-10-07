@@ -1,9 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import {
-  DAY_START_MIN,
-  DAY_END_MIN,
+  DEFAULT_TRADING_WINDOW,
   SLOT_MIN,
-  SLOTS,
   MIN_SELLABLE_MIN,
   OFFER_SPACING_MIN,
   DAILY_BOOKING_CAP,
@@ -180,11 +178,17 @@ export class GetSettingsHandler {
         tradingDay: branchToday(),
         nowMinute: branchNowMinute(),
       },
+      // The DEFAULT window: this answers for the branch, not for one date,
+      // and is per-branch only once loadTradingWindow is. `slots` counts the
+      // window's slots, not the grid's, which is what it always meant: it
+      // was 144 when the two were the same range, and it still is.
       tradingWindow: {
-        fromMin: DAY_START_MIN,
-        toMin: DAY_END_MIN,
+        fromMin: DEFAULT_TRADING_WINDOW.openMin,
+        toMin: DEFAULT_TRADING_WINDOW.closeMin,
         slotMin: SLOT_MIN,
-        slots: SLOTS,
+        slots:
+          (DEFAULT_TRADING_WINDOW.closeMin - DEFAULT_TRADING_WINDOW.openMin) /
+          SLOT_MIN,
       },
       channels: {
         DESK: {

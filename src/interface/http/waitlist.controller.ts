@@ -25,7 +25,7 @@ import {
 import { BranchId } from './branch.decorator';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
-import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
+import { DEFAULT_TRADING_WINDOW } from '@domain/availability/grid';
 
 export class JoinWaitlistDto {
   @ApiPropertyOptional({
@@ -53,8 +53,8 @@ export class JoinWaitlistDto {
       'When they can ARRIVE, earliest. Minutes from midnight, so 840 is 14:00.',
   })
   @IsInt()
-  @Min(DAY_START_MIN)
-  @Max(DAY_END_MIN)
+  @Min(DEFAULT_TRADING_WINDOW.openMin)
+  @Max(DEFAULT_TRADING_WINDOW.closeMin)
   windowFromMin!: number;
 
   @ApiProperty({
@@ -64,8 +64,8 @@ export class JoinWaitlistDto {
       'they can arrive, not when they must be finished.',
   })
   @IsInt()
-  @Min(DAY_START_MIN)
-  @Max(DAY_END_MIN)
+  @Min(DEFAULT_TRADING_WINDOW.openMin)
+  @Max(DEFAULT_TRADING_WINDOW.closeMin)
   windowToMin!: number;
 
   @ApiPropertyOptional({

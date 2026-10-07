@@ -11,7 +11,7 @@ import {
   MIN_STRANDED_GAIN_MIN,
   type DiaryBooking,
 } from './compaction';
-import { MIN_SELLABLE_MIN } from './grid';
+import { MIN_SELLABLE_MIN, DEFAULT_TRADING_WINDOW } from './grid';
 
 const b = (
   code: string,
@@ -76,7 +76,7 @@ describe('finding slivers', () => {
 describe('the plan', () => {
   it('closes a sliver by pulling the later booking earlier', () => {
     const day = [b('A', 600, 45), b('B', 665, 45)];
-    const plan = planCompaction(day);
+    const plan = planCompaction(day, DEFAULT_TRADING_WINDOW);
     expect(plan.moves.length).toBe(1);
     expect(plan.moves[0]?.code).toBe('B');
     expect(plan.moves[0]?.toStartMin).toBe(645);
@@ -87,20 +87,23 @@ describe('the plan', () => {
     // A 10:00 booking can only go later. Moving it earlier closes the gap
     // just as well on paper and the salon is shut.
     const day = [b('A', 600, 45), b('B', 665, 45)];
-    for (const m of planCompaction(day).moves) {
+    for (const m of planCompaction(day, DEFAULT_TRADING_WINDOW).moves) {
       expect(m.toStartMin).toBeGreaterThanOrEqual(600);
     }
   });
 
   it('never proposes an end after the salon closes', () => {
     const day = [b('A', 1200, 45), b('B', 1265, 45)]; // last one ends 21:50
-    for (const m of planCompaction(day).moves) {
+    for (const m of planCompaction(day, DEFAULT_TRADING_WINDOW).moves) {
       expect(m.toStartMin + 45).toBeLessThanOrEqual(1320);
     }
   });
 
   it('reports the gain', () => {
-    const plan = planCompaction([b('A', 600, 45), b('B', 665, 45)]);
+    const plan = planCompaction(
+      [b('A', 600, 45), b('B', 665, 45)],
+      DEFAULT_TRADING_WINDOW,
+    );
     expect(plan.strandedBeforeMin).toBe(20);
     expect(plan.gainMin).toBe(20);
   });
@@ -109,7 +112,7 @@ describe('the plan', () => {
     // A four-minute gain is cosmetic shuffling, and the rule says more than
     // four, not at least four.
     const day = [b('A', 600, 45), b('B', 649, 45)]; // 4-minute gap
-    const plan = planCompaction(day);
+    const plan = planCompaction(day, DEFAULT_TRADING_WINDOW);
     expect(plan.moves).toEqual([]);
     expect(plan.strandedBeforeMin).toBe(MIN_STRANDED_GAIN_MIN);
     expect(plan.explanation).toMatch(
@@ -119,7 +122,7 @@ describe('the plan', () => {
 
   it('never moves a booking more than thirty minutes', () => {
     const day = [b('A', 600, 45), b('B', 665, 45), b('C', 900, 45)];
-    for (const m of planCompaction(day).moves) {
+    for (const m of planCompaction(day, DEFAULT_TRADING_WINDOW).moves) {
       expect(Math.abs(m.deltaMin)).toBeLessThanOrEqual(MAX_MOVE_MIN);
     }
   });
@@ -128,7 +131,7 @@ describe('the plan', () => {
     // The STEP is five minutes. Real starts are always on the grid already,
     // so a grid-aligned booking moved by a multiple of five stays on it.
     const day = [b('A', 600, 45), b('B', 665, 45)];
-    for (const m of planCompaction(day).moves) {
+    for (const m of planCompaction(day, DEFAULT_TRADING_WINDOW).moves) {
       expect(Math.abs(m.deltaMin) % 5).toBe(0);
       expect(m.toStartMin % 5).toBe(0);
     }
@@ -143,7 +146,9 @@ describe('the plan', () => {
       b('E', 800, 30),
       b('F', 850, 30),
     ];
-    expect(planCompaction(day).moves.length).toBeLessThanOrEqual(MAX_MOVES);
+    expect(
+      planCompaction(day, DEFAULT_TRADING_WINDOW).moves.length,
+    ).toBeLessThanOrEqual(MAX_MOVES);
   });
 
   it('never moves the same booking twice', () => {
@@ -153,13 +158,15 @@ describe('the plan', () => {
       b('C', 700, 30),
       b('D', 750, 30),
     ];
-    const ids = planCompaction(day).moves.map((m) => m.bookingId);
+    const ids = planCompaction(day, DEFAULT_TRADING_WINDOW).moves.map(
+      (m) => m.bookingId,
+    );
     expect(new Set(ids).size).toBe(ids.length);
   });
 
   it('never lands a booking on top of another', () => {
     const day = [b('A', 600, 45), b('B', 665, 45), b('C', 720, 45)];
-    const plan = planCompaction(day);
+    const plan = planCompaction(day, DEFAULT_TRADING_WINDOW);
     const after = day.map((x) => {
       const m = plan.moves.find((mv) => mv.bookingId === x.bookingId);
       return m === undefined
@@ -181,7 +188,10 @@ describe('the plan', () => {
   });
 
   it('leaves a clean day alone', () => {
-    const plan = planCompaction([b('A', 600, 45), b('B', 645, 45)]);
+    const plan = planCompaction(
+      [b('A', 600, 45), b('B', 645, 45)],
+      DEFAULT_TRADING_WINDOW,
+    );
     expect(plan.moves).toEqual([]);
     expect(plan.explanation).toMatch(/Nothing to compact/);
   });
@@ -194,7 +204,9 @@ describe('eligibility', () => {
       b('A', 600, 45),
       b('B', 665, 45, { ineligible: 'group_lane' }),
     ];
-    expect(planCompaction(day).moves.map((m) => m.code)).not.toContain('B');
+    expect(
+      planCompaction(day, DEFAULT_TRADING_WINDOW).moves.map((m) => m.code),
+    ).not.toContain('B');
   });
 
   it('will not move a recurring occurrence', () => {
@@ -202,7 +214,9 @@ describe('eligibility', () => {
       b('A', 600, 45),
       b('B', 665, 45, { ineligible: 'series_occurrence' }),
     ];
-    expect(planCompaction(day).moves.map((m) => m.code)).not.toContain('B');
+    expect(
+      planCompaction(day, DEFAULT_TRADING_WINDOW).moves.map((m) => m.code),
+    ).not.toContain('B');
   });
 
   it('will not move anything that is not plainly confirmed', () => {
@@ -210,7 +224,9 @@ describe('eligibility', () => {
       b('A', 600, 45),
       b('B', 665, 45, { ineligible: 'not_confirmed' }),
     ];
-    expect(planCompaction(day).moves.map((m) => m.code)).not.toContain('B');
+    expect(
+      planCompaction(day, DEFAULT_TRADING_WINDOW).moves.map((m) => m.code),
+    ).not.toContain('B');
   });
 
   it('proposes nothing at all when BOTH ends are frozen', () => {
@@ -218,7 +234,7 @@ describe('eligibility', () => {
       b('A', 600, 45, { ineligible: 'group_lane' }),
       b('B', 665, 45, { ineligible: 'series_occurrence' }),
     ];
-    expect(planCompaction(day).moves).toEqual([]);
+    expect(planCompaction(day, DEFAULT_TRADING_WINDOW).moves).toEqual([]);
   });
 
   it('still moves the eligible neighbour when one end is frozen', () => {
@@ -227,7 +243,7 @@ describe('eligibility', () => {
       b('A', 600, 45, {}),
       b('B', 665, 45, { ineligible: 'series_occurrence' }),
     ];
-    const plan = planCompaction(day);
+    const plan = planCompaction(day, DEFAULT_TRADING_WINDOW);
     expect(plan.moves.map((m) => m.code)).toEqual(['A']);
     expect(plan.moves[0]?.deltaMin).toBe(20);
     expect(plan.strandedAfterMin).toBe(0);
@@ -236,7 +252,10 @@ describe('eligibility', () => {
 
 describe('the note the desk reads out', () => {
   it('records the original and the new time', () => {
-    const plan = planCompaction([b('A', 600, 45), b('B', 665, 45)]);
+    const plan = planCompaction(
+      [b('A', 600, 45), b('B', 665, 45)],
+      DEFAULT_TRADING_WINDOW,
+    );
     expect(plan.moves[0]?.note).toMatch(/11:05 to 10:45/);
     expect(plan.moves[0]?.note).toMatch(/stranded minutes/);
   });
@@ -251,7 +270,7 @@ describe('a realistic afternoon', () => {
       b('C', 965, 45), // 16:05-16:50, 20 stranded
     ];
     expect(strandedMinutes(day)).toBe(35);
-    const plan = planCompaction(day);
+    const plan = planCompaction(day, DEFAULT_TRADING_WINDOW);
     expect(plan.strandedAfterMin).toBe(0);
     expect(plan.moves.length).toBeLessThanOrEqual(2);
     expect(plan.explanation).toMatch(
@@ -306,8 +325,8 @@ describe('a booking already moved too often', () => {
   });
 
   it('keeps it out of the plan entirely', () => {
-    const before = planCompaction(day(0));
-    const after = planCompaction(day(MAX_PRIOR_MOVES));
+    const before = planCompaction(day(0), DEFAULT_TRADING_WINDOW);
+    const after = planCompaction(day(MAX_PRIOR_MOVES), DEFAULT_TRADING_WINDOW);
     expect(before.moves.length).toBeGreaterThan(0);
     expect(after.moves.map((m) => m.bookingId)).not.toContain('b');
   });

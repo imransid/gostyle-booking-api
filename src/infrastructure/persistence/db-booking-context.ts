@@ -6,6 +6,10 @@ import type {
 import type { Professional, Service } from '@domain/availability/feasible';
 import type { StaffBooking } from '@domain/availability/staff-mask';
 import type { ChairOccupation } from '@domain/availability/capacity';
+import {
+  DEFAULT_TRADING_WINDOW,
+  type TradingWindow,
+} from '@domain/availability/grid';
 import { FixtureBookingContext } from '../fixtures/fixture-booking-context';
 import { PrismaService } from './prisma.service';
 import { toUuid } from './hold.repository';
@@ -119,9 +123,15 @@ export class DbBookingContext implements BookingContextReader {
 
   async loadDay(branchId: string, tradingDay: string): Promise<DayContext> {
     const base = await this.fixture.loadDay(branchId, tradingDay);
-    if (base.closureReason !== undefined) return base;
+    const window = await this.loadTradingWindow(branchId, tradingDay);
+    if (base.closureReason !== undefined) return { ...base, window };
 
-    const professionals = await this.rosterFor(branchId, tradingDay, base);
+    const professionals = await this.rosterFor(
+      branchId,
+      tradingDay,
+      window,
+      base,
+    );
 
     const day = new Date(`${tradingDay}T00:00:00Z`);
     const branch = toUuid(branchId);
@@ -204,7 +214,26 @@ export class DbBookingContext implements BookingContextReader {
       resources: base.resources,
       staffBookings,
       occupations,
+      window,
     };
+  }
+
+  /**
+   * The default hours for every branch, for now.
+   *
+   * Per-branch hours come from platform, which already owns them (the live
+   * storefront's weekly grid, its dated exceptions, and a manual closure).
+   * When that arrives it arrives HERE, and loadDay and every caller of this
+   * method follow without another change. Until then, and whenever platform
+   * cannot answer, the default is the answer: it is what every branch traded
+   * before hours were per-branch, so falling back to it is never worse than
+   * that.
+   */
+  loadTradingWindow(
+    _branchId: string,
+    _tradingDay: string,
+  ): Promise<TradingWindow> {
+    return Promise.resolve(DEFAULT_TRADING_WINDOW);
   }
 
   /**
@@ -226,11 +255,16 @@ export class DbBookingContext implements BookingContextReader {
   private async rosterFor(
     branchId: string,
     tradingDay: string,
+    window: TradingWindow,
     base: DayContext,
   ): Promise<readonly Professional[]> {
     if (!this.roster.enabled()) return base.professionals;
 
-    const fromPlatform = await this.roster.resolve(branchId, tradingDay);
+    const fromPlatform = await this.roster.resolve(
+      branchId,
+      tradingDay,
+      window,
+    );
     if (fromPlatform.length > 0) return fromPlatform;
 
     DbBookingContext.log.warn(

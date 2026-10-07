@@ -18,8 +18,6 @@ import { toSlots, popcount } from '@domain/availability/mask';
 import {
   toMin,
   formatMinute,
-  DAY_START_MIN,
-  DAY_END_MIN,
   DAILY_BOOKING_CAP,
 } from '@domain/availability/grid';
 import type { ChairOccupation } from '@domain/availability/capacity';
@@ -201,6 +199,7 @@ export class GetAvailabilityHandler {
       occupations: day.occupations,
       channel,
       window,
+      tradingWindow: day.window,
       preferredStaffId: query.preferredStaffId,
       isToday,
       nowMin,
@@ -365,6 +364,7 @@ export class GetAvailabilityHandler {
           occupations,
           channel: ctx.channel,
           window: ctx.window,
+          tradingWindow: day.window,
           preferredStaffId: null,
           isToday: ctx.isToday,
           nowMin: ctx.nowMin,
@@ -425,5 +425,3 @@ export class GetCatalogueHandler {
     }));
   }
 }
-
-export const DEFAULT_WINDOW = { fromMin: DAY_START_MIN, toMin: DAY_END_MIN };

@@ -18,9 +18,8 @@
 import {
   MIN_SELLABLE_MIN,
   SLOT_MIN,
-  DAY_START_MIN,
-  DAY_END_MIN,
   formatMinute,
+  type TradingWindow,
 } from './grid';
 
 /** At most half an hour, in five-minute steps. */
@@ -172,6 +171,7 @@ export function strandedMinutes(bookings: readonly DiaryBooking[]): number {
  */
 export function planCompaction(
   bookings: readonly DiaryBooking[],
+  window: TradingWindow,
 ): CompactionPlan {
   const before = strandedMinutes(bookings);
 
@@ -180,7 +180,7 @@ export function planCompaction(
   const alreadyMoved = new Set<string>();
 
   while (moves.length < MAX_MOVES) {
-    const best = bestMove(working, alreadyMoved);
+    const best = bestMove(working, alreadyMoved, window);
     if (best === null) break;
 
     moves.push(best);
@@ -213,6 +213,7 @@ export function planCompaction(
 function bestMove(
   bookings: readonly DiaryBooking[],
   alreadyMoved: ReadonlySet<string>,
+  window: TradingWindow,
 ): ProposedMove | null {
   const baseline = strandedMinutes(bookings);
   let best: ProposedMove | null = null;
@@ -247,12 +248,12 @@ function bestMove(
         const delta = sign * step;
         const candidate = shift(booking, delta);
 
-        // INSIDE THE TRADING DAY. Without this the planner happily proposed
-        // 09:55 for a 10:00 booking, because moving it earlier closed the
-        // gap and nothing said the salon was shut. A move out of the day is
-        // not a smaller move, it is a wrong one.
-        if (candidate.startMin < DAY_START_MIN) continue;
-        if (candidate.endMin > DAY_END_MIN) continue;
+        // INSIDE THE BRANCH'S HOURS. Without this the planner happily
+        // proposed 09:55 for a 10:00 booking, because moving it earlier
+        // closed the gap and nothing said the salon was shut. A move out of
+        // the day is not a smaller move, it is a wrong one.
+        if (candidate.startMin < window.openMin) continue;
+        if (candidate.endMin > window.closeMin) continue;
         if (overlapsAnything(bookings, candidate)) continue;
 
         const gain = baseline - strandedMinutes(replace(bookings, candidate));

@@ -15,6 +15,7 @@ import {
   expandChain,
   DESK_CHANNEL,
   ONLINE_CHANNEL,
+  WHOLE_DAY,
   type Channel,
 } from '@domain/availability/feasible';
 import { bitAt, type Mask } from '@domain/availability/mask';
@@ -151,7 +152,11 @@ export class PlaceHoldHandler {
       resources: day.resources,
       occupations: day.occupations,
       channel,
-      window: { fromMin: 600, toMin: 1320 },
+      // WHOLE_DAY, not a literal 600-1320: that was a second copy of the
+      // trading day. A hold asks about one start, so it filters nothing by
+      // part of day; the branch's hours are tradingWindow's to apply.
+      window: WHOLE_DAY,
+      tradingWindow: day.window,
       preferredStaffId: cmd.preferredStaffId,
       isToday: false,
       nowMin: cmd.nowOverrideMin ?? 0,

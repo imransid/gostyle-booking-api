@@ -29,7 +29,7 @@ import {
 import { ResourceIdPipe } from './resource-id.pipe';
 import { DeskOnly } from '../../auth/desk-only.decorator';
 import { PatternDto, EndDto, toPattern, toEnd } from './series.controller';
-import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
+import { DEFAULT_TRADING_WINDOW } from '@domain/availability/grid';
 import { SERIES_HORIZON_DAYS } from '@domain/booking/recurrence';
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
@@ -65,8 +65,8 @@ export class SeriesPreviewDto {
 
   @ApiProperty({ example: 1080 })
   @IsInt()
-  @Min(DAY_START_MIN)
-  @Max(DAY_END_MIN - 1)
+  @Min(DEFAULT_TRADING_WINDOW.openMin)
+  @Max(DEFAULT_TRADING_WINDOW.closeMin - 1)
   startMin!: number;
 
   @ApiProperty({ type: PatternDto })

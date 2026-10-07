@@ -343,6 +343,7 @@ export class RosterChangeHandler {
       occupations: day.occupations,
       channel: DESK_CHANNEL,
       window: WHOLE_DAY,
+      tradingWindow: day.window,
       preferredStaffId: null,
       isToday: false,
       nowMin: 0,

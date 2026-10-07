@@ -226,6 +226,7 @@ export class MaterialiseSeriesHandler {
       occupations: day.occupations,
       channel: DESK_CHANNEL,
       window: WHOLE_DAY,
+      tradingWindow: day.window,
       // The engine is asked about the WHOLE day, not just the wanted minute.
       // Rungs three and four need the rest of the day to choose from, and
       // asking twice would be two answers that can disagree.

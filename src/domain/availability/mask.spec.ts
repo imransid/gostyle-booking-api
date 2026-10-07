@@ -18,12 +18,13 @@ import {
 } from './mask';
 import {
   SLOTS,
-  DAY_START_MIN,
-  DAY_END_MIN,
+  GRID_START_MIN,
+  GRID_END_MIN,
+  DEFAULT_TRADING_WINDOW,
   toSlot,
   toMin,
   durationToSlots,
-  isInsideDay,
+  isInsideWindow,
   formatMinute,
 } from './grid';
 
@@ -65,16 +66,17 @@ function sameAsOracle(m: Mask, o: Oracle): boolean {
 }
 
 describe('grid: minutes and slots', () => {
-  it('the trading day is exactly 144 slots', () => {
-    expect(SLOTS).toBe(144);
-    expect(DAY_START_MIN).toBe(600);
-    expect(DAY_END_MIN).toBe(1320);
+  it('the grid is the whole clock day, exactly 288 slots', () => {
+    expect(SLOTS).toBe(288);
+    expect(GRID_START_MIN).toBe(0);
+    expect(GRID_END_MIN).toBe(1440);
   });
 
-  it('10:00 is slot 0, 15:00 is slot 60, 21:55 is slot 143', () => {
-    expect(toSlot(600)).toBe(0);
-    expect(toSlot(900)).toBe(60);
-    expect(toSlot(1315)).toBe(143);
+  it('00:00 is slot 0, 10:00 is slot 120, 15:00 is slot 180, 23:55 is slot 287', () => {
+    expect(toSlot(0)).toBe(0);
+    expect(toSlot(600)).toBe(120);
+    expect(toSlot(900)).toBe(180);
+    expect(toSlot(1435)).toBe(287);
   });
 
   it('round-trips', () => {
@@ -82,7 +84,11 @@ describe('grid: minutes and slots', () => {
   });
 
   it('Dana at 15:00 renders as 15:00', () => {
-    expect(formatMinute(toMin(60))).toBe('15:00');
+    expect(formatMinute(toMin(180))).toBe('15:00');
+  });
+
+  it('the default trading window is still 10:00-22:00', () => {
+    expect(DEFAULT_TRADING_WINDOW).toEqual({ openMin: 600, closeMin: 1320 });
   });
 
   it('a 105-minute colour is 21 slots', () => {
@@ -93,11 +99,19 @@ describe('grid: minutes and slots', () => {
     expect(durationToSlots(23)).toBe(5);
   });
 
-  it('knows what falls outside the trading day', () => {
-    expect(isInsideDay(599)).toBe(false);
-    expect(isInsideDay(600)).toBe(true);
-    expect(isInsideDay(1319)).toBe(true);
-    expect(isInsideDay(1320)).toBe(false);
+  it('knows what falls outside the trading window', () => {
+    const w = DEFAULT_TRADING_WINDOW;
+    expect(isInsideWindow(599, w)).toBe(false);
+    expect(isInsideWindow(600, w)).toBe(true);
+    expect(isInsideWindow(1319, w)).toBe(true);
+    expect(isInsideWindow(1320, w)).toBe(false);
+  });
+
+  it('a window open all day takes every minute of the grid', () => {
+    const w = { openMin: GRID_START_MIN, closeMin: GRID_END_MIN };
+    expect(isInsideWindow(0, w)).toBe(true);
+    expect(isInsideWindow(1439, w)).toBe(true);
+    expect(isInsideWindow(1440, w)).toBe(false);
   });
 });
 
@@ -107,8 +121,8 @@ describe('mask: single bits', () => {
     expect(popcount(NONE)).toBe(0);
   });
 
-  it('ALL does not spill past slot 143', () => {
-    expect(bitAt(ALL, 143)).toBe(true);
+  it('ALL does not spill past slot 287', () => {
+    expect(bitAt(ALL, 287)).toBe(true);
     expect(ALL >> BigInt(SLOTS)).toBe(0n);
   });
 
@@ -120,8 +134,8 @@ describe('mask: single bits', () => {
 
   it('ignores slots outside the day instead of corrupting the mask', () => {
     expect(setBit(NONE, -1)).toBe(NONE);
-    expect(setBit(NONE, 144)).toBe(NONE);
-    expect(bitAt(ALL, 144)).toBe(false);
+    expect(setBit(NONE, 288)).toBe(NONE);
+    expect(bitAt(ALL, 288)).toBe(false);
   });
 });
 
@@ -132,12 +146,12 @@ describe('mask: rangeMask', () => {
     expect(first & second).toBe(NONE);
   });
 
-  it('Dana 15:00 to 16:45 is slots 60 to 80', () => {
+  it('Dana 15:00 to 16:45 is slots 180 to 200', () => {
     const m = rangeMaskMinutes(900, 1005);
     expect(popcount(m)).toBe(21);
-    expect(bitAt(m, 60)).toBe(true);
-    expect(bitAt(m, 80)).toBe(true);
-    expect(bitAt(m, 81)).toBe(false);
+    expect(bitAt(m, 180)).toBe(true);
+    expect(bitAt(m, 200)).toBe(true);
+    expect(bitAt(m, 201)).toBe(false);
   });
 
   it('clamps instead of throwing', () => {
@@ -182,8 +196,8 @@ describe('mask: runsAtLeast, the doubling trick', () => {
   });
 
   it('a run cannot start where it would fall off the end of the day', () => {
-    const m = rangeMask(140, SLOTS);
-    expect(toSlots(runsAtLeast(m, 4))).toEqual([140]);
+    const m = rangeMask(SLOTS - 4, SLOTS);
+    expect(toSlots(runsAtLeast(m, 4))).toEqual([SLOTS - 4]);
     expect(runsAtLeast(m, 5)).toBe(NONE);
   });
 
@@ -282,13 +296,13 @@ describe('mask: composing an answer, the way the engine will', () => {
   });
 
   it('firstSlot finds the EARLIEST offer', () => {
-    expect(firstSlot(fromSlots([80, 60, 100]))).toBe(60);
-    expect(toMin(firstSlot(fromSlots([80, 60, 100])) ?? -1)).toBe(900);
+    expect(firstSlot(fromSlots([200, 180, 220]))).toBe(180);
+    expect(toMin(firstSlot(fromSlots([200, 180, 220])) ?? -1)).toBe(900);
   });
 });
 
 describe('mask: render', () => {
-  it('draws 144 characters', () => {
+  it('draws 288 characters', () => {
     expect(render(ALL)).toHaveLength(SLOTS);
     expect(render(NONE)).toBe('.'.repeat(SLOTS));
     expect(render(rangeMask(0, 3)).slice(0, 5)).toBe('###..');

@@ -34,7 +34,7 @@ import {
   type WalkInQueueView,
 } from '@application/commands/walk-in.handler';
 import { Transform } from 'class-transformer';
-import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
+import { DEFAULT_TRADING_WINDOW } from '@domain/availability/grid';
 import { branchNowMinute } from '@infrastructure/persistence/hold.repository';
 import { BranchId } from './branch.decorator';
 import { DeskOnly } from '../../auth/desk-only.decorator';
@@ -78,8 +78,8 @@ export class JoinWalkInDto {
 
   @ApiProperty({ example: 840, description: 'Minute of day they arrived.' })
   @IsInt()
-  @Min(DAY_START_MIN)
-  @Max(DAY_END_MIN - 1)
+  @Min(DEFAULT_TRADING_WINDOW.openMin)
+  @Max(DEFAULT_TRADING_WINDOW.closeMin - 1)
   joinedMin!: number;
 }
 
@@ -116,15 +116,15 @@ export class WalkInQueueQuery {
   )
   @IsInt()
   @Min(0)
-  @Max(DAY_END_MIN)
+  @Max(DEFAULT_TRADING_WINDOW.closeMin)
   nowMin?: number;
 }
 
 export class SeatWalkInDto {
   @ApiProperty({ example: 900 })
   @IsInt()
-  @Min(DAY_START_MIN)
-  @Max(DAY_END_MIN - 1)
+  @Min(DEFAULT_TRADING_WINDOW.openMin)
+  @Max(DEFAULT_TRADING_WINDOW.closeMin - 1)
   startMin!: number;
 
   @ApiProperty({ example: 'maya' })

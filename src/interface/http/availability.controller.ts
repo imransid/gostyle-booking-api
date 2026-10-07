@@ -28,7 +28,7 @@ import {
   type AvailabilityView,
   type CatalogueItemView,
 } from '@application/queries/get-availability.handler';
-import { DAY_START_MIN, DAY_END_MIN } from '@domain/availability/grid';
+import { DEFAULT_TRADING_WINDOW } from '@domain/availability/grid';
 import {
   AvailabilityResponseDto,
   ServiceSummaryDto,
@@ -101,29 +101,29 @@ export class AvailabilityQueryDto {
 
   @ApiPropertyOptional({
     example: 600,
-    minimum: DAY_START_MIN,
-    maximum: DAY_END_MIN,
+    minimum: DEFAULT_TRADING_WINDOW.openMin,
+    maximum: DEFAULT_TRADING_WINDOW.closeMin,
     description: 'Window start in minutes from midnight. 840 is 14:00.',
   })
   @IsOptional()
   @Transform(({ value }: { value: unknown }): number => Number(value))
   @IsInt()
-  @Min(DAY_START_MIN)
-  @Max(DAY_END_MIN)
-  from: number = DAY_START_MIN;
+  @Min(DEFAULT_TRADING_WINDOW.openMin)
+  @Max(DEFAULT_TRADING_WINDOW.closeMin)
+  from: number = DEFAULT_TRADING_WINDOW.openMin;
 
   @ApiPropertyOptional({
     example: 1320,
-    minimum: DAY_START_MIN,
-    maximum: DAY_END_MIN,
+    minimum: DEFAULT_TRADING_WINDOW.openMin,
+    maximum: DEFAULT_TRADING_WINDOW.closeMin,
     description: 'Window end in minutes from midnight. 1020 is 17:00.',
   })
   @IsOptional()
   @Transform(({ value }: { value: unknown }): number => Number(value))
   @IsInt()
-  @Min(DAY_START_MIN)
-  @Max(DAY_END_MIN)
-  to: number = DAY_END_MIN;
+  @Min(DEFAULT_TRADING_WINDOW.openMin)
+  @Max(DEFAULT_TRADING_WINDOW.closeMin)
+  to: number = DEFAULT_TRADING_WINDOW.closeMin;
 
   @ApiPropertyOptional({
     example: 825,
