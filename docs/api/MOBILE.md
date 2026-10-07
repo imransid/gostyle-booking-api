@@ -2887,7 +2887,7 @@ Add somebody to the walk-in queue. Package ids in serviceIds are expanded to pla
 | `customerId` | string | no | @IsOptional() @IsString(). EXACTLY ONE of customerId / guestName must be present — that rule lives ONLY in the database (CHECK walk_in_is_customer_or_guest: num_nonnulls(customer_id, guest_name) = 1, migration 20260828130134_walk_in_queue), not in the DTO and... |
 | `guestName` | string | no | @IsOptional() @IsString(). See customerId — exactly one of the two. Stored raw (no toUuid, no length limit, TEXT column) and echoed back as the queue row's `label`. |
 | `serviceIds` | string[] | yes | @IsArray() @ArrayNotEmpty() @IsString({ each: true }). MAY CONTAIN PACKAGE IDS: resolveSelection(cmd.serviceIds, PACKAGES, priceOf) expands them in WalkInHandler.join before any catalogue lookup or write. |
-| `joinedMin` | integer | yes | @IsInt() @Min(DEFAULT_TRADING_WINDOW.openMin) @Max(DEFAULT_TRADING_WINDOW.closeMin - 1) = @Min(600) @Max(1319). The ceiling is 1319, one LOWER than the waitlist window fields' 1320. It matches the DB CHECK walk_in_joined_inside_trading_day (joined_min >= 600 AND joined_min < 1320) exactly. |
+| `joinedMin` | integer | yes | @IsInt() @Min(DEFAULT_TRADING_WINDOW.openMin) @Max(DEFAULT_TRADING_WINDOW.closeMin - 1) = @Min(600) @Max(1319). The ceiling is 1319, one LOWER than the waitlist window fields' 1320. The DB CHECK walk_in_joined_inside_clock_day is wider (joined_min >= 0 AND joined_min < 1440) since hours became per branch; the 600..1319 bound is this validator's. |
 
 **Response**
 

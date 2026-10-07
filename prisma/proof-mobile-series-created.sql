@@ -112,9 +112,12 @@ UPDATE booking_series SET service_ids = '{}' WHERE id = :sid;
 ROLLBACK TO SAVEPOINT t3;
 
 \echo ''
-\echo '=== TEST 4: a session at 09:00. MUST FAIL (occurrence_start_inside_trading_day) ==='
+\echo '=== TEST 4: a session at 24:00. MUST FAIL (occurrence_start_inside_clock_day) ==='
+-- Was "a session at 09:00": the CHECK pinned 10:00-22:00 until hours became
+-- per branch (20261007120000). 09:00 is a legal start for a branch that
+-- opens then; the database now refuses only a minute outside the clock day.
 SAVEPOINT t4;
-UPDATE series_occurrence SET planned_start_min = 540 WHERE series_id = :sid;
+UPDATE series_occurrence SET planned_start_min = 1440 WHERE series_id = :sid;
 ROLLBACK TO SAVEPOINT t4;
 
 \echo ''
