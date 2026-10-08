@@ -34,11 +34,7 @@ import { checkInTiming } from './lifecycle';
  * check-in-request.repository.ts.
  */
 export type CheckInRequestState =
-  | 'waiting'
-  | 'approved'
-  | 'rejected'
-  | 'expired'
-  | 'closed';
+  'waiting' | 'approved' | 'rejected' | 'expired' | 'closed';
 
 export const CHECK_IN_REQUEST_STATES: readonly CheckInRequestState[] = [
   'waiting',

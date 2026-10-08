@@ -86,12 +86,14 @@ describe('raiseVerdict: when a customer may say "I am here"', () => {
   });
 
   it('says not confirmed before anything about an earlier request', () => {
-    expect(
-      raise({ bookingStatus: 'checked_in', latest: 'waiting' }),
-    ).toEqual({ kind: 'refused', why: 'not_confirmed' });
-    expect(
-      raise({ bookingStatus: 'no_show', latest: 'rejected' }),
-    ).toEqual({ kind: 'refused', why: 'not_confirmed' });
+    expect(raise({ bookingStatus: 'checked_in', latest: 'waiting' })).toEqual({
+      kind: 'refused',
+      why: 'not_confirmed',
+    });
+    expect(raise({ bookingStatus: 'no_show', latest: 'rejected' })).toEqual({
+      kind: 'refused',
+      why: 'not_confirmed',
+    });
   });
 
   it.each(['approved', 'expired', 'closed'] as const)(
