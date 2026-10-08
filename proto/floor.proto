@@ -1,0 +1,44 @@
+syntax = "proto3";
+package gostyle.floor.v1;
+
+// Resolves the QR card on a salon chair, for booking-api's self check-in.
+//
+// KEYED, unlike the other directories. Every call must carry the gRPC
+// metadata `x-internal-key` set to PLATFORM_INTERNAL_KEY, or it is refused
+// UNAUTHENTICATED. When the key is unset on this side, every call is refused.
+//
+// EVERY CALL RECORDS ONE SCAN of the card, exactly like the public scan page.
+// Call it once per real scan, with a deadline and NO retry: a retried call is
+// a false scan in the salon's registry.
+service ChairDirectory {
+  rpc ResolveChairQr (ResolveChairQrRequest) returns (ResolveChairQrResponse);
+}
+
+message ResolveChairQrRequest {
+  string token = 1;      // required: the raw token off the card
+  string user_agent = 2; // optional, passed through from the app; '' = unknown
+}
+
+// Says the chair exists, where it is, and whether it may be booked. It says
+// NOTHING about whether somebody is already sitting in it: platform has no
+// bookings, so that check is the caller's.
+//
+// An unknown token is NOT_FOUND. A card this system printed always resolves,
+// whatever has happened to it since.
+message ResolveChairQrResponse {
+  string status = 1;       // the CARD: LIVE | REPLACED | INACTIVE | RETIRED
+  string chair_id = 2;     // always set
+  string tenant_id = 3;    // always set
+  string branch_id = 4;    // '' only when the chair row is deleted
+  string chair_number = 5; // '' for RETIRED: the number may belong to another chair now
+  string zone_id = 6;      // '' when the chair has no zone
+  string zone_name = 7;    // '' when the chair has no zone
+
+  // The CHAIR: DRAFT | PENDING | SETUP | ACTIVE | FROZEN | MAINTENANCE |
+  // RETIRED, or '' when the chair row is deleted. For DISPLAY only.
+  string chair_state = 8;
+  // Platform's own "may this chair take a booking now" rule. DECIDE on this,
+  // never on chair_state: the rule lives here and may change. It is about the
+  // chair only; it ignores `status`.
+  bool chair_bookable = 9;
+}
