@@ -14,6 +14,16 @@ import { ConflictException } from '@nestjs/common';
 import { LifecycleHandler } from '@application/commands/lifecycle.handler';
 import { FixtureCustomerContext } from '../fixtures/fixture-customer-context';
 import type { ScannedChair } from '@domain/booking/chair-check-in';
+import {
+  ClientProxyFactory,
+  Transport,
+  type ClientGrpcProxy,
+} from '@nestjs/microservices';
+import { Logger } from '@nestjs/common';
+import { CheckInRequestHandler } from '@application/commands/check-in-request.handler';
+import { BookingError } from '@application/contract/errors';
+import { GrpcChairDirectory } from '../grpc/grpc-chair-directory';
+import { chairDirectoryClientOptions } from '../grpc/floor-grpc.constants';
 
 /**
  * SELF CHECK-IN AND THE AUTO NO-SHOW SWEEPER, AGAINST A REAL POSTGRES.
@@ -34,6 +44,15 @@ import type { ScannedChair } from '@domain/booking/chair-check-in';
  * the whole database, not just these.
  */
 const LIVE = process.env.LIVE_DATABASE_URL ?? '';
+/**
+ * The chair section's platform half also needs a platform that serves
+ * ChairDirectory, and its key (see grpc-chair-directory.live.spec.ts):
+ * LIVE_PLATFORM_GRPC_ADDR and LIVE_PLATFORM_KEY. Made-up tokens only, so
+ * platform writes no scan row.
+ */
+const LIVE_PLATFORM = process.env.LIVE_PLATFORM_GRPC_ADDR ?? '';
+const LIVE_PLATFORM_KEY =
+  process.env.LIVE_PLATFORM_KEY ?? 'dev-platform-internal-key';
 
 const MIN = 60_000;
 /** Older than any real booking, so these are always the sweeper's first. */
@@ -884,4 +903,110 @@ describe.skipIf(LIVE === '')('self check-in, live', { timeout: 60_000 }, () => {
       expect(await chairLockFree(chair)).toBe(false);
     });
   });
+
+  describe.skipIf(LIVE_PLATFORM === '')(
+    'raise at a chair, through a real platform',
+    () => {
+      const saved = {
+        addr: process.env.PLATFORM_GRPC_ADDR,
+        key: process.env.PLATFORM_INTERNAL_KEY,
+      };
+      const clients: ClientGrpcProxy[] = [];
+
+      /** The real handler, the real adapter, platform at `addr`. */
+      function handlerAt(addr: string): CheckInRequestHandler {
+        process.env.PLATFORM_GRPC_ADDR = addr;
+        const client = ClientProxyFactory.create({
+          transport: Transport.GRPC,
+          options: chairDirectoryClientOptions(),
+        });
+        clients.push(client);
+        const chairs = new GrpcChairDirectory(client);
+        chairs.onModuleInit();
+        return new CheckInRequestHandler(requests, chairs);
+      }
+
+      afterAll(() => {
+        for (const c of clients) c.close();
+        for (const [name, value] of [
+          ['PLATFORM_GRPC_ADDR', saved.addr],
+          ['PLATFORM_INTERNAL_KEY', saved.key],
+        ] as const) {
+          if (value === undefined) delete process.env[name];
+          else process.env[name] = value;
+        }
+      });
+
+      async function raised(
+        h: CheckInRequestHandler,
+        bookingId: string,
+        startAtMs: number,
+      ): Promise<BookingError> {
+        const err: unknown = await h
+          .raise({
+            bookingId,
+            actor: 'customer',
+            actorId: 'sara',
+            chairToken: 'never-minted-booking-api-live',
+            userAgent: 'booking-api live spec',
+            nowMs: startAtMs - 5 * MIN,
+          })
+          .catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(BookingError);
+        return err as BookingError;
+      }
+
+      it('a code platform never printed: 409 UNKNOWN_CARD, and nothing is written', async () => {
+        process.env.PLATFORM_INTERNAL_KEY = LIVE_PLATFORM_KEY;
+        const at = AHEAD + 4 * 60 * MIN;
+        const booking = await seed({ startAtMs: at, tenantId: TENANT });
+        const e = await raised(handlerAt(LIVE_PLATFORM), booking, at);
+        expect([e.code, e.status, e.details]).toEqual([
+          'BOOKING_CHAIR_REFUSED',
+          409,
+          { reason: 'UNKNOWN_CARD' },
+        ]);
+        expect(await requests.latestFor(booking)).toBeNull();
+      });
+
+      it('platform refuses our key: 503 Wait for Staff, and no request without the chair', async () => {
+        vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+        process.env.PLATFORM_INTERNAL_KEY = 'not-the-key-live-spec';
+        const at = AHEAD + 5 * 60 * MIN;
+        const booking = await seed({ startAtMs: at, tenantId: TENANT });
+        const e = await raised(handlerAt(LIVE_PLATFORM), booking, at);
+        expect([e.code, e.status, e.details]).toEqual([
+          'DEPENDENCY_UNAVAILABLE',
+          503,
+          { reason: 'CHAIR_CHECK_UNAVAILABLE', fallback: 'WAIT_FOR_STAFF' },
+        ]);
+        expect(e.message).toContain('Wait for Staff');
+        expect(await requests.latestFor(booking)).toBeNull();
+        vi.restoreAllMocks();
+      });
+
+      it('platform not there at all: the same 503, and Wait for Staff (no chairToken) still raises', async () => {
+        vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+        process.env.PLATFORM_INTERNAL_KEY = LIVE_PLATFORM_KEY;
+        const at = AHEAD + 6 * 60 * MIN;
+        const booking = await seed({ startAtMs: at, tenantId: TENANT });
+        // Nothing listens on port 1.
+        const h = handlerAt('127.0.0.1:1');
+        const e = await raised(h, booking, at);
+        expect([e.code, e.status]).toEqual(['DEPENDENCY_UNAVAILABLE', 503]);
+
+        const fallback = await h.raise({
+          bookingId: booking,
+          actor: 'customer',
+          actorId: 'sara',
+          nowMs: at - 5 * MIN,
+        });
+        expect(fallback).toMatchObject({
+          created: true,
+          request: { state: 'WAITING', chair: null },
+        });
+        vi.restoreAllMocks();
+      });
+    },
+  );
 });

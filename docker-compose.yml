@@ -82,6 +82,12 @@ services:
       # while nothing answers, which is the documented behaviour.
       CONSUMER_GRPC_ADDR: ${CONSUMER_GRPC_ADDR:-host.docker.internal:50051}
       PLATFORM_GRPC_ADDR: ${PLATFORM_GRPC_ADDR:-platform-api:50052}
+      # Platform's ChairDirectory (self check-in at a chair) answers only with
+      # this key, sent as x-internal-key: the SAME value platform holds, and
+      # a DIFFERENT one from INTERNAL_GRPC_KEY (customer-api's). The default
+      # is platform's own dev default. Empty refuses chair scans only (503,
+      # Wait for Staff still works). See docs/chair-check-in.md.
+      PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY:-dev-platform-internal-key}
       # No GRPC_PORT here. This service is a gRPC CLIENT, not a server: it
       # DIALS platform-api for stylist data. Nothing in src/ reads GRPC_PORT
       # and main.ts never calls connectMicroservice, so the variable only ever

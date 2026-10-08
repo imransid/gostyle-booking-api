@@ -1,4 +1,12 @@
-import { Controller, Get, Param, Post, Res, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
 import {
   ApiConflictResponse,
   ApiCreatedResponse,
@@ -6,8 +14,11 @@ import {
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
+  ApiPropertyOptional,
+  ApiServiceUnavailableResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { IsOptional, IsString } from 'class-validator';
 import type { Response } from 'express';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
@@ -18,6 +29,34 @@ import {
 } from '@application/commands/check-in-request.handler';
 import { BookingScope } from './booking-scope';
 import { SelfCheckInEnabledGuard } from './self-check-in.flag';
+
+/**
+ * The raise's body, all of it optional: no body is "I am here" with no chair,
+ * which is also the app's Wait for Staff.
+ */
+export class RaiseCheckInRequestDto {
+  @ApiPropertyOptional({
+    description:
+      'AT A CHAIR: the raw token off the chair’s QR card, exactly as ' +
+      'scanned. booking-api asks platform which chair it is, once, and the ' +
+      'request carries the chair. Absent: no chair (Wait for Staff).',
+    example: 'q7Xk2mP9rT4vW8yZ1aB3cD',
+  })
+  @IsOptional()
+  @IsString()
+  chairToken?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'The app’s user agent, recorded on the salon’s scan of the card. ' +
+      'customer-api forwards the app’s own; this request’s header is ' +
+      'customer-api’s, so it is never read.',
+    example: 'GoStyle/1.4 (iPhone; iOS 18.1)',
+  })
+  @IsOptional()
+  @IsString()
+  userAgent?: string;
+}
 
 /** Every self check-in route holds staff to the scope rule, flag or not. */
 const ALWAYS = { staff: 'always' } as const;
@@ -63,7 +102,9 @@ export class CheckInRequestController {
       'the booking in: the desk does, and approving runs the ordinary ' +
       'check-in. While a request waits, the booking is never marked a ' +
       'no-show automatically. Opens when the desk check-in opens (30 minutes ' +
-      'before the start) and closes at the end time. No body.',
+      'before the start) and closes at the end time. With `chairToken`, the ' +
+      'request carries the chair the customer scanned (docs/chair-check-in.md); ' +
+      'without, it carries none.',
   })
   @ApiCreatedResponse({ description: 'Raised: { request }, WAITING.' })
   @ApiOkResponse({
@@ -73,7 +114,16 @@ export class CheckInRequestController {
     description:
       'BOOKING_STATE_INVALID (not CONFIRMED), BOOKING_CHECKIN_WINDOW (too ' +
       'early: windowOpensAt; or closed), BOOKING_CHECKIN_REJECTED (the desk ' +
-      'said no; see the desk).',
+      'said no; see the desk). BOOKING_CHAIR_REFUSED: not with that chair; ' +
+      'show `message`, and `details.reason` is CARD_OUT_OF_DATE, ' +
+      'OTHER_SALON, CHAIR_NOT_AVAILABLE (take another chair) or UNKNOWN_CARD.',
+  })
+  @ApiServiceUnavailableResponse({
+    description:
+      'DEPENDENCY_UNAVAILABLE, details { reason: CHAIR_CHECK_UNAVAILABLE, ' +
+      'fallback: WAIT_FOR_STAFF }: the chair could not be checked just now. ' +
+      'Not "check-in is broken": raise again with no chairToken (Wait for ' +
+      'Staff), which never calls platform, and the desk checks them in.',
   })
   @ApiForbiddenResponse({ description: 'Not a customer token.' })
   @ApiNotFoundResponse({
@@ -81,6 +131,7 @@ export class CheckInRequestController {
   })
   async raise(
     @Param('id') id: string,
+    @Body() body: RaiseCheckInRequestDto,
     @CurrentActor() actor: Actor,
     @Res({ passthrough: true }) res: Response,
   ): Promise<{ request: CheckInRequestView }> {
@@ -96,6 +147,9 @@ export class CheckInRequestController {
       bookingId: id,
       actor: actor.kind,
       actorId: actor.id,
+      // Only what was sent: no body is the very call it was before chairs.
+      ...(body.chairToken !== undefined ? { chairToken: body.chairToken } : {}),
+      ...(body.userAgent !== undefined ? { userAgent: body.userAgent } : {}),
     });
     res.status(out.created ? 201 : 200);
     return { request: out.request };

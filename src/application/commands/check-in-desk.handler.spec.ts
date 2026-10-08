@@ -19,6 +19,9 @@ const row = (over: Record<string, unknown> = {}) => ({
   decidedByKind: 'staff',
   decidedById: 'desk-uuid',
   reason: null,
+  chairId: null,
+  chairNumber: null,
+  chairZoneName: null,
   ...over,
 });
 const CHECKED_IN = { code: 'GS-1', from: 'CONFIRMED', to: 'CHECKED_IN' };
@@ -82,8 +85,32 @@ describe('approve', () => {
         decidedByKind: 'STAFF',
         decidedById: 'desk-uuid',
         reason: null,
+        chair: null,
       },
       checkIn: CHECKED_IN,
+    });
+  });
+
+  it('the claimed chair is taken: BOOKING_CHAIR_REFUSED, with the chair and who is in it, for the desk', async () => {
+    const { h } = handler({
+      approveWith: () =>
+        Promise.resolve({
+          kind: 'chair_occupied',
+          chairNumber: '7',
+          occupant: 'GS-1402',
+        }),
+    });
+    const err: unknown = await h
+      .approve({ bookingId: 'booking-1', actor: 'staff', actorId: 'desk-1' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BookingError);
+    const e = err as BookingError;
+    expect([e.code, e.status]).toEqual(['BOOKING_CHAIR_REFUSED', 409]);
+    expect(e.message).toContain('Chair 7 is taken: GS-1402');
+    expect(e.details).toEqual({
+      reason: 'CHAIR_OCCUPIED',
+      chairNumber: '7',
+      occupant: 'GS-1402',
     });
   });
 
