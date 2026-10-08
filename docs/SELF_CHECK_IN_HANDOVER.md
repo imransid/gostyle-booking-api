@@ -1,15 +1,34 @@
 # Self check-in: handover
 
-Branch `feat/self-check-in`, ten commits on top of `c79799a`. booking-api only.
+Branch `feat/self-check-in`, eleven commits on top of `c79799a` (plus this doc). booking-api only.
 State on 2026-10-08: built and tested, not pushed, not deployed.
+
+**Read the "Known bug" section below even if you read nothing else.** It is
+not caused by self check-in, but it is live on the business web today.
 
 The idea: a customer says "I am here" for their own booking. The desk approves
 or rejects. Approving is the ordinary desk check-in, so the state machine, the
 history and the events are unchanged. A customer who said they arrived is never
-marked a no-show automatically. Whether the customer scans a QR on their pass or
-on the chair is not decided, so nothing here knows about QR or chairs.
+marked a no-show automatically.
 
-## The ten commits
+Decided 2026-10-08: pass QR first (option A: the QR is the booking's own code,
+for example GS-1403), chair QR later (option B adds the chair). Nothing on this
+branch scans anything yet.
+
+## Known bug, live today: real customers have no name on four desk screens
+
+- The calendar (day and week), the events feed, the waitlist board and the series board take the customer's name from booking-api's customer port (`CUSTOMER_CONTEXT`).
+- That port is still wired to a test fixture of five made-up customers (Dana, Nour, Omar, Yara, Rania). For every real customer it answers "no name".
+- So those four screens carry no name for any real customer. A code comment says the business web looks names up in the platform customers API instead. That cannot name app customers, who live in customer-api, not in platform. I have not checked the business web's own code.
+- **The same port also gives tier, risk and VIP.** For every real customer it answers: no tier, low risk, first visit, not VIP. In the code, that means:
+  - the new-customer deposit rule applies to everyone;
+  - no tier discount at settle;
+  - no longer VIP arrival grace and no VIP no-show waiver.
+  - I have not checked what production actually charges.
+- **Not caused by self check-in, and not fixed by it.** The reception list does not use this port: it asks customer-api directly (see commit 11).
+- **The fix** is to back `CUSTOMER_CONTEXT` with the real customer directories (platform for customers the desk created, customer-api for app customers). See `docs/api/PLATFORM-ASKS-BOOKING-CONTEXT.md`.
+
+## The commits
 
 1. `bf54802` The scope rule, lookup and helper: who may act on which booking. Copied unchanged from the parked staff scope branch. Not wired to any older route.
 2. `32783d2` The request rules: five states (waiting, approved, rejected, expired, closed), when a customer may raise one, how an unanswered one ends.
@@ -21,6 +40,7 @@ on the chair is not decided, so nothing here knows about QR or chairs.
 8. `89d9b25` The customer's two routes: raise a request, and read the latest one.
 9. `f58f0c7` An "always on" option for the scope helper. Every self check-in route uses it.
 10. `b394df4` The desk's approve and reject, and the reception list.
+11. `d50dfce` The customer's name on each reception line, from customer-api (the reminders' own lookup). The list never waits for it: about one second at most, then names are null. At most one log line per load.
 
 ## Turning it on in production
 
@@ -63,6 +83,7 @@ Do these in order.
 - `CheckInRequestSweeper ... expired`: a customer nobody answered. Many of these means the desk is not watching the list.
 - `CheckInRequestSweeper ... closed`: fine. The desk used the normal button, or the booking was cancelled or moved.
 - `StaffScope REFUSED (always on)` or `HID n row(s) (always on)` for a real salon's own desk: one of its bookings has no tenant or a wrong one. Run step 0. QA tokens on marina-walk rows are refused by design: those rows have no tenant.
+- `CheckInReception names: customer-api unavailable ...` or `did not answer ... within 1000ms`: customer-api is down or slow, and the desk sees the list without names. One line per list load, never one per customer.
 - "Lapse sweep failed" or a no-show "Sweep failed": should never appear.
 - The usual "auto no-show at start plus 30" lines should keep coming for everyone else.
 
@@ -77,12 +98,12 @@ Do these in order.
 
 ## What is not built
 
-- **QR, of either kind:** no scanning, no chair column. Either choice later adds one column and the scan screen.
+- **QR:** pass QR (option A) is decided, but nothing scans yet. The pass already shows the booking code. Chair QR (option B) later adds one column and the scan screen.
 - **The customer-api route (PR 4) and the app guide:** until they exist, the app cannot raise a request.
 - **The business web:**
   - No reception list screen, approve and reject buttons, reason picker, or "needs a decision" handling.
   - No live alert when a request is raised: the desk has to refresh the list.
-  - The list shows booking codes and customer ids, not names.
+  - The list now shows the customer's name (commit 11). It is null when customer-api is slow or down, or for a customer it does not know.
 - **Notifications:** no push to the customer on approve or reject; the app reads the state. No events of its own for raise, approve or reject. Approve writes the normal `booking.checked_in` event.
 - **Parties:** one request per lane. There is no party-wide request, and a guest's lane cannot raise.
 - **Staff scope on the older routes:** still parked on `fix/staff-scope`. When it is rebased, it takes this branch's version of the scope helper.
