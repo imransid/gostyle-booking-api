@@ -548,8 +548,10 @@ enum CheckInRequestState {
 /// migration). Closed requests stay: they are the history, and the latest one
 /// is what the auto no-show sweeper reads.
 ///
-/// No chair. Whether self check-in scans the pass or the chair is not decided;
-/// either way the chair is one more nullable column here, not a new table.
+/// AT A CHAIR, the request carries the chair the customer scanned
+/// (chair-check-in.ts). Three columns, not the one first planned: every call
+/// to platform writes a scan row in the salon's registry, so the desk can
+/// never ask platform again, and the label it reads is kept from the scan.
 model CheckInRequest {
   id        String  @id @default(uuid(7)) @db.Uuid
   /// Copied from the booking at raise time, never from X-Tenant-Id.
@@ -563,6 +565,16 @@ model CheckInRequest {
   /// customer today. Kept as a kind, so a chair kiosk is not a migration.
   raisedByKind ActorKind @map("raised_by_kind")
   raisedById   String    @map("raised_by_id") @db.Uuid
+
+  /// The scanned chair, as platform answered at the scan. All null for a
+  /// request with no chair. Id and number come together; a chair may have no
+  /// zone. CHECKs in the migration hold both.
+  chairId       String? @map("chair_id") @db.Uuid
+  /// What the desk reads: "7". Platform reuses a retired chair's number, so
+  /// this is the number at the time of the scan, never looked up again.
+  chairNumber   String? @map("chair_number")
+  /// "Window section", or null when the chair had no zone.
+  chairZoneName String? @map("chair_zone_name")
 
   /// All three null while waiting, all set once it ends. system for expired
   /// and closed, staff or manager for approved and rejected. CHECKs in the

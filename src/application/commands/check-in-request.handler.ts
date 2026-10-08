@@ -1,8 +1,13 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { shout, type Shouted } from '@application/contract/wire';
 import { bookingError } from '@application/contract/errors';
 import type { ActorKind } from '@domain/booking/lifecycle';
 import type { CheckInRequestState } from '@domain/booking/check-in-request';
+import {
+  customerReason,
+  customerSentence,
+  type ChairRefusal,
+} from '@domain/booking/chair-check-in';
 import {
   CheckInRequestRepository,
   type CheckInRequestRow,
@@ -43,6 +48,8 @@ export function viewOf(row: CheckInRequestRow): CheckInRequestView {
  */
 @Injectable()
 export class CheckInRequestHandler {
+  private readonly logger = new Logger(CheckInRequestHandler.name);
+
   constructor(private readonly requests: CheckInRequestRepository) {}
 
   /**
@@ -70,6 +77,19 @@ export class CheckInRequestHandler {
         return { created: false, request: viewOf(out.request) };
       case 'not_found':
         throw bookingError('BOOKING_NOT_FOUND', 'No such booking');
+      case 'chair_refused': {
+        // Platform's words (the card status, the chair state) and another
+        // customer's booking go to the log, never to the app: it gets one
+        // sentence and one reason of ours (chair-check-in.ts).
+        const { why } = out.refusal;
+        this.logger.log(
+          `Chair claim refused on booking ${cmd.bookingId}: ${why}` +
+            ` (${refusalDetail(out.refusal)})`,
+        );
+        throw bookingError('BOOKING_CHAIR_REFUSED', customerSentence(why), {
+          reason: customerReason(why),
+        });
+      }
       case 'refused':
         switch (out.why) {
           case 'not_confirmed':
@@ -108,5 +128,19 @@ export class CheckInRequestHandler {
   async latest(bookingId: string): Promise<CheckInRequestView | null> {
     const row = await this.requests.latestFor(bookingId);
     return row === null ? null : viewOf(row);
+  }
+}
+
+/** A refusal's own detail, for the log line only. */
+function refusalDetail(refusal: ChairRefusal): string {
+  switch (refusal.why) {
+    case 'card_out_of_date':
+      return `card ${refusal.cardStatus || "''"}`;
+    case 'other_salon':
+      return refusal.which;
+    case 'chair_not_bookable':
+      return `chair state ${refusal.chairState ?? 'none'}`;
+    case 'chair_occupied':
+      return `${refusal.occupant} is in it`;
   }
 }

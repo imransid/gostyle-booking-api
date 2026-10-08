@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Prisma } from '../../generated/prisma/client';
 import {
+  CHAIR_LOCK_CLASS,
   CheckInRequestRepository,
   arrivalClaimed,
 } from './check-in-request.repository';
@@ -239,13 +240,39 @@ describe('approveWith: lock, check in, then mark', () => {
     waiting?: boolean;
     bookingExists?: boolean;
     latest?: string | null;
+    /** The waiting request claims a chair; occupant: who is in it. */
+    chair?: { id: string; number: string; occupant: string | null };
   }) {
     const order: string[] = [];
     const approved = { id: 'req-1', state: 'approved' };
+    let queries = 0;
     const tx = {
+      // The first query locks the waiting request, as the table returns it:
+      // chair_id and chair_number are null on a request with no chair. Any
+      // later one asks who is in the chair.
       $queryRaw: vi.fn(() => {
+        queries += 1;
+        if (queries > 1) {
+          order.push('occupant');
+          const code = opts.chair?.occupant ?? null;
+          return Promise.resolve(code === null ? [] : [{ code }]);
+        }
         order.push('lock');
-        return Promise.resolve(opts.waiting === false ? [] : [{ id: 'req-1' }]);
+        return Promise.resolve(
+          opts.waiting === false
+            ? []
+            : [
+                {
+                  id: 'req-1',
+                  chair_id: opts.chair?.id ?? null,
+                  chair_number: opts.chair?.number ?? null,
+                },
+              ],
+        );
+      }),
+      $executeRaw: vi.fn(() => {
+        order.push('chair lock');
+        return Promise.resolve(1);
       }),
       checkInRequest: {
         update: vi.fn(() => {
@@ -310,6 +337,45 @@ describe('approveWith: lock, check in, then mark', () => {
         },
       }),
     );
+  });
+
+  it('a claimed chair: the request, then the chair lock, then who is in it, then the check-in and the mark', async () => {
+    const chair = '0192a3b4-0000-7000-8000-000000000007';
+    const h = approving({ chair: { id: chair, number: '7', occupant: null } });
+    await expect(h.r.approveWith(decider, h.checkIn)).resolves.toMatchObject({
+      kind: 'approved',
+    });
+    expect(h.order).toEqual([
+      'lock',
+      'chair lock',
+      'occupant',
+      'check-in',
+      'mark',
+    ]);
+    // The two-int form, in the chair's own key space (CHAIR_LOCK_CLASS).
+    const lock = Prisma.sql(
+      ...(h.tx.$executeRaw.mock.calls[0] as unknown as [
+        TemplateStringsArray,
+        ...unknown[],
+      ]),
+    );
+    expect(lock.text).toMatch(
+      /pg_advisory_xact_lock\(\$1::int4,\s*hashtext\(\$2\)\)/,
+    );
+    expect(lock.values).toEqual([CHAIR_LOCK_CLASS, chair]);
+  });
+
+  it('the claimed chair is taken: nobody is checked in, nothing is marked, and the desk is told who', async () => {
+    const h = approving({
+      chair: { id: 'c-7', number: '7', occupant: 'GS-1402' },
+    });
+    await expect(h.r.approveWith(decider, h.checkIn)).resolves.toEqual({
+      kind: 'chair_occupied',
+      chairNumber: '7',
+      occupant: 'GS-1402',
+    });
+    expect(h.checkIn).not.toHaveBeenCalled();
+    expect(h.tx.checkInRequest.update).not.toHaveBeenCalled();
   });
 
   it('a refused check-in throws, and the request is never marked', async () => {

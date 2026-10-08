@@ -1,4 +1,5 @@
 import { cleanId } from './booking-scope';
+import type { BookingStatus } from './lifecycle';
 
 /**
  * SELF CHECK-IN AT A CHAIR: may this customer claim the chair they scanned,
@@ -26,12 +27,20 @@ import { cleanId } from './booking-scope';
  *                         for which states may take a booking is platform's,
  *                         and a copy of it here would quietly disagree the
  *                         day platform changes it.
- *   4. occupied           another booking is checked in or in service with
- *                         this chair. Only those: a WAITING claim on the
- *                         same chair does not block it, because a claim can
- *                         be stale and blocking would hold a free chair until
- *                         the desk answers. Approving asks again, under a
- *                         lock, and that is the moment that matters.
+ *   4. occupied           another booking is IN THE CHAIR: checked in or
+ *                         in service (IN_THE_CHAIR), on the same branch and
+ *                         trading day, and its latest request names this
+ *                         chair and was not rejected. Not only an approved
+ *                         one: a customer who scanned the chair and was
+ *                         then checked in with the desk's own button is in
+ *                         it too. The trading day keeps a visit nobody
+ *                         closed yesterday from holding the chair forever.
+ *                         A WAITING claim on a CONFIRMED booking does not
+ *                         block it: a claim can be stale, and blocking would
+ *                         hold a free chair until the desk answers.
+ *                         Approving asks again, under a lock, and that is the
+ *                         moment that matters. As SQL: occupantOf in
+ *                         check-in-request.repository.ts.
  *
  * PLATFORM'S WORDS NEVER REACH THE CUSTOMER. The card status and the chair
  * state are platform's vocabulary (FROZEN, MAINTENANCE, SETUP...). A refusal
@@ -107,6 +116,15 @@ export type ChairVerdict =
   | { readonly kind: 'accept'; readonly chair: ClaimedChair }
   | ({ readonly kind: 'refused' } & ChairRefusal);
 
+/**
+ * The booking states of a customer who is in the chair. Asked of booking-api's
+ * own data, in SQL (occupantOf), because platform has no bookings.
+ */
+export const IN_THE_CHAIR: readonly BookingStatus[] = [
+  'checked_in',
+  'in_service',
+];
+
 /** The one card status check-in accepts, for v1. */
 const LIVE = 'LIVE';
 
@@ -114,9 +132,8 @@ export function chairCheckInVerdict(input: {
   readonly chair: ScannedChair;
   readonly booking: ClaimingBooking;
   /**
-   * The code of another booking that is checked in or in service with this
-   * chair, or null if there is none. Asked of booking-api's own data: it is
-   * what platform cannot know.
+   * The code of another booking in this chair (rule 4), or null if there is
+   * none. Asked of booking-api's own data: it is what platform cannot know.
    */
   readonly occupant: string | null;
 }): ChairVerdict {
@@ -167,6 +184,27 @@ export function chairCheckInVerdict(input: {
     kind: 'accept',
     chair: { chairId: chair.chairId, chairNumber, zoneName: chair.zoneName },
   };
+}
+
+/**
+ * What the app may switch on, by the reason alone and in our words, never
+ * platform's. Not bookable and occupied are ONE reason: to the customer both
+ * mean "not this chair", with the same way out, so the app has one thing to
+ * do for both and nothing to learn about platform's states.
+ */
+export type CustomerChairReason =
+  'CARD_OUT_OF_DATE' | 'OTHER_SALON' | 'CHAIR_NOT_AVAILABLE';
+
+export function customerReason(why: ChairRefusalReason): CustomerChairReason {
+  switch (why) {
+    case 'card_out_of_date':
+      return 'CARD_OUT_OF_DATE';
+    case 'other_salon':
+      return 'OTHER_SALON';
+    case 'chair_not_bookable':
+    case 'chair_occupied':
+      return 'CHAIR_NOT_AVAILABLE';
+  }
 }
 
 /** Not available, for whatever reason of the chair's own. */

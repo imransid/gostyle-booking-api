@@ -57,6 +57,14 @@ export const ERROR_CODES = [
    * not a retry and not a generic state error.
    */
   'BOOKING_CHECKIN_REJECTED',
+  /**
+   * SELF CHECK-IN AT A CHAIR: not with THIS chair (chair-check-in.ts). The
+   * booking itself may still check in. `details.reason` is ours, never
+   * platform's: CARD_OUT_OF_DATE, OTHER_SALON or CHAIR_NOT_AVAILABLE for the
+   * customer; the desk's approve also says CHAIR_OCCUPIED, with the chair's
+   * number and the booking in it.
+   */
+  'BOOKING_CHAIR_REFUSED',
   'BOOKING_WITHIN_GRACE',
   'BOOKING_SERIAL_RESCHEDULE',
   'BOOKING_NO_SLOT',
@@ -165,6 +173,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   BOOKING_GATE_BLOCKED: 409,
   BOOKING_CHECKIN_WINDOW: 409,
   BOOKING_CHECKIN_REJECTED: 409,
+  BOOKING_CHAIR_REFUSED: 409,
   BOOKING_WITHIN_GRACE: 409,
   BOOKING_SERIAL_RESCHEDULE: 409,
   BOOKING_NO_SLOT: 409,

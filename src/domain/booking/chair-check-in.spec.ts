@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   chairCheckInVerdict,
+  customerReason,
   customerSentence,
   type ChairRefusalReason,
   type ClaimingBooking,
@@ -268,6 +269,13 @@ describe('customerSentence: what the app may show', () => {
       expect(shown.toUpperCase()).not.toContain(chairState);
     },
   );
+
+  it('gives the app one reason for not bookable and occupied, in our words', () => {
+    expect(customerReason('card_out_of_date')).toBe('CARD_OUT_OF_DATE');
+    expect(customerReason('other_salon')).toBe('OTHER_SALON');
+    expect(customerReason('chair_not_bookable')).toBe('CHAIR_NOT_AVAILABLE');
+    expect(customerReason('chair_occupied')).toBe('CHAIR_NOT_AVAILABLE');
+  });
 
   it('never shows another customer’s booking', () => {
     const v = verdict({ occupant: 'GS-1402' });
