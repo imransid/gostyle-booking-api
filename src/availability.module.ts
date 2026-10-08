@@ -27,7 +27,10 @@ import { BookingsController } from '@interface/http/bookings.controller';
 import { ConfirmBookingHandler } from '@application/commands/confirm-booking.handler';
 
 import { LifecycleController } from '@interface/http/lifecycle.controller';
+import { BookingScope } from '@interface/http/booking-scope';
 import { RescheduleHandler } from '@application/commands/reschedule.handler';
+import { CheckInRequestController } from '@interface/http/check-in-request.controller';
+import { CheckInRequestHandler } from '@application/commands/check-in-request.handler';
 import { WaitlistHandler } from '@application/commands/waitlist.handler';
 import { WaitlistController } from '@interface/http/waitlist.controller';
 import { WebhooksController } from '@interface/http/webhooks.controller';
@@ -139,8 +142,11 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     HoldsController,
     BookingsController,
     LifecycleController,
+    CheckInRequestController,
   ],
   providers: [
+    BookingScope,
+    CheckInRequestHandler,
     GetSettingsHandler,
     BookingReadHandler,
     MoneyRepository,

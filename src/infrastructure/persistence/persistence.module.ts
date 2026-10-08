@@ -37,6 +37,7 @@ import { EVENT_PUBLISHER } from '@application/ports/event-publisher.port';
 import { HoldRepository } from './hold.repository';
 import { BookingRepository } from './booking.repository';
 import { LifecycleRepository } from './lifecycle.repository';
+import { BookingScopeRepository } from './booking-scope.repository';
 import { DbBookingContext } from './db-booking-context';
 import { FixtureBookingContext } from '../fixtures/fixture-booking-context';
 import { HoldSweeper } from '../scheduling/hold-sweeper.service';
@@ -191,6 +192,7 @@ import { EMAIL_SENDER } from '@application/ports/email-sender.port';
       ],
     },
     LifecycleRepository,
+    BookingScopeRepository,
     BookingRepository,
     HoldRepository,
     HoldSweeper,
@@ -232,6 +234,7 @@ import { EMAIL_SENDER } from '@application/ports/email-sender.port';
     PrismaService,
     OutboxRelay,
     LifecycleRepository,
+    BookingScopeRepository,
     BookingRepository,
     HoldRepository,
     HoldSweeper,
