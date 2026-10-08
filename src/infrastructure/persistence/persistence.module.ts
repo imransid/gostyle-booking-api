@@ -21,6 +21,8 @@ import { WaitlistListener } from '../messaging/waitlist-listener';
 import { GroupStatusListener } from '../messaging/group-status-listener';
 import { WaitlistSweeper } from '../scheduling/waitlist-sweeper.service';
 import { NoShowSweeper } from '../scheduling/no-show-sweeper.service';
+import { CheckInRequestSweeper } from '../scheduling/check-in-request-sweeper.service';
+import { CheckInRequestRepository } from './check-in-request.repository';
 import { PaymentLinkSweeper } from '../scheduling/payment-link-sweeper.service';
 import { PAYMENT_GATEWAY } from '@application/ports/payment-gateway.port';
 import { SimulatedGateway } from '../payments/simulated-gateway';
@@ -107,6 +109,8 @@ import { EMAIL_SENDER } from '@application/ports/email-sender.port';
     { provide: PAYMENT_GATEWAY, useExisting: SimulatedGateway },
     PaymentLinkSweeper,
     NoShowSweeper,
+    CheckInRequestRepository,
+    CheckInRequestSweeper,
     WaitlistRepository,
     WaitlistSweeper,
     RescheduleRepository,
@@ -218,6 +222,7 @@ import { EMAIL_SENDER } from '@application/ports/email-sender.port';
     SimulatedGateway,
     PaymentLinkSweeper,
     NoShowSweeper,
+    CheckInRequestRepository,
     WaitlistRepository,
     WaitlistSweeper,
     RescheduleRepository,
