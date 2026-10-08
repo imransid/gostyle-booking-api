@@ -279,3 +279,91 @@ describe('by code (late-capture): the highest-risk route', () => {
     ).resolves.toBeUndefined();
   });
 });
+
+describe("staff, { staff: 'always' }: on whatever STAFF_SCOPE_V1 says", () => {
+  const ALWAYS = { staff: 'always' } as const;
+
+  it.each([undefined, 'off', '', 'onn', 'log'])(
+    "STAFF_SCOPE_V1=%j: a staff token on another tenant's booking is 404",
+    async (mode) => {
+      if (mode !== undefined) process.env.STAFF_SCOPE_V1 = mode;
+      const { s, repo } = scope(row({ tenantId: ROMONI }));
+
+      await expect(
+        s.refuseOutOfScope(byId, staff(), ROUTE, ALWAYS),
+      ).rejects.toThrow(new NotFoundException('No such booking'));
+      expect(repo.byId).toHaveBeenCalledWith(BOOKING);
+      expect(lines()).toHaveLength(1);
+      expect(lines()[0]).toMatch(
+        new RegExp(`^REFUSED \\(always on\\) other_tenant: ${ROUTE} `),
+      );
+    },
+  );
+
+  it.each([
+    ['other_branch', row({ branchId: BRANCH_B })],
+    ['untenanted_booking', row({ tenantId: null })],
+  ])('%s: 404 with the flag off too', async (why, found) => {
+    process.env.STAFF_SCOPE_V1 = 'off';
+    await expect(
+      scope(found).s.refuseOutOfScope(byId, staff(), ROUTE, ALWAYS),
+    ).rejects.toThrow(new NotFoundException('No such booking'));
+    expect(lines()[0]).toMatch(new RegExp(`\\(always on\\) ${why}: `));
+  });
+
+  it('a manager token is held to it the same way', async () => {
+    await expect(
+      scope(row({ tenantId: ROMONI })).s.refuseOutOfScope(
+        byId,
+        staff({ kind: 'manager', branchId: null }),
+        ROUTE,
+        ALWAYS,
+      ),
+    ).rejects.toThrow(NotFoundException);
+  });
+
+  it('its own tenant and branch: through, nothing logged', async () => {
+    await expect(
+      scope().s.refuseOutOfScope(byId, staff(), ROUTE, ALWAYS),
+    ).resolves.toBeUndefined();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('no tenant on the token (platform mode): through', async () => {
+    await expect(
+      scope(row({ tenantId: ROMONI })).s.refuseOutOfScope(
+        byId,
+        staff({ tenantId: null, branchId: null }),
+        ROUTE,
+        ALWAYS,
+      ),
+    ).resolves.toBeUndefined();
+  });
+
+  it('a booking that is not there: through, for the route to answer', async () => {
+    await expect(
+      scope(null).s.refuseOutOfScope(byId, staff(), ROUTE, ALWAYS),
+    ).resolves.toBeUndefined();
+  });
+
+  it("{ staff: 'flag' } and no options are the same: off lets another tenant through", async () => {
+    process.env.STAFF_SCOPE_V1 = 'off';
+    for (const options of [undefined, { staff: 'flag' } as const]) {
+      const { s, repo } = scope(row({ tenantId: ROMONI }));
+      await expect(
+        s.refuseOutOfScope(byId, staff(), ROUTE, options),
+      ).resolves.toBeUndefined();
+      expect(repo.byId).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a customer is untouched by it: their own booking only, as always', async () => {
+    const { s } = scope(row());
+    await expect(
+      s.refuseOutOfScope(byId, customer(), ROUTE, ALWAYS),
+    ).resolves.toBeUndefined();
+    await expect(
+      s.refuseOutOfScope(byId, customer(toUuid('omar')), ROUTE, ALWAYS),
+    ).rejects.toThrow(new NotFoundException('No such booking'));
+  });
+});

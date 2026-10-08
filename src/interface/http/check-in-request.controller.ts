@@ -19,6 +19,9 @@ import {
 import { BookingScope } from './booking-scope';
 import { SelfCheckInEnabledGuard } from './self-check-in.flag';
 
+/** Every self check-in route holds staff to the scope rule, flag or not. */
+const ALWAYS = { staff: 'always' } as const;
+
 /**
  * SELF CHECK-IN, the customer's side: "I am here", and the desk's answer.
  *
@@ -33,10 +36,11 @@ import { SelfCheckInEnabledGuard } from './self-check-in.flag';
  * id. The desk's side (approve, reject, the reception list) is its own
  * controller.
  *
- * WHOSE BOOKING: BookingScope.refuseOutOfScope, first in each handler. For a
- * customer it is their own booking or 404 "No such booking", the same answer
- * as a booking that does not exist. That branch is always on: it never
- * reads STAFF_SCOPE_V1.
+ * WHOSE BOOKING: BookingScope.refuseOutOfScope, first in each handler, with
+ * { staff: 'always' } (D2). For a customer it is their own booking or 404
+ * "No such booking", the same answer as a booking that does not exist; that
+ * branch never reads STAFF_SCOPE_V1. The staff rule cannot be reached here
+ * today (customerOnly runs first), and is always on if it ever is.
  *
  * NO IDEMPOTENCY STORE, on purpose. A raise is already safe to repeat (a
  * second one answers with the request already waiting), and a stored reply
@@ -85,6 +89,7 @@ export class CheckInRequestController {
       { bookingId: id },
       actor,
       'POST /v1/bookings/:id/check-in-request',
+      ALWAYS,
     );
     // The server's clock, never the caller's: no nowMs is passed.
     const out = await this.requests.raise({
@@ -118,6 +123,7 @@ export class CheckInRequestController {
       { bookingId: id },
       actor,
       'GET /v1/bookings/:id/check-in-request',
+      ALWAYS,
     );
     return { request: await this.requests.latest(id) };
   }

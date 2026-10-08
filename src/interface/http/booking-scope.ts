@@ -34,6 +34,24 @@ export type BookingRef =
 export const NO_SUCH_BOOKING = 'No such booking';
 
 /**
+ * How a route asks for the STAFF rule.
+ *
+ *   flag     the default: follow STAFF_SCOPE_V1 (off, log or on). For the
+ *            by-id routes that were open before the rule existed. Turning it
+ *            on for them is the staff scope work, one step at a time.
+ *   always   enforced, whatever STAFF_SCOPE_V1 says, a typo or "off"
+ *            included. For routes born after the hole was found (self
+ *            check-in): nothing ever reached another salon's booking through
+ *            them, so there is nothing to keep working, and no reason to
+ *            open the hole again on a new route.
+ *
+ * The customer rule ignores this: it is always on either way.
+ */
+export interface ScopeOptions {
+  readonly staff?: 'flag' | 'always';
+}
+
+/**
  * The scope check at the edge of every route that acts on a booking it was
  * handed. Called first in the handler, before anything is read or written:
  *
@@ -49,6 +67,8 @@ export const NO_SUCH_BOOKING = 'No such booking';
  *   log  a booking the rule would refuse is LOGGED, with everything needed to
  *        tell a real salon from a QA token, and the request carries on.
  *   on   the same line is logged, and the answer is 404 "No such booking".
+ * unless the route passes { staff: 'always' }, which is `on` whatever the
+ * flag says (ScopeOptions).
  *
  * A booking that is not there is not this check's to answer: the request
  * carries on and the route's own handler says it is not there, as before.
@@ -65,6 +85,7 @@ export class BookingScope {
     ref: BookingRef,
     actor: Actor,
     route: string,
+    options: ScopeOptions = {},
   ): Promise<void> {
     if (actor.kind === 'customer') {
       const booking = await this.find(ref);
@@ -77,7 +98,8 @@ export class BookingScope {
       return;
     }
 
-    const mode = STAFF_SCOPE_V1();
+    const always = options.staff === 'always';
+    const mode = always ? 'on' : STAFF_SCOPE_V1();
     if (mode === 'off') return;
 
     const booking = await this.find(ref);
@@ -87,7 +109,14 @@ export class BookingScope {
     if (verdict.kind === 'allowed') return;
 
     BookingScope.log.warn(
-      refusalLine(mode, verdict.why, route, actor, booking),
+      refusalLine(
+        always ? 'always on' : `STAFF_SCOPE_V1=${mode}`,
+        mode,
+        verdict.why,
+        route,
+        actor,
+        booking,
+      ),
     );
     if (mode === 'on') throw new NotFoundException(NO_SUCH_BOOKING);
   }
@@ -119,8 +148,12 @@ function folded(actor: Actor): ScopeActor {
  *
  * The token's values are printed as the token carried them, not folded, so
  * the line can be matched against the platform.
+ *
+ * `source` says what made the check run: the flag's value, or "always on"
+ * for a route that never follows it.
  */
 function refusalLine(
+  source: string,
   mode: ScopeMode,
   why: ScopeRefusal,
   route: string,
@@ -129,7 +162,7 @@ function refusalLine(
 ): string {
   return [
     `${mode === 'on' ? 'REFUSED' : 'WOULD REFUSE'}`,
-    `(STAFF_SCOPE_V1=${mode}) ${why}: ${route}`,
+    `(${source}) ${why}: ${route}`,
     `actor=${actor.kind}:${actor.id}`,
     `token_tenant=${actor.tenantId ?? 'none'}`,
     `token_branch=${actor.branchId ?? 'all'}`,
