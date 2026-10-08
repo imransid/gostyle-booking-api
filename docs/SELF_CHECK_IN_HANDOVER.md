@@ -49,7 +49,7 @@ Do these in order.
 1. **Make sure bookings carry their tenant.** The backfill ran on 2026-10-08. But the nightly desk series job still writes bookings with no tenant. Its fix (`fix/series-job-tenant`, flag `SERIES_JOB_TENANT`) is not deployed. The desk cannot see or approve a request on a booking with no tenant: it is hidden from the list, and approve answers 404. So deploy that fix with `SERIES_JOB_TENANT=true` first. At the least, re-run the staff scope step 0 SQL the day before and backfill what it finds.
 2. **Deploy this branch with `SELF_CHECK_IN_V1` unset**, and apply the migration as usual. Nothing changes for anyone. All five routes answer 404. The new sweeper filter and the lapse job run, but have nothing to act on.
 3. **Check the boot log** for both lines listed under "What to watch in the log".
-4. **Ship the pieces that are not built yet:** the customer-api route (PR 4) and the business web screens. Until then nobody can raise a request, so the flag would change nothing visible.
+4. **Ship the other pieces:** the customer-api route (PR 4, built) and the business web screens (not built yet). Until then nobody can raise a request, so the flag would change nothing visible.
 5. **Set `SELF_CHECK_IN_V1=true`** on booking-api and restart it. Anything other than `true` is off. Then turn on customer-api's own flag (PR 4).
 
 **`STAFF_SCOPE_V1`:** leave it as it is now (unset). Nothing on this branch depends on it. The self check-in routes check scope always, whatever it says. The older routes are not wired to the helper on this branch; that is the parked staff scope work.
@@ -99,7 +99,7 @@ Do these in order.
 ## What is not built
 
 - **QR:** pass QR (option A) is decided, but nothing scans yet. The pass already shows the booking code. Chair QR (option B) later adds one column and the scan screen.
-- **The customer-api route (PR 4) and the app guide:** until they exist, the app cannot raise a request.
+- **The customer-api route (PR 4) is now built**, not pushed: the code on customer-api branch `feat/self-check-in` (`ac343de` the route, `f8e651f` `can_check_in` on My Bookings rows), the app guide on `docs/self-check-in-fe` (`1f65066`, `9403af0`).
 - **The business web:**
   - No reception list screen, approve and reject buttons, reason picker, or "needs a decision" handling.
   - No live alert when a request is raised: the desk has to refresh the list.
