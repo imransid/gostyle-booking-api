@@ -434,6 +434,21 @@ export class SeriesRepository {
     return rows.map((r) => r.id);
   }
 
+  /**
+   * The tenant a series was written under, or null.
+   *
+   * For the nightly job, which has no request to bring one (see
+   * SeriesMaterialiser). Null for a series written before tenant_id existed,
+   * for one written by a caller that sent none, and for an id that is gone.
+   */
+  async tenantOf(seriesId: string): Promise<string | null> {
+    const row = await this.prisma.bookingSeries.findUnique({
+      where: { id: seriesId },
+      select: { tenantId: true },
+    });
+    return row?.tenantId ?? null;
+  }
+
   /** Planned occurrences inside the booking horizon, oldest first. */
   async plannedWithin(
     seriesId: string,
