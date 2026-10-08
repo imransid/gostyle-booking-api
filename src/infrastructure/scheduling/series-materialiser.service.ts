@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { SeriesRepository } from '../persistence/series.repository';
 import { MaterialiseSeriesHandler } from '@application/commands/materialise-series.handler';
 import { branchTimeZone, branchToday } from '../persistence/hold.repository';
+import { TenantContext } from '../tenancy/tenant-context';
 
 /**
  * The nightly occurrence horizon job: 02:00 branch time.
@@ -28,6 +29,27 @@ export const MATERIALISE_CRON = '0 2 * * *';
  */
 export const MATERIALISE_BATCH = 200;
 
+/**
+ * Run each series in its own tenant. OFF unless SERIES_JOB_TENANT=true.
+ *
+ * WHY. This job has no request, so it has no tenant, and every booking it
+ * writes is stamped tenant_id NULL. The staff scope check will refuse a
+ * NULL-tenant booking to the salon's own desk, so these have to carry their
+ * series' tenant first. The app routine job already books in the routine's
+ * own tenant (mobile-series-job.handler.ts, bookFarVisits); this is the same.
+ *
+ * WHY A FLAG. The tenant is not only stamped on the row. The roster and the
+ * catalogue read it too, and with none they fall back to the fixture: today
+ * this job plans a real salon's visits against the fixture's stylists and
+ * services, and a series sold with a platform service id ends in
+ * needs-attention. With the tenant it reads the salon's real stylists and
+ * services, so it starts booking visits it used to hand to a human. That is
+ * the point, and it is also a change to what lands in the diary at 02:00, so
+ * it is switched on deliberately.
+ */
+export const SERIES_JOB_TENANT = (): boolean =>
+  (process.env.SERIES_JOB_TENANT ?? '').trim().toLowerCase() === 'true';
+
 @Injectable()
 export class SeriesMaterialiser {
   private static readonly log = new Logger(SeriesMaterialiser.name);
@@ -36,6 +58,7 @@ export class SeriesMaterialiser {
   constructor(
     private readonly repo: SeriesRepository,
     private readonly handler: MaterialiseSeriesHandler,
+    private readonly tenants: TenantContext,
   ) {}
 
   @Cron(MATERIALISE_CRON, {
@@ -67,7 +90,9 @@ export class SeriesMaterialiser {
 
       for (const id of due) {
         try {
-          const result = await this.handler.run(id, today);
+          const result = await this.inSeriesTenant(id, () =>
+            this.handler.run(id, today),
+          );
           series += 1;
           materialised += result.materialised;
 
@@ -101,5 +126,20 @@ export class SeriesMaterialiser {
     }
 
     return { series, materialised };
+  }
+
+  /**
+   * `fn` inside the series' own tenant, when SERIES_JOB_TENANT is on.
+   *
+   * A series with no tenant runs with none, exactly as before: it still
+   * materialises, and its bookings are stamped NULL as they always were. Off,
+   * nothing extra is read and nothing changes.
+   */
+  private async inSeriesTenant<T>(
+    seriesId: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    if (!SERIES_JOB_TENANT()) return fn();
+    return this.tenants.run(await this.repo.tenantOf(seriesId), fn);
   }
 }
