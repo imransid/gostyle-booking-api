@@ -177,7 +177,9 @@ export class ReceptionCheckInController {
       '`needsDecision`: bookings the auto no-show leaves to the desk ' +
       'because the customer said they arrived (mostly nobody answered in ' +
       'time): still CONFIRMED and past start plus 30 minutes, oldest first, ' +
-      'at most 100. Close each one by hand: check in, no-show or cancel.',
+      'at most 100. Close each one by hand: check in, no-show or cancel. ' +
+      'Each line carries the customer\u2019s name from customer-api, or null: ' +
+      'the list never waits more than about a second for names.',
   })
   @ApiOkResponse({ description: '{ branchId, waiting, needsDecision }.' })
   async list(
@@ -194,10 +196,12 @@ export class ReceptionCheckInController {
       this.scope
         .keepInScope(actor, entries, (e) => e.scope, route)
         .map((e) => e.item);
-    return {
-      branchId,
+    // Names AFTER the scope check: only the lines on this page are looked
+    // up, and the list never waits for them (CheckInDeskHandler.named).
+    const page = await this.desk.named({
       waiting: visible(list.waiting),
       needsDecision: visible(list.needsDecision),
-    };
+    });
+    return { branchId, ...page };
   }
 }

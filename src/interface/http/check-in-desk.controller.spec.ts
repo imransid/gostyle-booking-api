@@ -54,6 +54,8 @@ function handler() {
     approve: vi.fn(() => Promise.resolve({ request: {}, checkIn: {} })),
     reject: vi.fn(() => Promise.resolve({ request: {} })),
     reception: vi.fn(),
+    // Passes the page through: names are the handler's own test.
+    named: vi.fn((page: unknown) => Promise.resolve(page)),
   };
 }
 
@@ -165,6 +167,12 @@ describe('the reception list: scope always on', () => {
       needsDecision: [{ name: 'mine too' }],
     });
     expect(h.reception).toHaveBeenCalledWith(BRANCH_A);
+    // Names are asked for the visible page only: romoni and the fixture
+    // line never reach the lookup.
+    expect(h.named).toHaveBeenCalledWith({
+      waiting: [{ name: 'mine' }],
+      needsDecision: [{ name: 'mine too' }],
+    });
   });
 
   it('another tenant’s branch, named by a token with no branch, reads empty', async () => {

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { shout, type Shouted } from '@application/contract/wire';
 import { bookingError } from '@application/contract/errors';
 import type { ActorKind, BookingStatus } from '@domain/booking/lifecycle';
@@ -10,6 +10,11 @@ import {
   type NothingToAnswer,
   type ReceptionRow,
 } from '@infrastructure/persistence/check-in-request.repository';
+import {
+  CUSTOMER_CONTACT,
+  type ContactLookup,
+  type CustomerContactReader,
+} from '@application/ports/customer-contact.port';
 import { LifecycleHandler, type LifecycleView } from './lifecycle.handler';
 import { viewOf, type CheckInRequestView } from './check-in-request.handler';
 
@@ -34,8 +39,29 @@ export interface ReceptionItem {
     readonly startAt: string;
     readonly endAt: string;
     readonly customerId: string;
+    /**
+     * As customer-api holds it (ConsumerDirectory, the reminders' lookup).
+     * Null when customer-api has none, or did not answer in time: the list
+     * never waits for a name (RECEPTION_NAMES_CAP_MS).
+     */
+    readonly customerName: string | null;
   };
 }
+
+/**
+ * THE LIST NEVER WAITS ON A NAME. Every name lookup together gets this long;
+ * after it, the list goes out with whatever names came back and null for
+ * the rest. A desk that cannot see the list is worse than one reading
+ * booking codes.
+ */
+export const RECEPTION_NAMES_CAP_MS = 1_000;
+
+/**
+ * Each lookup's own limit, inside the cap, so a slow customer-api answers
+ * "unavailable" (and is counted in the one log line) a little before the
+ * cap itself fires.
+ */
+export const RECEPTION_NAME_LOOKUP_MS = 900;
 
 /**
  * A reception line with what the scope check needs to know about its
@@ -64,9 +90,12 @@ export function deskViewOf(row: CheckInRequestRow): DeskRequestView {
  */
 @Injectable()
 export class CheckInDeskHandler {
+  private static readonly log = new Logger('CheckInReception');
+
   constructor(
     private readonly requests: CheckInRequestRepository,
     private readonly lifecycle: LifecycleHandler,
+    @Inject(CUSTOMER_CONTACT) private readonly contacts: CustomerContactReader,
   ) {}
 
   /**
@@ -124,6 +153,89 @@ export class CheckInDeskHandler {
     return { request: deskViewOf(out.request) };
   }
 
+  /**
+   * The customer's name on every line of a page the caller may see.
+   *
+   * Called AFTER the scope check, so only the lines on the page are named,
+   * and each customer is asked for once however many lines they have.
+   * ConsumerDirectory.GetConsumerContact, the reminders' own lookup, in
+   * quick mode: one attempt each, all at once, no retries. Only the name is
+   * kept; the email and preferences it also returns are not.
+   *
+   * NEVER WAITS: RECEPTION_NAMES_CAP_MS for all of them together, then the
+   * page goes out with null for whatever had not come back. At most ONE log
+   * line per page, however many lookups failed.
+   */
+  async named(page: {
+    readonly waiting: readonly ReceptionItem[];
+    readonly needsDecision: readonly ReceptionItem[];
+  }): Promise<{ waiting: ReceptionItem[]; needsDecision: ReceptionItem[] }> {
+    const ids = [
+      ...new Set(
+        [...page.waiting, ...page.needsDecision].map(
+          (i) => i.booking.customerId,
+        ),
+      ),
+    ];
+    const names = await this.namesOf(ids);
+    const name = (i: ReceptionItem): ReceptionItem => ({
+      ...i,
+      booking: {
+        ...i.booking,
+        customerName: names.get(i.booking.customerId) ?? null,
+      },
+    });
+    return {
+      waiting: page.waiting.map(name),
+      needsDecision: page.needsDecision.map(name),
+    };
+  }
+
+  private async namesOf(
+    ids: readonly string[],
+  ): Promise<ReadonlyMap<string, string | null>> {
+    if (ids.length === 0) return new Map();
+
+    const all = Promise.all(
+      ids.map((id) =>
+        this.contacts
+          .lookup(id, { quickMs: RECEPTION_NAME_LOOKUP_MS })
+          .catch((e: unknown): ContactLookup => ({
+            kind: 'unavailable',
+            error: e instanceof Error ? e.message : String(e),
+          }))
+          .then((out) => [id, out] as const),
+      ),
+    );
+    const answers = await withinCap(all, RECEPTION_NAMES_CAP_MS);
+
+    if (answers === null) {
+      CheckInDeskHandler.log.warn(
+        `names: customer-api did not answer ${ids.length} lookup(s) within ` +
+          `${RECEPTION_NAMES_CAP_MS}ms; the list went out without them`,
+      );
+      return new Map();
+    }
+
+    const names = new Map<string, string | null>();
+    let unavailable = 0;
+    let firstError = '';
+    for (const [id, out] of answers) {
+      if (out.kind === 'found') names.set(id, out.contact.fullName);
+      if (out.kind === 'unavailable') {
+        unavailable += 1;
+        if (firstError === '') firstError = out.error;
+      }
+    }
+    if (unavailable > 0) {
+      CheckInDeskHandler.log.warn(
+        `names: customer-api unavailable for ${unavailable} of ` +
+          `${ids.length} customer(s) (${firstError}); those names are null`,
+      );
+    }
+    return names;
+  }
+
   /** The branch's reception list, both halves, before the scope check. */
   async reception(
     branchId: string,
@@ -158,6 +270,8 @@ function entryOf(row: ReceptionRow): ReceptionEntry {
         startAt: row.booking.startAt.toISOString(),
         endAt: row.booking.endAt.toISOString(),
         customerId: row.booking.customerId,
+        // Filled in by named(), after the scope check.
+        customerName: null,
       },
     },
     scope: {
@@ -166,4 +280,17 @@ function entryOf(row: ReceptionRow): ReceptionEntry {
       branchId: row.booking.branchId,
     },
   };
+}
+
+/** The work's answer, or null if `ms` passed first. Never rejects for time. */
+async function withinCap<T>(work: Promise<T>, ms: number): Promise<T | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const cap = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), ms);
+  });
+  try {
+    return await Promise.race([work, cap]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
