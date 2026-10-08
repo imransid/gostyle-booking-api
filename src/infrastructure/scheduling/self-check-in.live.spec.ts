@@ -9,6 +9,9 @@ import {
 } from '../persistence/check-in-request.repository';
 import { NoShowSweeper } from './no-show-sweeper.service';
 import { CheckInRequestSweeper } from './check-in-request-sweeper.service';
+import { ConflictException } from '@nestjs/common';
+import { LifecycleHandler } from '@application/commands/lifecycle.handler';
+import { FixtureCustomerContext } from '../fixtures/fixture-customer-context';
 
 /**
  * SELF CHECK-IN AND THE AUTO NO-SHOW SWEEPER, AGAINST A REAL POSTGRES.
@@ -73,6 +76,7 @@ describe.skipIf(LIVE === '')('self check-in, live', { timeout: 60_000 }, () => {
     readonly startAtMs: number;
     readonly status?: string;
     readonly tenantId?: string | null;
+    readonly branchId?: string;
   }): Promise<string> {
     const id = randomUUID();
     seq += 1;
@@ -87,7 +91,7 @@ describe.skipIf(LIVE === '')('self check-in, live', { timeout: 60_000 }, () => {
                            start_minute, duration_min, price_fils,
                            deposit_fils, channel, updated_at)
       VALUES (${id}::uuid, ${input.tenantId ?? null}, ${code},
-              ${branch}::uuid, ${randomUUID()}::uuid,
+              ${input.branchId ?? branch}::uuid, ${randomUUID()}::uuid,
               ${input.status ?? 'confirmed'}::booking_status, 'none_required',
               ${day}::date, ${start}, ${end}, ${minute}, 60, 0, 0, 'mobile',
               now())`;
@@ -423,5 +427,206 @@ describe.skipIf(LIVE === '')('self check-in, live', { timeout: 60_000 }, () => {
     // D1: nobody answered, and the sweeper still leaves it to the desk.
     await noShow.sweep();
     expect(await statusOf(ignored)).toBe('confirmed');
+  });
+
+  // ------------------------------------------------------------ the desk
+
+  const DESK = '33333333-3333-4333-8333-333333333333';
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  // The desk check-in itself: what approve runs (CheckInDeskHandler).
+  const checkIn = (bookingId: string) => () =>
+    new LifecycleHandler(lifecycle, new FixtureCustomerContext()).execute({
+      bookingId,
+      to: 'checked_in',
+      actor: 'staff',
+      actorId: DESK,
+    });
+  const decider = (bookingId: string) => ({
+    bookingId,
+    deciderKind: 'staff' as const,
+    deciderId: DESK,
+  });
+
+  it(
+    'approve: the lapse job cannot close the request between the check-in ' +
+      'and the mark, because approve holds its lock',
+    async () => {
+      const at = BASE + 10 * 60 * MIN;
+      const booking = await seed({ startAtMs: at });
+      await claim(booking, 'waiting', at);
+
+      // The check-in commits (the booking is CHECKED_IN, which the lapse job
+      // reads as "moved on"), then the approval waits 600ms before its mark.
+      // The lapse job runs 300ms in.
+      const approval = requests.approveWith(decider(booking), async () => {
+        const out = await checkIn(booking)();
+        await sleep(600);
+        return out;
+      });
+      await sleep(300);
+      const lapsed = await requests.lapseWaiting(Date.now());
+      const out = await approval;
+
+      expect(out.kind).toBe('approved');
+      expect(lapsed.map((l) => l.code)).not.toContain(
+        (await prisma.booking.findUniqueOrThrow({ where: { id: booking } }))
+          .code,
+      );
+      expect((await requests.latestFor(booking))?.state).toBe('approved');
+      expect(await statusOf(booking)).toBe('checked_in');
+    },
+  );
+
+  it('control: the same moment without the lock, and the request is lost to closed', async () => {
+    const at = BASE + 11 * 60 * MIN;
+    const booking = await seed({ startAtMs: at });
+    await claim(booking, 'waiting', at);
+
+    await checkIn(booking)();
+    await requests.lapseWaiting(Date.now());
+    const marked = await prisma.checkInRequest.updateMany({
+      where: { bookingId: booking, state: 'waiting' },
+      data: { state: 'approved' },
+    });
+
+    expect(marked.count).toBe(0);
+    expect((await requests.latestFor(booking))?.state).toBe('closed');
+  });
+
+  it('two desks approve at once: one check-in, one approval, the other is told nothing waits', async () => {
+    const at = BASE + 12 * 60 * MIN;
+    const booking = await seed({ startAtMs: at });
+    await claim(booking, 'waiting', at);
+    let checkIns = 0;
+    const slowCheckIn = async () => {
+      checkIns += 1;
+      const out = await checkIn(booking)();
+      await sleep(300);
+      return out;
+    };
+
+    const outs = await Promise.all([
+      requests.approveWith(decider(booking), slowCheckIn),
+      requests.approveWith(decider(booking), slowCheckIn),
+    ]);
+
+    expect(outs.map((o) => o.kind).sort()).toEqual([
+      'approved',
+      'nothing_waiting',
+    ]);
+    expect(outs.find((o) => o.kind === 'nothing_waiting')).toEqual({
+      kind: 'nothing_waiting',
+      latest: 'approved',
+    });
+    expect(checkIns).toBe(1);
+    const history = await prisma.bookingStatusHistory.findMany({
+      where: { bookingId: booking },
+    });
+    expect(history.map((h) => [h.toStatus, h.actorKind])).toEqual([
+      ['checked_in', 'staff'],
+    ]);
+  });
+
+  it('a rejection during an approval waits, then finds it approved', async () => {
+    const at = BASE + 13 * 60 * MIN;
+    const booking = await seed({ startAtMs: at });
+    await claim(booking, 'waiting', at);
+
+    const approval = requests.approveWith(decider(booking), async () => {
+      const out = await checkIn(booking)();
+      await sleep(400);
+      return out;
+    });
+    await sleep(150);
+    const rejection = await requests.reject({
+      ...decider(booking),
+      reason: 'Not at the salon',
+    });
+
+    expect((await approval).kind).toBe('approved');
+    expect(rejection).toEqual({ kind: 'nothing_waiting', latest: 'approved' });
+  });
+
+  it('a check-in the state machine refuses: the error is the answer, and the request still waits', async () => {
+    const at = BASE + 14 * 60 * MIN;
+    const booking = await seed({ startAtMs: at, status: 'cancelled' });
+    await claim(booking, 'waiting', at);
+
+    await expect(
+      requests.approveWith(decider(booking), checkIn(booking)),
+    ).rejects.toThrow(
+      new ConflictException('A cancelled booking cannot become checked_in.'),
+    );
+    expect((await requests.latestFor(booking))?.state).toBe('waiting');
+  });
+
+  it('reject: rejected with who and why, and the booking is untouched', async () => {
+    const at = BASE + 15 * 60 * MIN;
+    const booking = await seed({ startAtMs: at });
+    await claim(booking, 'waiting', at);
+
+    const out = await requests.reject({
+      ...decider(booking),
+      reason: 'Not at the salon',
+    });
+
+    expect(out).toMatchObject({
+      kind: 'rejected',
+      request: {
+        state: 'rejected',
+        decidedByKind: 'staff',
+        decidedById: DESK,
+        reason: 'Not at the salon',
+      },
+    });
+    expect(await statusOf(booking)).toBe('confirmed');
+    // Tidy: rejected and due, so the next run's sweep would take it.
+    await prisma.booking.update({
+      where: { id: booking },
+      data: { status: 'cancelled' },
+    });
+  });
+
+  it('the reception list: who waits, and who the sweeper left to the desk', async () => {
+    const here = randomUUID();
+    const elsewhere = randomUUID();
+    const past = BASE + 16 * 60 * MIN;
+    const soon = Date.now() + 10 * MIN;
+    const later = Date.now() + 3 * 60 * MIN;
+
+    const waiting = await seed({ startAtMs: soon, branchId: here });
+    await claim(waiting, 'waiting', soon - 5 * MIN);
+    const stale = await seed({
+      startAtMs: soon,
+      branchId: here,
+      status: 'checked_in',
+    });
+    await claim(stale, 'waiting', soon - 5 * MIN);
+    const ignored = await seed({ startAtMs: past, branchId: here });
+    await claim(ignored, 'expired', past);
+    const undone = await seed({ startAtMs: past + MIN, branchId: here });
+    await claim(undone, 'approved', past);
+    const rejected = await seed({ startAtMs: past, branchId: here });
+    await claim(rejected, 'rejected', past);
+    const unclaimed = await seed({ startAtMs: past, branchId: here });
+    const notDueYet = await seed({ startAtMs: later, branchId: here });
+    await claim(notDueYet, 'approved', later - 20 * MIN);
+    const otherBranch = await seed({ startAtMs: soon, branchId: elsewhere });
+    await claim(otherBranch, 'waiting', soon - 5 * MIN);
+
+    const list = await requests.listForBranch(here, Date.now());
+
+    expect(list.waiting.map((r) => r.booking.id)).toEqual([waiting]);
+    expect(list.needsDecision.map((r) => r.booking.id)).toEqual([
+      ignored,
+      undone,
+    ]);
+    expect(list.needsDecision[0]?.request.state).toBe('expired');
+
+    // Tidy: the unclaimed and rejected ones are due, for the next run's sweep.
+    await prisma.booking.updateMany({
+      where: { id: { in: [rejected, unclaimed] } },
+      data: { status: 'cancelled' },
+    });
   });
 });

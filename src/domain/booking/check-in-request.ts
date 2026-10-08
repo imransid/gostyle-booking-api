@@ -157,3 +157,15 @@ export function lapseOf(input: {
   }
   return null;
 }
+
+/**
+ * The desk's reason for a rejection, as it is stored: trimmed, and null when
+ * there is nothing left, which the desk is told to fill in ("Choose a
+ * reason", as lifecycle.ts says for any move that needs one). The table
+ * refuses a blank one too (check_in_request_rejection_says_why); this keeps
+ * that from ever being the answer the desk sees.
+ */
+export function rejectionReason(raw: string | null | undefined): string | null {
+  const reason = (raw ?? '').trim();
+  return reason === '' ? null : reason;
+}

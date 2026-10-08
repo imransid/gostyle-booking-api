@@ -225,3 +225,214 @@ describe('arrivalClaimed', () => {
     expect(sql.text).not.toContain(BOOKING);
   });
 });
+
+describe('approveWith: lock, check in, then mark', () => {
+  const NOW = START + 5 * MIN;
+  const decider = {
+    bookingId: BOOKING,
+    deciderKind: 'staff' as const,
+    deciderId: 'desk-1',
+    nowMs: NOW,
+  };
+
+  function approving(opts: {
+    waiting?: boolean;
+    bookingExists?: boolean;
+    latest?: string | null;
+  }) {
+    const order: string[] = [];
+    const approved = { id: 'req-1', state: 'approved' };
+    const tx = {
+      $queryRaw: vi.fn(() => {
+        order.push('lock');
+        return Promise.resolve(opts.waiting === false ? [] : [{ id: 'req-1' }]);
+      }),
+      checkInRequest: {
+        update: vi.fn(() => {
+          order.push('mark');
+          return Promise.resolve(approved);
+        }),
+        findFirst: vi.fn(() =>
+          Promise.resolve(
+            opts.latest === undefined || opts.latest === null
+              ? null
+              : { state: opts.latest },
+          ),
+        ),
+      },
+      booking: {
+        findUnique: vi.fn(() =>
+          Promise.resolve(
+            opts.bookingExists === false ? null : { id: BOOKING },
+          ),
+        ),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn((fn: (t: typeof tx) => unknown) => fn(tx)),
+    };
+    const checkIn = vi.fn(() => {
+      order.push('check-in');
+      return Promise.resolve({ to: 'CHECKED_IN' });
+    });
+    return {
+      r: new CheckInRequestRepository(prisma as never),
+      tx,
+      checkIn,
+      order,
+      approved,
+    };
+  }
+
+  it('locks the waiting request, runs the check-in, then marks it, in that order', async () => {
+    const h = approving({});
+    await expect(h.r.approveWith(decider, h.checkIn)).resolves.toEqual({
+      kind: 'approved',
+      request: h.approved,
+      checkIn: { to: 'CHECKED_IN' },
+    });
+    expect(h.order).toEqual(['lock', 'check-in', 'mark']);
+    const lock = Prisma.sql(
+      ...(h.tx.$queryRaw.mock.calls[0] as unknown as [
+        TemplateStringsArray,
+        ...unknown[],
+      ]),
+    );
+    expect(lock.text).toMatch(/state = 'waiting'\s+FOR UPDATE/);
+    expect(h.tx.checkInRequest.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'req-1' },
+        data: {
+          state: 'approved',
+          decidedAt: new Date(NOW),
+          decidedByKind: 'staff',
+          decidedById: toUuid('desk-1'),
+        },
+      }),
+    );
+  });
+
+  it('a refused check-in throws, and the request is never marked', async () => {
+    const h = approving({});
+    const refused = new Error('A cancelled booking cannot become checked_in.');
+    h.checkIn.mockRejectedValueOnce(refused);
+    await expect(h.r.approveWith(decider, h.checkIn)).rejects.toBe(refused);
+    expect(h.tx.checkInRequest.update).not.toHaveBeenCalled();
+  });
+
+  it('nothing waiting: no check-in, and the latest state says why', async () => {
+    const h = approving({ waiting: false, latest: 'approved' });
+    await expect(h.r.approveWith(decider, h.checkIn)).resolves.toEqual({
+      kind: 'nothing_waiting',
+      latest: 'approved',
+    });
+    expect(h.checkIn).not.toHaveBeenCalled();
+  });
+
+  it('nothing waiting and no booking: not_found', async () => {
+    const h = approving({ waiting: false, bookingExists: false });
+    await expect(h.r.approveWith(decider, h.checkIn)).resolves.toEqual({
+      kind: 'not_found',
+    });
+  });
+
+  it('a malformed id: not_found, without a transaction', async () => {
+    const h = approving({});
+    await expect(
+      h.r.approveWith({ ...decider, bookingId: 'nope' }, h.checkIn),
+    ).resolves.toEqual({ kind: 'not_found' });
+    expect(h.checkIn).not.toHaveBeenCalled();
+  });
+});
+
+describe('reject', () => {
+  function rejecting(updated: { id: string }[], bookingExists = true) {
+    const row = { id: 'req-1', state: 'rejected' };
+    const tx = {
+      $queryRaw: vi.fn(() => Promise.resolve(updated)),
+      checkInRequest: {
+        findUniqueOrThrow: vi.fn(() => Promise.resolve(row)),
+        findFirst: vi.fn(() => Promise.resolve({ state: 'expired' })),
+      },
+      booking: {
+        findUnique: vi.fn(() =>
+          Promise.resolve(bookingExists ? { id: BOOKING } : null),
+        ),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn((fn: (t: typeof tx) => unknown) => fn(tx)),
+    };
+    return { r: new CheckInRequestRepository(prisma as never), tx, row };
+  }
+  const input = {
+    bookingId: BOOKING,
+    deciderKind: 'manager' as const,
+    deciderId: 'desk-2',
+    reason: 'Not at the salon',
+    nowMs: START,
+  };
+
+  it('one UPDATE, only of a WAITING request, with who, when and why', async () => {
+    const h = rejecting([{ id: 'req-1' }]);
+    await expect(h.r.reject(input)).resolves.toEqual({
+      kind: 'rejected',
+      request: h.row,
+    });
+    const sql = Prisma.sql(
+      ...(h.tx.$queryRaw.mock.calls[0] as unknown as [
+        TemplateStringsArray,
+        ...unknown[],
+      ]),
+    );
+    expect(sql.text).toMatch(
+      /UPDATE check_in_request[\s\S]*state = 'rejected'/,
+    );
+    expect(sql.text).toMatch(/AND state = 'waiting'\s+RETURNING id/);
+    expect(sql.values).toEqual([
+      new Date(START),
+      'manager',
+      toUuid('desk-2'),
+      'Not at the salon',
+      BOOKING,
+    ]);
+  });
+
+  it('nothing waiting: the latest state says why', async () => {
+    await expect(rejecting([]).r.reject(input)).resolves.toEqual({
+      kind: 'nothing_waiting',
+      latest: 'expired',
+    });
+  });
+
+  it('no booking: not_found', async () => {
+    await expect(rejecting([], false).r.reject(input)).resolves.toEqual({
+      kind: 'not_found',
+    });
+  });
+});
+
+describe('listForBranch', () => {
+  it('waiting: this branch, still CONFIRMED; needsDecision: the sweeper’s own claim rule, past the auto no-show time', async () => {
+    const queryRaw = vi.fn(() => Promise.resolve([]));
+    const r = new CheckInRequestRepository({ $queryRaw: queryRaw } as never);
+    const NOW = START + 2 * 60 * MIN;
+    await r.listForBranch('marina-walk', NOW);
+
+    const [waiting, needs] = (
+      queryRaw.mock.calls as unknown as [TemplateStringsArray, ...unknown[]][]
+    ).map((c) => Prisma.sql(...c));
+    expect(waiting?.text).toMatch(/r\.state = 'waiting'/);
+    expect(waiting?.text).toMatch(/b\.status = 'confirmed'/);
+    expect(waiting?.values).toEqual([toUuid('marina-walk')]);
+
+    expect(needs?.text).toMatch(/b\.status = 'confirmed'/);
+    expect(needs?.text).toContain(arrivalClaimed(Prisma.sql`b.id`).text);
+    expect(needs?.text).toMatch(/r\.state <> 'waiting'/);
+    expect(needs?.values).toEqual([
+      toUuid('marina-walk'),
+      new Date(NOW - 30 * MIN),
+      100,
+    ]);
+  });
+});

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { lapseOf, raiseVerdict } from './check-in-request';
+import { lapseOf, raiseVerdict, rejectionReason } from './check-in-request';
 import { CHECK_IN_OPENS_MIN, type BookingStatus } from './lifecycle';
 
 const MIN = 60_000;
@@ -136,5 +136,15 @@ describe('lapseOf: how a waiting request ends on its own', () => {
     expect(
       lapseOf({ bookingStatus: 'in_service', endAtMs: END, nowMs: END + MIN }),
     ).toMatchObject({ to: 'closed' });
+  });
+});
+
+describe('rejectionReason: a rejection always says why', () => {
+  it('keeps the words, trimmed', () => {
+    expect(rejectionReason('  Not at the salon ')).toBe('Not at the salon');
+  });
+
+  it.each([undefined, null, '', '   ', '\n\t'])('%j is no reason', (raw) => {
+    expect(rejectionReason(raw)).toBeNull();
   });
 });

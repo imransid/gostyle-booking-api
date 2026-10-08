@@ -6,6 +6,7 @@ import {
   type ScopeActor,
   type ScopeMode,
   type ScopeRefusal,
+  type ScopedBooking,
 } from '@domain/booking/booking-scope';
 import {
   BookingScopeRepository,
@@ -119,6 +120,42 @@ export class BookingScope {
       ),
     );
     if (mode === 'on') throw new NotFoundException(NO_SUCH_BOOKING);
+  }
+
+  /**
+   * A LIST's scope check: keep only the rows the actor may see, by the same
+   * rule (scopeVerdict) the by-id check asks, ALWAYS ON for staff. Built for
+   * lists born after the hole (self check-in's reception list), which have
+   * nobody depending on reading another salon's rows.
+   *
+   * Needed even though a list reads one branch: @BranchId lets a token with
+   * no branch name any branch, of any tenant, and branch ids are public.
+   *
+   * A hidden row is not an error, so nothing is thrown; one line says how
+   * many were hidden and from whom, the same evidence the by-id check logs.
+   */
+  keepInScope<T>(
+    actor: Actor,
+    rows: readonly T[],
+    bookingOf: (row: T) => ScopedBooking,
+    route: string,
+  ): T[] {
+    const who = folded(actor);
+    const kept = rows.filter(
+      (row) => scopeVerdict(who, bookingOf(row)).kind === 'allowed',
+    );
+    const hidden = rows.length - kept.length;
+    if (hidden > 0) {
+      BookingScope.log.warn(
+        [
+          `HID ${hidden} row(s) (always on): ${route}`,
+          `actor=${actor.kind}:${actor.id}`,
+          `token_tenant=${actor.tenantId ?? 'none'}`,
+          `token_branch=${actor.branchId ?? 'all'}`,
+        ].join(' '),
+      );
+    }
+    return kept;
   }
 
   private find(ref: BookingRef): Promise<ScopedBookingRow | null> {

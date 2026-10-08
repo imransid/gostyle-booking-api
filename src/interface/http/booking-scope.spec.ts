@@ -367,3 +367,52 @@ describe("staff, { staff: 'always' }: on whatever STAFF_SCOPE_V1 says", () => {
     ).rejects.toThrow(new NotFoundException('No such booking'));
   });
 });
+
+describe('keepInScope: a list, always on', () => {
+  const LIST = 'GET /v1/check-in-requests';
+  const mine = { name: 'mine', b: row() };
+  const otherTenant = { name: 'romoni', b: row({ tenantId: ROMONI }) };
+  const otherBranch = { name: 'branch b', b: row({ branchId: BRANCH_B }) };
+  const untenanted = { name: 'fixture', b: row({ tenantId: null }) };
+  const all = [mine, otherTenant, otherBranch, untenanted];
+  const names = (rows: { name: string }[]) => rows.map((r) => r.name);
+
+  it.each([undefined, 'off', 'log', 'on'])(
+    'STAFF_SCOPE_V1=%j: a branch-bound token keeps its own rows only',
+    (mode) => {
+      if (mode !== undefined) process.env.STAFF_SCOPE_V1 = mode;
+      const kept = scope().s.keepInScope(staff(), all, (r) => r.b, LIST);
+      expect(names(kept)).toEqual(['mine']);
+      expect(lines()).toHaveLength(1);
+      expect(lines()[0]).toMatch(
+        new RegExp(`^HID 3 row\\(s\\) \\(always on\\): ${LIST} actor=staff:`),
+      );
+    },
+  );
+
+  it('a company owner (no branch) keeps every branch of their tenant', () => {
+    const kept = scope().s.keepInScope(
+      staff({ kind: 'manager', branchId: null }),
+      all,
+      (r) => r.b,
+      LIST,
+    );
+    expect(names(kept)).toEqual(['mine', 'branch b']);
+  });
+
+  it('platform mode (no tenant) keeps everything, and logs nothing', () => {
+    const kept = scope().s.keepInScope(
+      staff({ tenantId: null, branchId: null }),
+      all,
+      (r) => r.b,
+      LIST,
+    );
+    expect(names(kept)).toEqual(names(all));
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('nothing hidden, nothing logged', () => {
+    scope().s.keepInScope(staff(), [mine], (r) => r.b, LIST);
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
