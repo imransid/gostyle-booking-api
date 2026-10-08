@@ -103,15 +103,15 @@ export function scopeVerdict(
 }
 
 function staffVerdict(actor: ScopeActor, booking: ScopedBooking): ScopeVerdict {
-  const tokenTenant = clean(actor.tenantId);
+  const tokenTenant = cleanId(actor.tenantId);
   if (tokenTenant === null) return ALLOWED;
 
-  const bookingTenant = clean(booking.tenantId);
+  const bookingTenant = cleanId(booking.tenantId);
   if (bookingTenant === null) return refused('untenanted_booking');
   if (bookingTenant !== tokenTenant) return refused('other_tenant');
 
-  const tokenBranch = clean(actor.branchId);
-  if (tokenBranch !== null && clean(booking.branchId) !== tokenBranch) {
+  const tokenBranch = cleanId(actor.branchId);
+  if (tokenBranch !== null && cleanId(booking.branchId) !== tokenBranch) {
     return refused('other_branch');
   }
   return ALLOWED;
@@ -138,8 +138,14 @@ export function staffScopeMode(raw: string | undefined): ScopeMode {
   return value === 'log' || value === 'on' ? value : 'off';
 }
 
-/** Trimmed and lowercased; blank is absent. */
-function clean(raw: string | null): string | null {
+/**
+ * An id as this rule compares it: trimmed and lowercased; blank is absent.
+ *
+ * Exported for the other rules that ask "is this the booking's own tenant
+ * and branch" (chair-check-in.ts), so a spelling is never a refusal there
+ * either, and there is one way to compare a tenant here, not two.
+ */
+export function cleanId(raw: string | null): string | null {
   if (raw === null) return null;
   const value = raw.trim().toLowerCase();
   return value === '' ? null : value;
