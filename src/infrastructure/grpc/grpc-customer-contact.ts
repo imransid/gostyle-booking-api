@@ -1,10 +1,15 @@
 import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
 import { Metadata, status } from '@grpc/grpc-js';
-import { Observable, firstValueFrom, timeout } from 'rxjs';
+import { Observable } from 'rxjs';
 
-import { callWithRetry, type GrpcCallOptions } from './call-with-retry';
+import {
+  callOnce,
+  callWithRetry,
+  type GrpcCallOptions,
+} from './call-with-retry';
 import { describeGrpcFailure, grpcStatusOf } from './grpc-failure';
+import { blankToNull } from './blank-to-null';
 import type {
   ContactLookup,
   CustomerContactReader,
@@ -107,11 +112,7 @@ export class GrpcCustomerContact
             )
           : // QUICK: one attempt, bounded twice (the gRPC deadline and our
             // own timeout, whichever fires first), no retry, no log.
-            await firstValueFrom(
-              issue(new Metadata(), {
-                deadline: Date.now() + quickMs,
-              }).pipe(timeout(quickMs)),
-            );
+            await callOnce(quickMs, issue);
 
       if (res.found !== true) return { kind: 'not_found' };
 
@@ -119,9 +120,9 @@ export class GrpcCustomerContact
         kind: 'found',
         contact: {
           customerId: res.consumer_id || customerId,
-          email: nonEmpty(res.email),
+          email: blankToNull(res.email),
           emailVerified: res.email_verified === true,
-          fullName: nonEmpty(res.full_name),
+          fullName: blankToNull(res.full_name),
           appointmentReminder: res.appointment_reminder === true,
           pushEnabled: res.push_enabled === true,
         },
@@ -142,9 +143,4 @@ export class GrpcCustomerContact
       return { kind: 'unavailable', error };
     }
   }
-}
-
-function nonEmpty(value: string | undefined): string | null {
-  const v = (value ?? '').trim();
-  return v === '' ? null : v;
 }

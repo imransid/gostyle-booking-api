@@ -110,3 +110,32 @@ export async function callWithRetry<T>(
     }
   }
 }
+
+/**
+ * One gRPC call, ONE ATTEMPT, bounded twice: the gRPC deadline (enforced by
+ * grpc-js) and our own timeout (enforced by us), set to the same instant,
+ * whichever fires first. No retry and no log line: the caller says what a
+ * failure means.
+ *
+ * For a call that must not be repeated or must not wait:
+ *
+ *   a screen    the self check-in reception list's names
+ *               (LookupOptions.quickMs), which must never wait on
+ *               customer-api
+ *   a scan      platform's ChairDirectory, where every answered call writes
+ *               a scan row in the salon's registry, so a retry after a
+ *               timeout platform did serve is a false scan
+ *
+ * No waitForReady: against a channel in TRANSIENT_FAILURE this fails at once
+ * rather than holding the call (see callWithRetry), which is what both want.
+ */
+export function callOnce<T>(
+  timeoutMs: number,
+  issue: (metadata: Metadata, options: GrpcCallOptions) => Observable<T>,
+): Promise<T> {
+  return firstValueFrom(
+    issue(new Metadata(), { deadline: Date.now() + timeoutMs }).pipe(
+      timeout(timeoutMs),
+    ),
+  );
+}
