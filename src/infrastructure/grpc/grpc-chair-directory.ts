@@ -56,12 +56,12 @@ const MISCONFIGURED: ReadonlyMap<number, string> = new Map([
     status.UNAUTHENTICATED,
     'platform refused our x-internal-key. PLATFORM_INTERNAL_KEY must hold ' +
       'the same value here and on platform; platform logs which side is ' +
-      'wrong, on its warn line after "Refused ChairDirectory.ResolveChairQr:"',
+      'wrong, on its warn line after "Refused ChairDirectory.ResolveChairQr:".',
   ],
   [
     status.UNIMPLEMENTED,
     'platform does not serve ChairDirectory.ResolveChairQr: it is older ' +
-      'than floor.proto (platform PR #178)',
+      'than floor.proto (platform PR #178).',
   ],
 ]);
 
@@ -107,8 +107,8 @@ export class GrpcChairDirectory implements ChairDirectory, OnModuleInit {
       // trip, and the log says which service to fix.
       this.reportOnce(
         'no key',
-        'PLATFORM_INTERNAL_KEY is not set on booking-api, so every chair ' +
-          'scan is refused before it reaches platform. Set it to the value ' +
+        'PLATFORM_INTERNAL_KEY is not set on booking-api, so a scan is ' +
+          'refused here, before it reaches platform. Set it to the value ' +
           'platform holds.',
       );
       return { kind: 'unavailable', error: 'PLATFORM_INTERNAL_KEY is not set' };
@@ -166,9 +166,17 @@ export class GrpcChairDirectory implements ChairDirectory, OnModuleInit {
     };
   }
 
+  /**
+   * The line SAYS it will not repeat. Otherwise a wrong key reads as one
+   * ERROR at boot and then silence, while every customer who sits down is
+   * refused: somebody reading the log later would take the silence for a fix.
+   */
   private reportOnce(fault: string, line: string): void {
     if (this.reported.has(fault)) return;
     this.reported.add(fault);
-    this.logger.error(`${line} (logged once per process)`);
+    this.logger.error(
+      `${line} Every chair scan is refused until this is fixed; this will ` +
+        'not be logged again until the service restarts.',
+    );
   }
 }

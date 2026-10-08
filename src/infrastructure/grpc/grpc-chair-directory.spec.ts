@@ -235,6 +235,10 @@ describe('a setup fault: ERROR once per process, not once per scan', () => {
     const line = loggedText(logs.error);
     expect(line).toContain('PLATFORM_INTERNAL_KEY');
     expect(line).toContain('Refused ChairDirectory.ResolveChairQr:');
+    // Silence after this line must not read as "fixed".
+    expect(line).toContain(
+      'this will not be logged again until the service restarts',
+    );
     expect(line).not.toContain(KEY);
     expect(line).not.toContain(KEY.slice(0, 6));
   });
