@@ -35,8 +35,23 @@ export type ContactLookup =
    */
   | { readonly kind: 'unavailable'; readonly error: string };
 
+/**
+ * How long a lookup may take, and how hard it tries.
+ *
+ * Unset (the default): what a message waiting to be sent wants. A second
+ * attempt that waits for the channel, and a log line for each failure.
+ *
+ * `quickMs`: what a SCREEN wants. One attempt, at most this many ms, no
+ * retry, and no log line of its own: the caller writes one for the whole
+ * batch, so a hundred failed lookups are one line, not two hundred. The
+ * self check-in reception list, which must never wait on customer-api.
+ */
+export interface LookupOptions {
+  readonly quickMs?: number;
+}
+
 export interface CustomerContactReader {
-  lookup(customerId: string): Promise<ContactLookup>;
+  lookup(customerId: string, options?: LookupOptions): Promise<ContactLookup>;
 }
 
 export const CUSTOMER_CONTACT = Symbol('CUSTOMER_CONTACT');

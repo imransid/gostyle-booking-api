@@ -241,6 +241,7 @@ model Booking {
   statusHistory   BookingStatusHistory[]
   idempotencyKeys IdempotencyKey[]
   deliveries      NotificationDelivery[]
+  checkInRequests CheckInRequest[]
 
   @@index([branchId, tradingDay, status], map: "booking_branch_day_idx")
   @@index([customerId, startAt(sort: Desc)], map: "booking_customer_idx")
@@ -523,6 +524,58 @@ model BookingStatusHistory {
 
   @@index([bookingId, createdAt], map: "booking_status_history_booking_idx")
   @@map("booking_status_history")
+}
+
+/// domain/booking/check-in-request.ts says what each one means.
+enum CheckInRequestState {
+  waiting
+  approved
+  rejected
+  expired
+  closed
+
+  @@map("check_in_request_state")
+}
+
+/// SELF CHECK-IN: the customer's "I am here" on one booking, and the answer.
+///
+/// A CLAIM, NOT A CHECK-IN. Nothing here moves the booking. The desk approves
+/// a request by running the ordinary check-in, so booking_status_history and
+/// the outbox are written exactly as for a desk check-in; this row is the
+/// record that the customer asked first, and who answered.
+///
+/// One WAITING request per booking at most (a partial unique index in the
+/// migration). Closed requests stay: they are the history, and the latest one
+/// is what the auto no-show sweeper reads.
+///
+/// No chair. Whether self check-in scans the pass or the chair is not decided;
+/// either way the chair is one more nullable column here, not a new table.
+model CheckInRequest {
+  id        String  @id @default(uuid(7)) @db.Uuid
+  /// Copied from the booking at raise time, never from X-Tenant-Id.
+  tenantId  String? @map("tenant_id")
+  bookingId String  @map("booking_id") @db.Uuid
+  booking   Booking @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+
+  state CheckInRequestState @default(waiting)
+
+  raisedAt     DateTime  @default(now()) @map("raised_at") @db.Timestamptz(6)
+  /// customer today. Kept as a kind, so a chair kiosk is not a migration.
+  raisedByKind ActorKind @map("raised_by_kind")
+  raisedById   String    @map("raised_by_id") @db.Uuid
+
+  /// All three null while waiting, all set once it ends. system for expired
+  /// and closed, staff or manager for approved and rejected. CHECKs in the
+  /// migration hold each of these.
+  decidedAt     DateTime?  @map("decided_at") @db.Timestamptz(6)
+  decidedByKind ActorKind? @map("decided_by_kind")
+  decidedById   String?    @map("decided_by_id") @db.Uuid
+  /// Required on rejected. On expired and closed, what ended it.
+  reason        String?
+
+  /// The latest request of a booking, every minute, for the sweeper.
+  @@index([bookingId, raisedAt(sort: Desc)], map: "check_in_request_booking_idx")
+  @@map("check_in_request")
 }
 
 // Written INSIDE the same transaction as the state change, so an event

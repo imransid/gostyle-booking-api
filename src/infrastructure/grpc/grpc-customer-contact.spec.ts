@@ -1,6 +1,7 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { Metadata, status } from '@grpc/grpc-js';
-import { of, throwError, type Observable } from 'rxjs';
+import { NEVER, of, throwError, type Observable } from 'rxjs';
+import { Logger } from '@nestjs/common';
 import { GrpcCustomerContact } from './grpc-customer-contact';
 
 const CUSTOMER = '22222222-2222-4222-8222-222222222222';
@@ -125,5 +126,73 @@ describe('the internal key', () => {
     expect(getConsumerContact.mock.calls[0]![0]).toEqual({
       consumer_id: CUSTOMER,
     });
+  });
+});
+
+describe('quick: for a screen that must not wait (LookupOptions.quickMs)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const quiet = () => ({
+    warn: vi
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined),
+    error: vi
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined),
+  });
+
+  it('found: the name, from one call with a deadline', async () => {
+    const { adapter, getConsumerContact } = build(() =>
+      of({ found: true, consumer_id: CUSTOMER, full_name: 'Sara Ahmed' }),
+    );
+    const before = Date.now();
+    const got = await adapter.lookup(CUSTOMER, { quickMs: 900 });
+    expect(got.kind === 'found' && got.contact.fullName).toBe('Sara Ahmed');
+    expect(getConsumerContact).toHaveBeenCalledTimes(1);
+    const opts = getConsumerContact.mock.calls[0]?.[2] as { deadline: number };
+    expect(opts.deadline).toBeGreaterThanOrEqual(before + 900);
+    expect(opts.deadline).toBeLessThanOrEqual(Date.now() + 900);
+  });
+
+  it('customer-api down: ONE attempt, no retry, no log line, unavailable', async () => {
+    const logs = quiet();
+    const { adapter, getConsumerContact } = build(() =>
+      throwError(() => grpcError(status.UNAVAILABLE, 'connection refused')),
+    );
+    const got = await adapter.lookup(CUSTOMER, { quickMs: 900 });
+    expect(got.kind).toBe('unavailable');
+    expect(getConsumerContact).toHaveBeenCalledTimes(1);
+    expect(logs.warn).not.toHaveBeenCalled();
+    expect(logs.error).not.toHaveBeenCalled();
+  });
+
+  it('misconfigured (UNIMPLEMENTED): unavailable, and still no log line', async () => {
+    const logs = quiet();
+    const { adapter } = build(() =>
+      throwError(() => grpcError(status.UNIMPLEMENTED, 'nope')),
+    );
+    expect((await adapter.lookup(CUSTOMER, { quickMs: 900 })).kind).toBe(
+      'unavailable',
+    );
+    expect(logs.error).not.toHaveBeenCalled();
+  });
+
+  it('no answer at all: unavailable once quickMs has passed', async () => {
+    quiet();
+    const { adapter } = build(() => NEVER);
+    const started = Date.now();
+    const got = await adapter.lookup(CUSTOMER, { quickMs: 50 });
+    expect(got.kind).toBe('unavailable');
+    expect(Date.now() - started).toBeLessThan(1_000);
+  });
+
+  it('the default path is unchanged: it still retries, and says so', async () => {
+    const logs = quiet();
+    const { adapter, getConsumerContact } = build(() =>
+      throwError(() => grpcError(status.UNAVAILABLE, 'connection refused')),
+    );
+    await adapter.lookup(CUSTOMER);
+    expect(getConsumerContact).toHaveBeenCalledTimes(2);
+    expect(logs.warn).toHaveBeenCalledTimes(1);
   });
 });

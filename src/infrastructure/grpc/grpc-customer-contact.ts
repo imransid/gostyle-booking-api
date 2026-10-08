@@ -1,13 +1,14 @@
 import { Inject, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
 import { Metadata, status } from '@grpc/grpc-js';
-import { Observable } from 'rxjs';
+import { Observable, firstValueFrom, timeout } from 'rxjs';
 
 import { callWithRetry, type GrpcCallOptions } from './call-with-retry';
 import { describeGrpcFailure, grpcStatusOf } from './grpc-failure';
 import type {
   ContactLookup,
   CustomerContactReader,
+  LookupOptions,
 } from '@application/ports/customer-contact.port';
 
 /** Injection token for the raw client; CUSTOMER_CONTACT names the port. */
@@ -81,25 +82,36 @@ export class GrpcCustomerContact
       this.client.getService<ConsumerDirectoryGrpc>('ConsumerDirectory');
   }
 
-  async lookup(customerId: string): Promise<ContactLookup> {
+  async lookup(
+    customerId: string,
+    options: LookupOptions = {},
+  ): Promise<ContactLookup> {
     // Read per call, like every other setting here: .env is loaded after
     // this module, and a key rotation should need a restart, not a rebuild.
     const key = (process.env.INTERNAL_GRPC_KEY ?? '').trim();
+    const quickMs = options.quickMs;
+
+    const issue = (md: Metadata, opts: GrpcCallOptions) => {
+      if (key !== '') md.set('x-internal-key', key);
+      return this.svc.getConsumerContact({ consumer_id: customerId }, md, opts);
+    };
 
     try {
-      const res = await callWithRetry(
-        this.logger,
-        `getConsumerContact ${customerId.slice(0, 8)}`,
-        CALL_TIMEOUT_MS,
-        (md, opts) => {
-          if (key !== '') md.set('x-internal-key', key);
-          return this.svc.getConsumerContact(
-            { consumer_id: customerId },
-            md,
-            opts,
-          );
-        },
-      );
+      const res =
+        quickMs === undefined
+          ? await callWithRetry(
+              this.logger,
+              `getConsumerContact ${customerId.slice(0, 8)}`,
+              CALL_TIMEOUT_MS,
+              issue,
+            )
+          : // QUICK: one attempt, bounded twice (the gRPC deadline and our
+            // own timeout, whichever fires first), no retry, no log.
+            await firstValueFrom(
+              issue(new Metadata(), {
+                deadline: Date.now() + quickMs,
+              }).pipe(timeout(quickMs)),
+            );
 
       if (res.found !== true) return { kind: 'not_found' };
 
@@ -120,7 +132,8 @@ export class GrpcCustomerContact
         return { kind: 'not_found' };
       }
       const error = `customer-api ${describeGrpcFailure(e)}`;
-      if (code !== null && MISCONFIGURED.has(code)) {
+      // Quick lookups leave the logging to their caller (LookupOptions).
+      if (quickMs === undefined && code !== null && MISCONFIGURED.has(code)) {
         this.logger.error(
           `${error} -- check INTERNAL_GRPC_KEY on both sides and that ` +
             'customer-api serves ConsumerDirectory',

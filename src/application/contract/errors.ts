@@ -50,6 +50,13 @@ export const ERROR_CODES = [
   'BOOKING_SKILL_MISSING',
   'BOOKING_GATE_BLOCKED',
   'BOOKING_CHECKIN_WINDOW',
+  /**
+   * SELF CHECK-IN: THE DESK SAID NO to this booking's "I am here", and a
+   * second try is refused (domain/booking/check-in-request.ts). Its own code
+   * because the app's answer is its own screen, "please speak to the desk",
+   * not a retry and not a generic state error.
+   */
+  'BOOKING_CHECKIN_REJECTED',
   'BOOKING_WITHIN_GRACE',
   'BOOKING_SERIAL_RESCHEDULE',
   'BOOKING_NO_SLOT',
@@ -157,6 +164,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   BOOKING_SKILL_MISSING: 409,
   BOOKING_GATE_BLOCKED: 409,
   BOOKING_CHECKIN_WINDOW: 409,
+  BOOKING_CHECKIN_REJECTED: 409,
   BOOKING_WITHIN_GRACE: 409,
   BOOKING_SERIAL_RESCHEDULE: 409,
   BOOKING_NO_SLOT: 409,
