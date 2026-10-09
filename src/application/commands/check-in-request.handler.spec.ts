@@ -146,6 +146,91 @@ describe('CheckInRequestHandler.raise', () => {
   });
 });
 
+describe('CheckInRequestHandler.withdraw', () => {
+  const WITHDRAWN = {
+    ...ROW,
+    state: 'withdrawn' as const,
+    decidedAt: new Date('2026-10-11T03:55:00.000Z'),
+    decidedByKind: 'customer' as const,
+  };
+  const WITHDRAWN_VIEW = {
+    ...VIEW,
+    state: 'WITHDRAWN',
+    decidedAt: '2026-10-11T03:55:00.000Z',
+  };
+
+  function withdrawing(out: unknown) {
+    const repo = { withdraw: vi.fn(() => Promise.resolve(out)) };
+    const chairs = { resolve: vi.fn() };
+    return { h: new CheckInRequestHandler(repo as never, chairs), repo };
+  }
+  async function refused(out: unknown): Promise<BookingError> {
+    const err: unknown = await withdrawing(out)
+      .h.withdraw({ bookingId: 'booking-1', actorId: 'sara' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BookingError);
+    return err as BookingError;
+  }
+
+  it('withdrawn: the request in the customer’s view, and no clock passed', async () => {
+    const w = withdrawing({ kind: 'withdrawn', request: WITHDRAWN });
+    await expect(
+      w.h.withdraw({ bookingId: 'booking-1', actorId: 'sara' }),
+    ).resolves.toEqual({ request: WITHDRAWN_VIEW });
+    expect(w.repo.withdraw).toHaveBeenCalledWith({
+      bookingId: 'booking-1',
+      actorId: 'sara',
+    });
+  });
+
+  it('a second tap: the same request, the same answer', async () => {
+    await expect(
+      withdrawing({ kind: 'already_withdrawn', request: WITHDRAWN }).h.withdraw(
+        { bookingId: 'booking-1', actorId: 'sara' },
+      ),
+    ).resolves.toEqual({ request: WITHDRAWN_VIEW });
+  });
+
+  it.each(['closed', 'expired'] as const)(
+    'lapsed: 409 with the NEW state (%s), never the stale WAITING',
+    async (state) => {
+      const e = await refused({
+        kind: 'lapsed',
+        request: { ...ROW, state, decidedByKind: 'system' },
+      });
+      expect([e.code, e.status, e.message]).toEqual([
+        'BOOKING_STATE_INVALID',
+        409,
+        'This request has already ended.',
+      ]);
+      expect(e.details).toEqual({ request: state.toUpperCase() });
+    },
+  );
+
+  it('nothing waiting: 409 with the latest state', async () => {
+    const e = await refused({ kind: 'nothing_waiting', latest: 'approved' });
+    expect([e.code, e.message]).toEqual([
+      'BOOKING_STATE_INVALID',
+      'This request has already ended.',
+    ]);
+    expect(e.details).toEqual({ request: 'APPROVED' });
+  });
+
+  it('none ever raised: its own sentence, because nothing has ended', async () => {
+    const e = await refused({ kind: 'nothing_waiting', latest: null });
+    expect([e.code, e.message]).toEqual([
+      'BOOKING_STATE_INVALID',
+      'There is no check-in request to cancel.',
+    ]);
+    expect(e.details).toEqual({ request: null });
+  });
+
+  it('not found: BOOKING_NOT_FOUND, 404', async () => {
+    const e = await refused({ kind: 'not_found' });
+    expect([e.code, e.status]).toEqual(['BOOKING_NOT_FOUND', 404]);
+  });
+});
+
 describe('CheckInRequestHandler.latest', () => {
   it('the latest request, without the desk’s reason', async () => {
     const rejected = {

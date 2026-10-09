@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
   Param,
   Post,
   Res,
@@ -64,10 +65,12 @@ const ALWAYS = { staff: 'always' } as const;
 /**
  * SELF CHECK-IN, the customer's side: "I am here", and the desk's answer.
  *
- *   POST /v1/bookings/:id/check-in-request   raise one
- *   GET  /v1/bookings/:id/check-in-request   the latest one, or null
+ *   POST /v1/bookings/:id/check-in-request            raise one
+ *   POST /v1/bookings/:id/check-in-request/withdraw   take it back (the
+ *                                                     app's Cancel Request)
+ *   GET  /v1/bookings/:id/check-in-request            the latest one, or null
  *
- * Behind SELF_CHECK_IN_V1, off by default: off, both are a 404.
+ * Behind SELF_CHECK_IN_V1, off by default: off, all three are a 404.
  *
  * A CUSTOMER'S ROUTES ONLY. Staff check a customer in with POST
  * /v1/bookings/:id/check-in, as they always have; a staff token here is a
@@ -82,8 +85,9 @@ const ALWAYS = { staff: 'always' } as const;
  * today (customerOnly runs first), and is always on if it ever is.
  *
  * NO IDEMPOTENCY STORE, on purpose. A raise is already safe to repeat (a
- * second one answers with the request already waiting), and a stored reply
- * replayed later would show a WAITING the desk has since answered.
+ * second one answers with the request already waiting), and so is a
+ * withdrawal (a second one answers with the request it withdrew); a stored
+ * reply replayed later would show a WAITING the desk has since answered.
  */
 @ApiTags('self check-in')
 @UseGuards(SelfCheckInEnabledGuard)
@@ -155,6 +159,50 @@ export class CheckInRequestController {
     return { request: out.request };
   }
 
+  @Post('withdraw')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Take back my waiting check-in request (Cancel Request)',
+    description:
+      'Withdraws the request that is waiting for the desk. The booking is ' +
+      'not touched, and is still never marked a no-show automatically: the ' +
+      'customer is in the salon, correcting a scan. They may raise again ' +
+      'straight away (another chair, or Wait for Staff), unlike after the ' +
+      'desk rejects one.',
+  })
+  @ApiOkResponse({
+    description:
+      '{ request }, WITHDRAWN. A second tap answers the same request.',
+  })
+  @ApiConflictResponse({
+    description:
+      'BOOKING_STATE_INVALID: nothing is waiting to take back. ' +
+      '`details.request` is the request’s state as it now is, so the app ' +
+      'can move on: APPROVED, REJECTED, EXPIRED or CLOSED ("This request ' +
+      'has already ended."), or null when none was ever raised ("There is ' +
+      'no check-in request to cancel."). EXPIRED or CLOSED may have been ' +
+      'written by this very call: the desk had already checked them in, or ' +
+      'the end time had passed, and that is recorded, never a withdrawal.',
+  })
+  @ApiForbiddenResponse({ description: 'Not a customer token.' })
+  @ApiNotFoundResponse({
+    description: 'No such booking, or not the caller’s. Or the flag is off.',
+  })
+  async withdraw(
+    @Param('id') id: string,
+    @CurrentActor() actor: Actor,
+  ): Promise<{ request: CheckInRequestView }> {
+    customerOnly(actor);
+    await this.scope.refuseOutOfScope(
+      { bookingId: id },
+      actor,
+      'POST /v1/bookings/:id/check-in-request/withdraw',
+      ALWAYS,
+    );
+    // The server's clock, never the caller's: no nowMs is passed.
+    return this.requests.withdraw({ bookingId: id, actorId: actor.id });
+  }
+
   @Get()
   @ApiOperation({
     summary: 'My latest check-in request for this booking',
@@ -188,7 +236,7 @@ function customerOnly(actor: Actor): void {
   if (actor.kind === 'customer') return;
   throw bookingError(
     'FORBIDDEN_ROLE',
-    'Only the customer raises a check-in request. The desk checks in with ' +
-      'POST /v1/bookings/:id/check-in.',
+    'Only the customer raises or withdraws a check-in request. The desk ' +
+      'checks in with POST /v1/bookings/:id/check-in.',
   );
 }

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NotFoundException } from '@nestjs/common';
-import { GUARDS_METADATA } from '@nestjs/common/constants';
+import { GUARDS_METADATA, HTTP_CODE_METADATA } from '@nestjs/common/constants';
 import { CheckInRequestController } from './check-in-request.controller';
 import { SelfCheckInEnabledGuard } from './self-check-in.flag';
 import { BookingScope } from './booking-scope';
@@ -52,6 +52,9 @@ function controller(owner: string | null = 'sara', created = true) {
   };
   const handler = {
     raise: vi.fn(() => Promise.resolve({ created, request: VIEW })),
+    withdraw: vi.fn(() =>
+      Promise.resolve({ request: { ...VIEW, state: 'WITHDRAWN' } }),
+    ),
     latest: vi.fn(() => Promise.resolve(null)),
   };
   const res = { status: vi.fn() };
@@ -113,11 +116,32 @@ describe('CheckInRequestController', () => {
     expect(h.res.status).toHaveBeenCalledWith(200);
   });
 
+  it('withdraw: 200 with the request, for the customer’s own booking, on the server’s clock', async () => {
+    const h = controller('sara');
+    await expect(h.c.withdraw(BOOKING, customer('sara'))).resolves.toEqual({
+      request: { ...VIEW, state: 'WITHDRAWN' },
+    });
+    expect(h.handler.withdraw).toHaveBeenCalledWith({
+      bookingId: BOOKING,
+      actorId: 'sara',
+    });
+    // @HttpCode(200), not Nest's 201 for a POST: nothing is created.
+    const route: unknown = Object.getOwnPropertyDescriptor(
+      CheckInRequestController.prototype,
+      'withdraw',
+    )?.value;
+    expect(Reflect.getMetadata(HTTP_CODE_METADATA, route as object)).toBe(200);
+  });
+
   it.each([
     [
       'raise',
       (h: ReturnType<typeof controller>, a: Actor) =>
         h.c.raise(BOOKING, {}, a, h.res as never),
+    ],
+    [
+      'withdraw',
+      (h: ReturnType<typeof controller>, a: Actor) => h.c.withdraw(BOOKING, a),
     ],
     [
       'read',
@@ -131,9 +155,23 @@ describe('CheckInRequestController', () => {
         new NotFoundException('No such booking'),
       );
       expect(h.handler.raise).not.toHaveBeenCalled();
+      expect(h.handler.withdraw).not.toHaveBeenCalled();
       expect(h.handler.latest).not.toHaveBeenCalled();
     },
   );
+
+  it('withdraw: a booking that is not there, or a malformed id, is the same 404', async () => {
+    for (const [owner, id] of [
+      [null, BOOKING],
+      ['sara', 'not-a-uuid'],
+    ] as const) {
+      const h = controller(owner);
+      await expect(h.c.withdraw(id, customer('sara'))).rejects.toThrow(
+        new NotFoundException('No such booking'),
+      );
+      expect(h.handler.withdraw).not.toHaveBeenCalled();
+    }
+  });
 
   it('raise: a booking that is not there is the same 404', async () => {
     const h = controller(null);
@@ -166,6 +204,7 @@ describe('CheckInRequestController', () => {
       const actor = { ...staff, kind };
       for (const call of [
         () => h.c.raise(BOOKING, {}, actor, h.res as never),
+        () => h.c.withdraw(BOOKING, actor),
         () => h.c.read(BOOKING, actor),
       ]) {
         const err: unknown = await call().catch((e: unknown) => e);
@@ -174,6 +213,7 @@ describe('CheckInRequestController', () => {
       }
       expect(h.lookup.byId).not.toHaveBeenCalled();
       expect(h.handler.raise).not.toHaveBeenCalled();
+      expect(h.handler.withdraw).not.toHaveBeenCalled();
       expect(h.handler.latest).not.toHaveBeenCalled();
     },
   );

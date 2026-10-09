@@ -47,7 +47,7 @@ branch scans anything yet.
 Do these in order.
 
 1. **Make sure bookings carry their tenant.** The backfill ran on 2026-10-08. But the nightly desk series job still writes bookings with no tenant. Its fix (`fix/series-job-tenant`, flag `SERIES_JOB_TENANT`) is not deployed. The desk cannot see or approve a request on a booking with no tenant: it is hidden from the list, and approve answers 404. So deploy that fix with `SERIES_JOB_TENANT=true` first. At the least, re-run the staff scope step 0 SQL the day before and backfill what it finds.
-2. **Deploy this branch with `SELF_CHECK_IN_V1` unset**, and apply the migration as usual. Nothing changes for anyone. All five routes answer 404. The new sweeper filter and the lapse job run, but have nothing to act on.
+2. **Deploy this branch with `SELF_CHECK_IN_V1` unset**, and apply the migration as usual. Nothing changes for anyone. All six routes answer 404. The new sweeper filter and the lapse job run, but have nothing to act on.
 3. **Check the boot log** for both lines listed under "What to watch in the log".
 4. **Ship the other pieces:** the customer-api route (PR 4, built) and the business web screens (not built yet). Until then nobody can raise a request, so the flag would change nothing visible.
 5. **Set `SELF_CHECK_IN_V1=true`** on booking-api and restart it. Anything other than `true` is off. Then turn on customer-api's own flag (PR 4).
@@ -59,9 +59,13 @@ Do these in order.
 **The customer** (once PR 4 and the app screen exist)
 - From 30 minutes before the start until the end time, they can tap "I am here". They then see that the desk has their check-in.
 - Too early, they are told when check-in opens.
-- They see the answer: approved, rejected, expired or closed.
+- They see the answer: approved, rejected, expired, closed or withdrawn.
 - After a rejection they are told to speak to the desk, and cannot try again for that booking.
 - They never see the desk's reason.
+- **Cancel Request** (`POST /v1/bookings/:id/check-in-request/withdraw`): while the request waits, they can take it back, to scan another chair or to use Wait for Staff instead. The request becomes WITHDRAWN. Unlike after a rejection, they may raise again straight away.
+  - A withdrawn request still keeps the auto no-show away. Someone who withdrew to rescan is still in the salon.
+  - If the desk has already checked them in with the normal button, or the end time has passed, Cancel Request does not withdraw anything. It records what actually happened (CLOSED or EXPIRED, by the system, exactly as the lapse job would), and the 409 carries that state in `details.request` so the app moves on at once.
+  - Tapping it with no request at all answers "There is no check-in request to cancel." (`details.request` null). That is an app bug.
 
 **The desk**
 - The reception list has two parts.
@@ -75,6 +79,7 @@ Do these in order.
 **Nobody answers**
 - The booking is never marked a no-show automatically.
 - At the booking's end time the request expires. The booking stays CONFIRMED and appears under "needs a decision".
+- A request the customer withdrew and never raised again does the same: once past start plus 30 minutes, the booking appears under "needs a decision" with the request WITHDRAWN.
 - The desk closes it by hand: check in, mark no-show, or cancel.
 
 ## What to watch in the log
@@ -89,7 +94,7 @@ Do these in order.
 
 ## Turning it off
 
-- **Quick off:** set `SELF_CHECK_IN_V1` back to false (or remove it) and restart booking-api. Also turn off customer-api's flag once it exists. All five routes answer 404 at once.
+- **Quick off:** set `SELF_CHECK_IN_V1` back to false (or remove it) and restart booking-api. Also turn off customer-api's flag once it exists. All six routes answer 404 at once.
 - **What stays on:**
   - The lapse job keeps ending waiting requests.
   - The sweeper keeps leaving alone any booking whose customer said they arrived. Those stay CONFIRMED, and the desk closes them from the calendar, because the reception list is off with the flag.
