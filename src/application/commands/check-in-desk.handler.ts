@@ -121,6 +121,8 @@ export class CheckInDeskHandler {
           to: 'checked_in',
           actor: cmd.actor,
           actorId: cmd.actorId,
+          // The customer asked first. The desk still approved it (D1).
+          checkInVia: 'self',
         }),
     );
     if (out.kind === 'chair_occupied') {

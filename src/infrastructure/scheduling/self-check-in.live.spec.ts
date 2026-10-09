@@ -23,6 +23,9 @@ import {
 } from '@nestjs/microservices';
 import { Logger } from '@nestjs/common';
 import { CheckInRequestHandler } from '@application/commands/check-in-request.handler';
+import { CheckInDeskHandler } from '@application/commands/check-in-desk.handler';
+import { LifecycleController } from '@interface/http/lifecycle.controller';
+import { DeskExtrasRepository } from '../persistence/desk-extras.repository';
 import { BookingError } from '@application/contract/errors';
 import { GrpcChairDirectory } from '../grpc/grpc-chair-directory';
 import { chairDirectoryClientOptions } from '../grpc/floor-grpc.constants';
@@ -474,13 +477,14 @@ describe.skipIf(LIVE === '')('self check-in, live', { timeout: 60_000 }, () => {
 
   const DESK = '33333333-3333-4333-8333-333333333333';
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  // The desk check-in itself: what approve runs (CheckInDeskHandler).
+  // The desk check-in itself, as approve runs it (CheckInDeskHandler).
   const checkIn = (bookingId: string) => () =>
     new LifecycleHandler(lifecycle, new FixtureCustomerContext()).execute({
       bookingId,
       to: 'checked_in',
       actor: 'staff',
       actorId: DESK,
+      checkInVia: 'self',
     });
   const decider = (bookingId: string) => ({
     bookingId,
@@ -667,6 +671,81 @@ describe.skipIf(LIVE === '')('self check-in, live', { timeout: 60_000 }, () => {
     // Tidy: the unclaimed and rejected ones are due, for the next run's sweep.
     await prisma.booking.updateMany({
       where: { id: { in: [rejected, unclaimed] } },
+      data: { status: 'cancelled' },
+    });
+  });
+
+  // ------------------------------------------------------------ how
+
+  /** The booking's history as the welcome screen will read it. */
+  async function historyOf(bookingId: string) {
+    return prisma.bookingStatusHistory.findMany({
+      where: { bookingId },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      select: { fromStatus: true, toStatus: true, checkInVia: true },
+    });
+  }
+
+  it('the check-in says how: an approval SELF, the desk’s own STAFF, an undo nothing, and a forgotten caller is refused', async () => {
+    const at = BASE + 24 * 60 * MIN;
+    const handler = new LifecycleHandler(
+      lifecycle,
+      new FixtureCustomerContext(),
+    );
+    const desk = {
+      id: DESK,
+      kind: 'staff',
+      branchId: null,
+      tenantId: null,
+    } as const;
+
+    // Sara asked first; the desk approved: the real approve, end to end.
+    const asked = await seed({ startAtMs: at });
+    await raiseAsSara(asked, at);
+    await new CheckInDeskHandler(requests, handler, null as never).approve({
+      bookingId: asked,
+      actor: 'staff',
+      actorId: DESK,
+    });
+
+    // The desk on its own (the pass scanned), through the route itself;
+    // then the five-minute undo, then the desk again.
+    const walkedUp = await seed({ startAtMs: at });
+    const route = new LifecycleController(handler, null as never, lifecycle);
+    await route.checkIn(walkedUp, {}, desk);
+    await new DeskExtrasRepository(prisma).undoCheckIn({
+      bookingId: walkedUp,
+      reason: 'Wrong Amira',
+      actor: 'staff',
+      actorId: DESK,
+    });
+    await route.checkIn(walkedUp, {}, desk);
+
+    expect(await historyOf(asked)).toEqual([
+      { fromStatus: 'confirmed', toStatus: 'checked_in', checkInVia: 'self' },
+    ]);
+    expect(await historyOf(walkedUp)).toEqual([
+      { fromStatus: 'confirmed', toStatus: 'checked_in', checkInVia: 'staff' },
+      { fromStatus: 'checked_in', toStatus: 'confirmed', checkInVia: null },
+      { fromStatus: 'confirmed', toStatus: 'checked_in', checkInVia: 'staff' },
+    ]);
+
+    // A caller that forgot to say how: refused, never recorded as staff,
+    // and the booking did not move.
+    const forgotten = await seed({ startAtMs: at });
+    await expect(
+      handler.execute({
+        bookingId: forgotten,
+        to: 'checked_in',
+        actor: 'staff',
+        actorId: DESK,
+      }),
+    ).rejects.toThrow(/booking_status_history_check_in_says_how/);
+    expect(await statusOf(forgotten)).toBe('confirmed');
+    expect(await historyOf(forgotten)).toEqual([]);
+    // Tidy: unclaimed and due, so the next sweep would take it.
+    await prisma.booking.update({
+      where: { id: forgotten },
       data: { status: 'cancelled' },
     });
   });
