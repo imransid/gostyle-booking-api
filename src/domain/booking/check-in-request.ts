@@ -14,7 +14,7 @@ import { checkInTiming } from './lifecycle';
  * a QR on the chair). Neither is chosen, so nothing here knows about chairs.
  * A chair is one more column later, not a different flow.
  *
- * THE STATES. One open, four closed, and nothing leaves a closed state:
+ * THE STATES. One open, five closed, and nothing leaves a closed state:
  *
  *   waiting    raised, and nobody has answered yet
  *   approved   the desk said yes; the booking is now CHECKED_IN
@@ -23,25 +23,34 @@ import { checkInTiming } from './lifecycle';
  *   closed     the booking moved on another way before anybody answered
  *              (the desk used the ordinary check-in, or it was cancelled or
  *              moved)
+ *   withdrawn  the customer took it back before anybody answered (the app's
+ *              Cancel Request): a wrong chair to scan again, or Wait for
+ *              Staff instead. Not CANCELLED: the booking has a cancelled of
+ *              its own, and a request reading CANCELLED on a CONFIRMED
+ *              booking reads as the booking cancelled.
  *
  * WHAT A RAISE BUYS THE CUSTOMER. The auto no-show sweeper leaves the booking
  * alone for as long as the LATEST request on it is anything but rejected.
  * Not only while it waits: a request that expired unanswered still means the
  * customer told us they were here, and a deposit taken automatically after we
- * ignored them is a dispute our own record would lose. Only the desk saying
- * no hands the booking back to the sweeper. That rule is SQL, because the
- * sweeper has to filter on it: see arrivalClaimed in
- * check-in-request.repository.ts.
+ * ignored them is a dispute our own record would lose. A withdrawn one too:
+ * the customer who took it back to scan again is still standing in the
+ * salon, and a no-show in the minute before they raise again would punish
+ * them for correcting themselves. Only the desk saying no hands the booking
+ * back to the sweeper. That rule is SQL, because the sweeper has to filter on
+ * it: see arrivalClaimed in check-in-request.repository.ts.
  */
 export type CheckInRequestState =
-  'waiting' | 'approved' | 'rejected' | 'expired' | 'closed';
+  'waiting' | 'approved' | 'rejected' | 'expired' | 'closed' | 'withdrawn';
 
+/** In the order of the database enum, which only ever appends. */
 export const CHECK_IN_REQUEST_STATES: readonly CheckInRequestState[] = [
   'waiting',
   'approved',
   'rejected',
   'expired',
   'closed',
+  'withdrawn',
 ];
 
 export type RaiseRefusal =
@@ -86,9 +95,12 @@ export type RaiseVerdict =
  *                         approval is never refused as too early
  *   5. too late           at or past the booking's end time
  *
- * A request that expired or was closed does not stop a new one. Closed means
- * the booking left CONFIRMED and came back (a check-in undone); expired means
- * the booking has ended, which 5 refuses anyway.
+ * A request that expired, was closed or was withdrawn does not stop a new
+ * one. Closed means the booking left CONFIRMED and came back (a check-in
+ * undone); expired means the booking has ended, which 5 refuses anyway.
+ * Withdrawn means the customer took it back, and nobody at the desk said no:
+ * asking again (another chair, or Wait for Staff) is the point of taking it
+ * back.
  */
 export function raiseVerdict(input: {
   readonly bookingStatus: BookingStatus;
@@ -156,6 +168,58 @@ export function lapseOf(input: {
     };
   }
   return null;
+}
+
+export type WithdrawVerdict =
+  /** Withdraw the waiting request. */
+  | { readonly kind: 'withdraw' }
+  /** Already withdrawn: a second tap, answered with the same request. */
+  | { readonly kind: 'already_withdrawn' }
+  /** Nothing is waiting: none was raised, or it was answered or ended. */
+  | { readonly kind: 'refused'; readonly why: 'nothing_waiting' }
+  /**
+   * It still says waiting, but it has lapsed: the lapse job ends it the next
+   * minute, and this is how (lapseOf's own answer).
+   */
+  | { readonly kind: 'refused'; readonly why: 'lapsed'; readonly lapse: Lapse };
+
+/**
+ * May the customer take back their request NOW?
+ *
+ * Asked inside the request's row lock, against the booking's latest request
+ * and the booking as the database has it.
+ *
+ *   1. withdrawn already   a second tap is the same act, whatever has
+ *                          happened to the booking since
+ *   2. nothing waiting     approved, rejected, expired and closed are
+ *                          answers, and an answer is not taken back here
+ *   3. lapsed              lapseOf, the job's own rule, so the two can never
+ *                          disagree: the booking moved on (the desk checked
+ *                          them in with the ordinary button, or it was
+ *                          cancelled) or it has ended. The request is the
+ *                          job's to close or expire, and what it writes is
+ *                          what happened. A withdrawal there would hide it:
+ *                          an expired request is the desk not answering, and
+ *                          the desk is shown how often that happens.
+ *
+ * No window of its own and no count. A waiting request was raised inside the
+ * check-in window, and its end is lapseOf's (3). Raising again after a
+ * withdrawal is the point, so there is no limit on how often.
+ */
+export function withdrawVerdict(input: {
+  /** The booking's latest request, or null if it never had one. */
+  readonly latest: CheckInRequestState | null;
+  readonly bookingStatus: BookingStatus;
+  readonly endAtMs: number;
+  readonly nowMs: number;
+}): WithdrawVerdict {
+  if (input.latest === 'withdrawn') return { kind: 'already_withdrawn' };
+  if (input.latest !== 'waiting') {
+    return { kind: 'refused', why: 'nothing_waiting' };
+  }
+  const lapse = lapseOf(input);
+  if (lapse !== null) return { kind: 'refused', why: 'lapsed', lapse };
+  return { kind: 'withdraw' };
 }
 
 /**

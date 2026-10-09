@@ -47,7 +47,7 @@ branch scans anything yet.
 Do these in order.
 
 1. **Make sure bookings carry their tenant.** The backfill ran on 2026-10-08. But the nightly desk series job still writes bookings with no tenant. Its fix (`fix/series-job-tenant`, flag `SERIES_JOB_TENANT`) is not deployed. The desk cannot see or approve a request on a booking with no tenant: it is hidden from the list, and approve answers 404. So deploy that fix with `SERIES_JOB_TENANT=true` first. At the least, re-run the staff scope step 0 SQL the day before and backfill what it finds.
-2. **Deploy this branch with `SELF_CHECK_IN_V1` unset**, and apply the migration as usual. Nothing changes for anyone. All five routes answer 404. The new sweeper filter and the lapse job run, but have nothing to act on.
+2. **Deploy this branch with `SELF_CHECK_IN_V1` unset**, and apply the migration as usual. Nothing changes for anyone. All six routes answer 404. The new sweeper filter and the lapse job run, but have nothing to act on.
 3. **Check the boot log** for both lines listed under "What to watch in the log".
 4. **Ship the other pieces:** the customer-api route (PR 4, built) and the business web screens (not built yet). Until then nobody can raise a request, so the flag would change nothing visible.
 5. **Set `SELF_CHECK_IN_V1=true`** on booking-api and restart it. Anything other than `true` is off. Then turn on customer-api's own flag (PR 4).
@@ -59,9 +59,13 @@ Do these in order.
 **The customer** (once PR 4 and the app screen exist)
 - From 30 minutes before the start until the end time, they can tap "I am here". They then see that the desk has their check-in.
 - Too early, they are told when check-in opens.
-- They see the answer: approved, rejected, expired or closed.
+- They see the answer: approved, rejected, expired, closed or withdrawn.
 - After a rejection they are told to speak to the desk, and cannot try again for that booking.
 - They never see the desk's reason.
+- **Cancel Request** (`POST /v1/bookings/:id/check-in-request/withdraw`): while the request waits, they can take it back, to scan another chair or to use Wait for Staff instead. The request becomes WITHDRAWN. Unlike after a rejection, they may raise again straight away.
+  - A withdrawn request still keeps the auto no-show away. Someone who withdrew to rescan is still in the salon.
+  - If the desk has already checked them in with the normal button, or the end time has passed, Cancel Request does not withdraw anything. It records what actually happened (CLOSED or EXPIRED, by the system, exactly as the lapse job would), and the 409 carries that state in `details.request` so the app moves on at once.
+  - Tapping it with no request at all answers "There is no check-in request to cancel." (`details.request` null). That is an app bug.
 
 **The desk**
 - The reception list has two parts.
@@ -75,7 +79,41 @@ Do these in order.
 **Nobody answers**
 - The booking is never marked a no-show automatically.
 - At the booking's end time the request expires. The booking stays CONFIRMED and appears under "needs a decision".
+- A request the customer withdrew and never raised again does the same: once past start plus 30 minutes, the booking appears under "needs a decision" with the request WITHDRAWN.
 - The desk closes it by hand: check in, mark no-show, or cancel.
+
+## The welcome screen (for the app team)
+
+The same facts come on two reads. Both answer the check-in that stands on the booking, or null:
+
+| Read | Field | Use it for |
+|---|---|---|
+| `GET /v1/bookings/:id/check-in-request` | `checkIn: { at, via, byName }` | After the customer asked: the app is already polling this. |
+| `GET /v1/mobile-booking/:id` | `check_in: { at, via, by_name }` (snake_case, like the rest of that booking) | When the desk scanned the pass. No request was ever raised, so the request read has nothing. |
+
+`check_in` is only on the booking read while `SELF_CHECK_IN_V1` is on. With the flag off, the booking reads exactly as it did before.
+
+**When it is null**
+- No check-in stands: none yet, or the desk undid it.
+- On the request read, also while the request is WAITING (polling a waiting request never looks anything up), and when no request was ever raised.
+
+**`at`**: when they were checked in.
+
+**`via`**: which welcome to draw.
+- `SELF`: the customer asked first (at a chair, or with Wait for Staff), and the desk approved it.
+- `STAFF`: the desk checked them in on its own: their pass scanned, or the booking found on the calendar. booking-api cannot tell those two apart.
+- `null`: checked in before this release, when it was not recorded. Draw the plain welcome.
+- Draw the screen from `via`, not from the request's state. An approval the desk undid and then redid with its own button leaves an APPROVED request behind a STAFF check-in.
+
+**SELF never means nobody at the salon touched it.** The desk approves every self check-in (D1). There is no path where a customer is checked in on their own word. SELF means "the customer asked first". The design's "Welcome - Self-approved" screen describes a path that was deliberately not built: check its words before building it.
+
+**`byName` (`by_name` on the booking read) is best effort, and the screen must work without it.**
+- It is "Layla R.": the first name and the initial of the last, as platform has them now. Who it was exactly is kept by id, not by name.
+- It is null for three different reasons:
+  1. the desk member has no staff profile in platform (an owner's account, say);
+  2. platform did not answer within about a second, or failed to a moment ago (the read never waits longer for it, and after a failure it does not ask again for 30 seconds);
+  3. the profile has no first name.
+- **When it is null, say "Checked in at 14:24".** Never "Checked in by" followed by nothing.
 
 ## What to watch in the log
 
@@ -84,17 +122,35 @@ Do these in order.
 - `CheckInRequestSweeper ... closed`: fine. The desk used the normal button, or the booking was cancelled or moved.
 - `StaffScope REFUSED (always on)` or `HID n row(s) (always on)` for a real salon's own desk: one of its bookings has no tenant or a wrong one. Run step 0. QA tokens on marina-walk rows are refused by design: those rows have no tenant.
 - `CheckInReception names: customer-api unavailable ...` or `did not answer ... within 1000ms`: customer-api is down or slow, and the desk sees the list without names. One line per list load, never one per customer.
+- `WelcomeScreen name: platform unavailable ...` or `did not answer within 1000ms`: platform is down or slow, and a customer's welcome screen went out without the desk member's name. After one, names are skipped for 30 seconds, so at most one line per 30 seconds per running instance, and only for a check-in that stands: a waiting request never writes one. Lines every 30 seconds means platform is still down.
 - "Lapse sweep failed" or a no-show "Sweep failed": should never appear.
 - The usual "auto no-show at start plus 30" lines should keep coming for everyone else.
 
 ## Turning it off
 
-- **Quick off:** set `SELF_CHECK_IN_V1` back to false (or remove it) and restart booking-api. Also turn off customer-api's flag once it exists. All five routes answer 404 at once.
+- **Quick off:** set `SELF_CHECK_IN_V1` back to false (or remove it) and restart booking-api. Also turn off customer-api's flag once it exists. All six routes answer 404 at once, and the booking read stops carrying `check_in`.
 - **What stays on:**
   - The lapse job keeps ending waiting requests.
   - The sweeper keeps leaving alone any booking whose customer said they arrived. Those stay CONFIRMED, and the desk closes them from the calendar, because the reception list is off with the flag.
   - There is nothing to clean up. The table can stay.
 - **Full rollback:** deploy the previous image by its sha. The table stays, unused. The old sweeper does not know about requests: it will mark claimed bookings no-show and keep the deposit. Close those by hand first, or accept that.
+
+## Known cost: the desk member's name
+
+The welcome screen says who checked the customer in ("Checked in by Layla R."). booking-api keeps only that person's id, on the check-in's status history row. It looks the name up when the screen is read, never at check-in, so a lookup never sits in front of a receptionist with a customer waiting. The name shown is the one platform has now.
+
+- **Platform has no "get one staff member by user id".** So each lookup asks platform for the whole tenant's staff (`StaffDirectory.ListStylists` with no branch) and picks the person out. That grows with the salon, and it is on a read path.
+- **Measured 2026-10-09** against the local platform, with 3 staff in the tenant:
+  - whole tenant: 34 ms typical, 63 ms p95, 105 ms worst of 30;
+  - one branch, for comparison: 7 ms typical;
+  - the first call after a start: about 580 ms.
+  - A fifty-person salon will be slower. Production was not measured.
+- **What keeps it in bounds today:** one attempt, about a second at most, each distinct id once per read, and no name on a miss. A read never fails or waits longer for a name.
+- **During a platform outage:** after one lookup gets no answer, each running booking-api instance skips names for 30 seconds. Without that, every read of a checked-in booking would hold its request open for the full wait, for a name nobody sees. Measured 2026-10-09 with platform unreachable, five reads of one checked-in booking in a row:
+  - the first read: 0.92 s, no name, one log line;
+  - the next four: about 10 ms each, no name, no log line.
+  - So at most one slow read, and one log line, per instance per 30 seconds. Afterwards the next read asks again, and names come back as soon as platform answers.
+- **The ask, for platform:** an RPC that returns one staff member's first and last name by tenant and user id (or a batch of user ids). `GrpcStaffDirectory.namesOf` would call it instead of `ListStylists`; nothing above the port changes.
 
 ## What is not built
 

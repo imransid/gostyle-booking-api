@@ -1,6 +1,11 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { shout, type Shouted } from '@application/contract/wire';
 import { bookingError } from '@application/contract/errors';
+import {
+  SCREEN_NAME_CAP_MS,
+  SCREEN_NAME_LOOKUP_MS,
+  withinCap,
+} from '@application/contract/screen-names';
 import type { ActorKind, BookingStatus } from '@domain/booking/lifecycle';
 import type { ScopedBooking } from '@domain/booking/booking-scope';
 import { rejectionReason } from '@domain/booking/check-in-request';
@@ -52,16 +57,12 @@ export interface ReceptionItem {
  * THE LIST NEVER WAITS ON A NAME. Every name lookup together gets this long;
  * after it, the list goes out with whatever names came back and null for
  * the rest. A desk that cannot see the list is worse than one reading
- * booking codes.
+ * booking codes. The number is every screen's (screen-names.ts).
  */
-export const RECEPTION_NAMES_CAP_MS = 1_000;
+export const RECEPTION_NAMES_CAP_MS = SCREEN_NAME_CAP_MS;
 
-/**
- * Each lookup's own limit, inside the cap, so a slow customer-api answers
- * "unavailable" (and is counted in the one log line) a little before the
- * cap itself fires.
- */
-export const RECEPTION_NAME_LOOKUP_MS = 900;
+/** Each lookup's own limit, inside the cap (screen-names.ts). */
+export const RECEPTION_NAME_LOOKUP_MS = SCREEN_NAME_LOOKUP_MS;
 
 /**
  * A reception line with what the scope check needs to know about its
@@ -121,6 +122,8 @@ export class CheckInDeskHandler {
           to: 'checked_in',
           actor: cmd.actor,
           actorId: cmd.actorId,
+          // The customer asked first. The desk still approved it (D1).
+          checkInVia: 'self',
         }),
     );
     if (out.kind === 'chair_occupied') {
@@ -295,17 +298,4 @@ function entryOf(row: ReceptionRow): ReceptionEntry {
       branchId: row.booking.branchId,
     },
   };
-}
-
-/** The work's answer, or null if `ms` passed first. Never rejects for time. */
-async function withinCap<T>(work: Promise<T>, ms: number): Promise<T | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const cap = new Promise<null>((resolve) => {
-    timer = setTimeout(() => resolve(null), ms);
-  });
-  try {
-    return await Promise.race([work, cap]);
-  } finally {
-    clearTimeout(timer);
-  }
 }

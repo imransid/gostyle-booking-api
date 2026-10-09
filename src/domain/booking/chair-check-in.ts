@@ -30,10 +30,12 @@ import type { BookingStatus } from './lifecycle';
  *   4. occupied           another booking is IN THE CHAIR: checked in or
  *                         in service (IN_THE_CHAIR), on the same branch and
  *                         trading day, and its latest request names this
- *                         chair and was not rejected. Not only an approved
- *                         one: a customer who scanned the chair and was
- *                         then checked in with the desk's own button is in
- *                         it too. The trading day keeps a visit nobody
+ *                         chair and was neither rejected nor withdrawn. Not
+ *                         only an approved one: a customer who scanned the
+ *                         chair and was then checked in with the desk's own
+ *                         button is in it too. One who took the claim back
+ *                         is not: that is the chair they said was wrong.
+ *                         The trading day keeps a visit nobody
  *                         closed yesterday from holding the chair forever.
  *                         A WAITING claim on a CONFIRMED booking does not
  *                         block it: a claim can be stale, and blocking would

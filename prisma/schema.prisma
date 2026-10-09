@@ -520,10 +520,26 @@ model BookingStatusHistory {
   actorKind ActorKind @map("actor_kind")
   actorId   String?   @map("actor_id") @db.Uuid
 
+  /// HOW a customer was checked in, on a move into CHECKED_IN and nowhere
+  /// else: self when they asked first (an approved request), staff when the
+  /// desk did it on its own. With actor_id (who) and created_at (when), the
+  /// one home of a check-in's attribution (check-in-attribution.ts).
+  /// NO DEFAULT, on purpose: a missed caller is refused by the migration's
+  /// CHECK, never recorded as staff. Null on check-ins written before it.
+  checkInVia CheckInVia? @map("check_in_via")
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
   @@index([bookingId, createdAt], map: "booking_status_history_booking_idx")
   @@map("booking_status_history")
+}
+
+/// domain/booking/check-in-attribution.ts says what each one means.
+enum CheckInVia {
+  self
+  staff
+
+  @@map("check_in_via")
 }
 
 /// domain/booking/check-in-request.ts says what each one means.
@@ -533,6 +549,7 @@ enum CheckInRequestState {
   rejected
   expired
   closed
+  withdrawn
 
   @@map("check_in_request_state")
 }
@@ -577,8 +594,9 @@ model CheckInRequest {
   chairZoneName String? @map("chair_zone_name")
 
   /// All three null while waiting, all set once it ends. system for expired
-  /// and closed, staff or manager for approved and rejected. CHECKs in the
-  /// migration hold each of these.
+  /// and closed, staff or manager for approved and rejected, and for
+  /// withdrawn the customer who raised it. CHECKs in the migrations hold
+  /// each of these.
   decidedAt     DateTime?  @map("decided_at") @db.Timestamptz(6)
   decidedByKind ActorKind? @map("decided_by_kind")
   decidedById   String?    @map("decided_by_id") @db.Uuid

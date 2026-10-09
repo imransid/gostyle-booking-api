@@ -28,6 +28,13 @@ const VIEW = {
   chair: null,
 };
 
+/** What the welcome reader answers, in these tests. */
+const CHECK_IN = {
+  at: '2026-10-11T03:56:00.000Z',
+  via: 'SELF',
+  byName: 'Layla R.',
+};
+
 function handler(
   raise: unknown,
   latest: unknown = null,
@@ -47,10 +54,12 @@ function handler(
       return Promise.resolve(lookup);
     }),
   };
+  const attribution = { ofBooking: vi.fn(() => Promise.resolve(CHECK_IN)) };
   return {
-    h: new CheckInRequestHandler(repo as never, chairs),
+    h: new CheckInRequestHandler(repo as never, chairs, attribution as never),
     repo,
     chairs,
+    attribution,
     order,
   };
 }
@@ -146,26 +155,140 @@ describe('CheckInRequestHandler.raise', () => {
   });
 });
 
-describe('CheckInRequestHandler.latest', () => {
-  it('the latest request, without the desk’s reason', async () => {
-    const rejected = {
-      ...ROW,
-      state: 'rejected' as const,
-      decidedAt: new Date('2026-10-11T03:55:00.000Z'),
-      decidedByKind: 'staff' as const,
-      reason: 'Not at the salon',
+describe('CheckInRequestHandler.withdraw', () => {
+  const WITHDRAWN = {
+    ...ROW,
+    state: 'withdrawn' as const,
+    decidedAt: new Date('2026-10-11T03:55:00.000Z'),
+    decidedByKind: 'customer' as const,
+  };
+  const WITHDRAWN_VIEW = {
+    ...VIEW,
+    state: 'WITHDRAWN',
+    decidedAt: '2026-10-11T03:55:00.000Z',
+  };
+
+  function withdrawing(out: unknown) {
+    const repo = { withdraw: vi.fn(() => Promise.resolve(out)) };
+    const chairs = { resolve: vi.fn() };
+    return {
+      h: new CheckInRequestHandler(repo as never, chairs, null as never),
+      repo,
     };
-    const view = await handler(null, rejected).h.latest('booking-1');
-    expect(view).toEqual({
+  }
+  async function refused(out: unknown): Promise<BookingError> {
+    const err: unknown = await withdrawing(out)
+      .h.withdraw({ bookingId: 'booking-1', actorId: 'sara' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BookingError);
+    return err as BookingError;
+  }
+
+  it('withdrawn: the request in the customer’s view, and no clock passed', async () => {
+    const w = withdrawing({ kind: 'withdrawn', request: WITHDRAWN });
+    await expect(
+      w.h.withdraw({ bookingId: 'booking-1', actorId: 'sara' }),
+    ).resolves.toEqual({ request: WITHDRAWN_VIEW });
+    expect(w.repo.withdraw).toHaveBeenCalledWith({
+      bookingId: 'booking-1',
+      actorId: 'sara',
+    });
+  });
+
+  it('a second tap: the same request, the same answer', async () => {
+    await expect(
+      withdrawing({ kind: 'already_withdrawn', request: WITHDRAWN }).h.withdraw(
+        { bookingId: 'booking-1', actorId: 'sara' },
+      ),
+    ).resolves.toEqual({ request: WITHDRAWN_VIEW });
+  });
+
+  it.each(['closed', 'expired'] as const)(
+    'lapsed: 409 with the NEW state (%s), never the stale WAITING',
+    async (state) => {
+      const e = await refused({
+        kind: 'lapsed',
+        request: { ...ROW, state, decidedByKind: 'system' },
+      });
+      expect([e.code, e.status, e.message]).toEqual([
+        'BOOKING_STATE_INVALID',
+        409,
+        'This request has already ended.',
+      ]);
+      expect(e.details).toEqual({ request: state.toUpperCase() });
+    },
+  );
+
+  it('nothing waiting: 409 with the latest state', async () => {
+    const e = await refused({ kind: 'nothing_waiting', latest: 'approved' });
+    expect([e.code, e.message]).toEqual([
+      'BOOKING_STATE_INVALID',
+      'This request has already ended.',
+    ]);
+    expect(e.details).toEqual({ request: 'APPROVED' });
+  });
+
+  it('none ever raised: its own sentence, because nothing has ended', async () => {
+    const e = await refused({ kind: 'nothing_waiting', latest: null });
+    expect([e.code, e.message]).toEqual([
+      'BOOKING_STATE_INVALID',
+      'There is no check-in request to cancel.',
+    ]);
+    expect(e.details).toEqual({ request: null });
+  });
+
+  it('not found: BOOKING_NOT_FOUND, 404', async () => {
+    const e = await refused({ kind: 'not_found' });
+    expect([e.code, e.status]).toEqual(['BOOKING_NOT_FOUND', 404]);
+  });
+});
+
+describe('CheckInRequestHandler.read', () => {
+  const answered = (state: string) => ({
+    ...ROW,
+    state,
+    decidedAt: new Date('2026-10-11T03:55:00.000Z'),
+    decidedByKind: 'staff' as const,
+  });
+
+  it('the latest request, without the desk’s reason', async () => {
+    const rejected = { ...answered('rejected'), reason: 'Not at the salon' };
+    const out = await handler(null, rejected).h.read('booking-1');
+    expect(out.request).toEqual({
       ...VIEW,
       state: 'REJECTED',
       decidedAt: '2026-10-11T03:55:00.000Z',
     });
-    expect(JSON.stringify(view)).not.toContain('Not at the salon');
+    expect(JSON.stringify(out)).not.toContain('Not at the salon');
   });
 
-  it('null when none was ever raised', async () => {
-    await expect(handler(null, null).h.latest('booking-1')).resolves.toBeNull();
+  it('WAITING: no welcome, and the welcome reader is never asked', async () => {
+    // The app polls a waiting request: no history read, no platform call.
+    const h = handler(null, ROW);
+    await expect(h.h.read('booking-1')).resolves.toEqual({
+      request: VIEW,
+      checkIn: null,
+    });
+    expect(h.attribution.ofBooking).not.toHaveBeenCalled();
+  });
+
+  it.each(['approved', 'closed', 'rejected', 'expired', 'withdrawn'])(
+    '%s: the booking’s check-in, from the welcome reader',
+    async (state) => {
+      const h = handler(null, answered(state));
+      const out = await h.h.read('booking-1');
+      expect(out.checkIn).toEqual(CHECK_IN);
+      expect(h.attribution.ofBooking).toHaveBeenCalledWith('booking-1');
+    },
+  );
+
+  it('none ever raised: both null, and nothing asked', async () => {
+    const h = handler(null, null);
+    await expect(h.h.read('booking-1')).resolves.toEqual({
+      request: null,
+      checkIn: null,
+    });
+    expect(h.attribution.ofBooking).not.toHaveBeenCalled();
   });
 });
 

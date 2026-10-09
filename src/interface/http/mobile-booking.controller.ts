@@ -61,6 +61,11 @@ import { BookingRepository } from '@infrastructure/persistence/booking.repositor
 import { MobileContractError } from '@application/commands/mobile-booking.error';
 import { MobileGroupReadHandler } from '@application/queries/mobile-group-read.handler';
 import { MOBILE_GROUP_BOOKING } from './mobile-group.flag';
+import { SELF_CHECK_IN_V1 } from './self-check-in.flag';
+import {
+  CheckInAttributionHandler,
+  type CheckInView,
+} from '@application/queries/check-in-attribution.handler';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
 
@@ -277,6 +282,7 @@ export class MobileBookingController {
     private readonly groups: MobileGroupReadHandler,
     @Optional() private readonly series?: MobileSeriesReadHandler,
     @Optional() private readonly bookingView?: MobileRoutineBookingViewHandler,
+    @Optional() private readonly checkIns?: CheckInAttributionHandler,
   ) {}
 
   @Post()
@@ -610,20 +616,30 @@ export class MobileBookingController {
       // Null means every branch, which is what a company owner carries.
       actorBranchId: actor.branchId,
     });
+    if (typeof booking !== 'object' || booking === null) return booking;
+    let out: object = booking;
+
     // Step B7, behind MOBILE_ROUTINE_CONTRACT: two fields added at the end,
     // `booking_type` (SINGLE or ROUTINE) and `series_id` (its app routine,
     // or null), so a visit opened from Upcoming can open its routine.
     // Nothing else changes; off, the booking exactly as before.
-    if (
-      !MOBILE_ROUTINE_CONTRACT() ||
-      this.series === undefined ||
-      typeof booking !== 'object' ||
-      booking === null
-    ) {
-      return booking;
+    if (MOBILE_ROUTINE_CONTRACT() && this.series !== undefined) {
+      const link = await this.series.bookingLinkOf(id);
+      if (link !== null) out = { ...out, ...link };
     }
-    const link = await this.series.bookingLinkOf(id);
-    return link === null ? booking : { ...booking, ...link };
+
+    // THE WELCOME, behind SELF_CHECK_IN_V1: `check_in`, the check-in that
+    // stands on the booking, or null. The staff path's welcome reads it
+    // here (the desk scanned the pass: no request at all); a self check-in
+    // reads the same facts on the request read. Off, nothing is added and
+    // nothing is asked.
+    if (SELF_CHECK_IN_V1() && this.checkIns !== undefined) {
+      out = {
+        ...out,
+        check_in: wireCheckIn(await this.checkIns.ofBooking(id)),
+      };
+    }
+    return out;
   }
 
   @Patch(':id')
@@ -678,4 +694,19 @@ function clampInt(
   const n = Number(raw);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(min, Math.trunc(n)));
+}
+
+/**
+ * The welcome's facts in the §8 shape's spelling (snake_case), or null.
+ * by_name is best effort: null when there is no staff profile, platform did
+ * not answer in time, or there is no first name.
+ */
+function wireCheckIn(view: CheckInView | null): {
+  at: string;
+  via: CheckInView['via'];
+  by_name: string | null;
+} | null {
+  return view === null
+    ? null
+    : { at: view.at, via: view.via, by_name: view.byName };
 }

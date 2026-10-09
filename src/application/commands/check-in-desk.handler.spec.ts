@@ -70,6 +70,7 @@ describe('approve', () => {
       to: 'checked_in',
       actor: 'staff',
       actorId: 'desk-1',
+      checkInVia: 'self',
     });
     expect(approveWith).toHaveBeenCalledWith(
       { bookingId: 'booking-1', deciderKind: 'staff', deciderId: 'desk-1' },

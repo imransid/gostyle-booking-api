@@ -18,6 +18,10 @@ import {
   CheckInRequestRepository,
   type CheckInRequestRow,
 } from '@infrastructure/persistence/check-in-request.repository';
+import {
+  CheckInAttributionHandler,
+  type CheckInView,
+} from '@application/queries/check-in-attribution.handler';
 
 /**
  * A check-in request as the customer sees it.
@@ -80,11 +84,21 @@ const CHAIR_CHECK_UNAVAILABLE_SENTENCE =
   'We could not check this chair just now. Please use Wait for Staff and ' +
   'the desk will check you in.';
 
+/** Cancel Request on a request that was answered, or ended on its own. */
+const REQUEST_ENDED_SENTENCE = 'This request has already ended.';
+
 /**
- * Self check-in for the customer: say "I am here", and read the answer.
+ * Cancel Request with none ever raised: an app bug, but the sentence must
+ * still be true, and nothing has ended.
+ */
+const NO_REQUEST_SENTENCE = 'There is no check-in request to cancel.';
+
+/**
+ * Self check-in for the customer: say "I am here", take it back, and read
+ * the answer.
  *
  * Whose booking it is has been asked before this runs (the controller's
- * scope check). This only raises and reads.
+ * scope check). This only raises, withdraws and reads.
  */
 @Injectable()
 export class CheckInRequestHandler {
@@ -93,6 +107,7 @@ export class CheckInRequestHandler {
   constructor(
     private readonly requests: CheckInRequestRepository,
     @Inject(CHAIR_DIRECTORY) private readonly chairs: ChairDirectory,
+    private readonly attribution: CheckInAttributionHandler,
   ) {}
 
   /**
@@ -213,10 +228,78 @@ export class CheckInRequestHandler {
     }
   }
 
-  /** The booking's latest request, or null if it never had one. */
-  async latest(bookingId: string): Promise<CheckInRequestView | null> {
+  /**
+   * The customer takes their request back: the app's Cancel Request.
+   *
+   * Withdrawn, and a second tap, answer with the request. Anything else is
+   * BOOKING_STATE_INVALID, and its details.request is the request's state AS
+   * IT NOW IS, so the app moves on at once:
+   *
+   *   lapsed            the desk checked them in with its own button, or the
+   *                     end time passed. The repository has just made the
+   *                     lapse job's own write (CLOSED or EXPIRED, by the
+   *                     system, never a withdrawal); that state is the one
+   *                     sent, not the WAITING it was a moment ago.
+   *   nothing waiting   the latest state, already answered or ended. Null
+   *                     when none was ever raised, with its own sentence:
+   *                     nothing has ended.
+   */
+  async withdraw(cmd: {
+    readonly bookingId: string;
+    readonly actorId: string;
+    /** Test hook only. A route never passes the caller's clock. */
+    readonly nowMs?: number;
+  }): Promise<{ request: CheckInRequestView }> {
+    const out = await this.requests.withdraw({
+      bookingId: cmd.bookingId,
+      actorId: cmd.actorId,
+      ...(cmd.nowMs !== undefined ? { nowMs: cmd.nowMs } : {}),
+    });
+
+    switch (out.kind) {
+      case 'withdrawn':
+      case 'already_withdrawn':
+        return { request: viewOf(out.request) };
+      case 'not_found':
+        throw bookingError('BOOKING_NOT_FOUND', 'No such booking');
+      case 'lapsed':
+        throw bookingError('BOOKING_STATE_INVALID', REQUEST_ENDED_SENTENCE, {
+          request: shout(out.request.state),
+        });
+      case 'nothing_waiting':
+        throw out.latest === null
+          ? bookingError('BOOKING_STATE_INVALID', NO_REQUEST_SENTENCE, {
+              request: null,
+            })
+          : bookingError('BOOKING_STATE_INVALID', REQUEST_ENDED_SENTENCE, {
+              request: shout(out.latest),
+            });
+    }
+  }
+
+  /**
+   * The booking's latest request, or null if it never had one, and the
+   * check-in that stands on the booking, for the welcome screen.
+   *
+   * NOT WHILE IT WAITS. A waiting request has no answer yet, and the app
+   * polls it: checkIn is null, and neither the history nor platform is
+   * asked, every few seconds, for a name that does not exist. Once it is
+   * answered or ended, the booking's check-in is read: an approval's, or the
+   * desk's own if it used the ordinary button instead (CLOSED).
+   */
+  async read(bookingId: string): Promise<{
+    request: CheckInRequestView | null;
+    checkIn: CheckInView | null;
+  }> {
     const row = await this.requests.latestFor(bookingId);
-    return row === null ? null : viewOf(row);
+    if (row === null) return { request: null, checkIn: null };
+    return {
+      request: viewOf(row),
+      checkIn:
+        row.state === 'waiting'
+          ? null
+          : await this.attribution.ofBooking(bookingId),
+    };
   }
 }
 

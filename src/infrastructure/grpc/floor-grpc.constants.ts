@@ -25,7 +25,7 @@ export function chairDirectoryClientOptions() {
     url: platformGrpcAddress(),
     channelOptions: platformChannelOptions(),
     loader: {
-      // keepCase: true is NOT optional -- see staff-grpc.module.ts. Every
+      // keepCase: true is NOT optional -- see staff-grpc.constants.ts. Every
       // field here is snake_case; without it they all read undefined, and an
       // undefined chair_bookable refuses every chair without an error.
       keepCase: true,

@@ -4,6 +4,7 @@ import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from './prisma.service';
 import { toUuid } from './hold.repository';
 import { arrivalClaimed } from './check-in-request.repository';
+import type { CheckInVia } from '@domain/booking/check-in-attribution';
 import {
   checkTransition,
   releasesCapacity,
@@ -87,6 +88,13 @@ export interface TransitionInput {
    * deciding, which is exactly what an unanswered request is waiting for.
    */
   readonly unlessArrivalClaimed?: boolean;
+  /**
+   * HOW a customer was checked in: on a move into CHECKED_IN, and only
+   * there. Written to the history row as given, with NO DEFAULT: a check-in
+   * without it, or another move with it, is refused by
+   * booking_status_history_check_in_says_how.
+   */
+  readonly checkInVia?: CheckInVia;
 }
 
 export interface TransitionedBooking {
@@ -359,6 +367,8 @@ export class LifecycleRepository {
               input.actor === 'system' || input.actorId === null
                 ? null
                 : toUuid(input.actorId),
+            // As the caller said, or nothing: never a default (the CHECK).
+            checkInVia: input.checkInVia ?? null,
           },
         });
 

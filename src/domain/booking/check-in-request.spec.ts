@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { lapseOf, raiseVerdict, rejectionReason } from './check-in-request';
+import {
+  lapseOf,
+  raiseVerdict,
+  rejectionReason,
+  withdrawVerdict,
+} from './check-in-request';
 import { CHECK_IN_OPENS_MIN, type BookingStatus } from './lifecycle';
 
 const MIN = 60_000;
@@ -104,6 +109,113 @@ describe('raiseVerdict: when a customer may say "I am here"', () => {
       expect(raise({ latest })).toEqual({ kind: 'raise' });
     },
   );
+
+  it('raises again after the customer withdrew, unlike after a rejection', () => {
+    // The two sides of one line: taking it back is not the desk saying no.
+    expect(raise({ latest: 'withdrawn' })).toEqual({ kind: 'raise' });
+    expect(raise({ latest: 'rejected' })).toMatchObject({
+      why: 'rejected_before',
+    });
+  });
+
+  it('still holds a raise after a withdrawal to the window', () => {
+    expect(raise({ latest: 'withdrawn', nowMs: END })).toEqual({
+      kind: 'refused',
+      why: 'too_late',
+    });
+  });
+});
+
+describe('withdrawVerdict: when a customer may take their request back', () => {
+  function withdraw(
+    over: Partial<Parameters<typeof withdrawVerdict>[0]> = {},
+  ): ReturnType<typeof withdrawVerdict> {
+    return withdrawVerdict({
+      latest: 'waiting',
+      bookingStatus: 'confirmed',
+      endAtMs: END,
+      nowMs: START + 5 * MIN,
+      ...over,
+    });
+  }
+
+  it('withdraws a waiting request on a confirmed booking', () => {
+    expect(withdraw()).toEqual({ kind: 'withdraw' });
+  });
+
+  it('withdraws past the auto no-show time: late is still here', () => {
+    expect(withdraw({ nowMs: START + 45 * MIN })).toEqual({
+      kind: 'withdraw',
+    });
+  });
+
+  it('answers a second tap with the request already withdrawn', () => {
+    expect(withdraw({ latest: 'withdrawn' })).toEqual({
+      kind: 'already_withdrawn',
+    });
+  });
+
+  it('answers a second tap that way even after the booking moved on', () => {
+    // Withdrawn, then the desk checked them in: the tap was still a withdraw.
+    expect(
+      withdraw({
+        latest: 'withdrawn',
+        bookingStatus: 'checked_in',
+        nowMs: END,
+      }),
+    ).toEqual({ kind: 'already_withdrawn' });
+  });
+
+  it.each([null, 'approved', 'rejected', 'expired', 'closed'] as const)(
+    'has nothing to withdraw when the latest is %s',
+    (latest) => {
+      expect(withdraw({ latest })).toEqual({
+        kind: 'refused',
+        why: 'nothing_waiting',
+      });
+    },
+  );
+
+  it('leaves a request on a booking that moved on to the lapse job', () => {
+    // Checked in with the desk's own button; the job closes it within the
+    // minute, and closed is what happened.
+    expect(withdraw({ bookingStatus: 'checked_in' })).toEqual({
+      kind: 'refused',
+      why: 'lapsed',
+      lapse: {
+        to: 'closed',
+        reason: 'The booking became checked_in before the desk answered.',
+      },
+    });
+  });
+
+  it('leaves a request nobody answered by the end time to the lapse job', () => {
+    // Expired, not withdrawn: the desk is shown how often it did not answer.
+    expect(withdraw({ nowMs: END })).toMatchObject({
+      kind: 'refused',
+      why: 'lapsed',
+      lapse: { to: 'expired' },
+    });
+    expect(withdraw({ nowMs: END - 1 })).toEqual({ kind: 'withdraw' });
+  });
+
+  it('decides lapsed exactly as the lapse job does', () => {
+    // One rule, not two: whatever lapseOf says, withdraw says the same.
+    const cases = [
+      { bookingStatus: 'confirmed', nowMs: END - 1 },
+      { bookingStatus: 'confirmed', nowMs: END },
+      { bookingStatus: 'cancelled', nowMs: START },
+      { bookingStatus: 'in_service', nowMs: END + MIN },
+    ] as const;
+    for (const c of cases) {
+      const lapse = lapseOf({ ...c, endAtMs: END });
+      expect(withdraw(c)).toEqual(
+        lapse === null
+          ? { kind: 'withdraw' }
+          : { kind: 'refused', why: 'lapsed', lapse },
+      );
+    }
+  });
 });
 
 describe('lapseOf: how a waiting request ends on its own', () => {

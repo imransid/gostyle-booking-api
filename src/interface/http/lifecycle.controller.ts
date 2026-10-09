@@ -40,6 +40,7 @@ import { ApiGoneResponse, ApiProperty } from '@nestjs/swagger';
 import { LifecycleRepository } from '@infrastructure/persistence/lifecycle.repository';
 import { toUuid } from '@infrastructure/persistence/hold.repository';
 import { clockFor, mayActOn } from '@domain/booking/customer-ownership';
+import type { CheckInVia } from '@domain/booking/check-in-attribution';
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -253,7 +254,9 @@ export class LifecycleController {
     @Body() dto: LifecycleDto,
     @CurrentActor() actor: Actor,
   ): Promise<LifecycleView> {
-    return this.run(id, 'checked_in', dto, actor);
+    // The desk on its own: the pass scanned, or the booking found on the
+    // calendar. An approved request checks in through CheckInDeskHandler.
+    return this.run(id, 'checked_in', dto, actor, 'staff');
   }
 
   @Post('start')
@@ -323,12 +326,15 @@ export class LifecycleController {
     to: Parameters<LifecycleHandler['execute']>[0]['to'],
     dto: LifecycleDto,
     actor: Actor,
+    /** On check-in only: how. Never read from the body. */
+    checkInVia?: CheckInVia,
   ): Promise<LifecycleView> {
     await this.refuseIfNotTheirs(id, actor);
     const nowMs = clockFor(actor.kind, dto.nowMs);
     return this.handler.execute({
       bookingId: id,
       to,
+      ...(checkInVia !== undefined ? { checkInVia } : {}),
       // THE POINT OF ALL THIS.
       //
       // checkTransition() has known since the state machine was written that

@@ -478,6 +478,152 @@ describe('reject', () => {
   });
 });
 
+describe('withdraw', () => {
+  const NOW = START + 5 * MIN;
+  const END = new Date(START + 60 * MIN);
+
+  function withdrawing(opts: {
+    waiting?: boolean;
+    booking?: { status: string; end_at: Date } | null;
+    latest?: Record<string, unknown> | null;
+  }) {
+    const written = { id: 'req-1', state: 'written' };
+    const calls: string[] = [];
+    const tx = {
+      $queryRaw: vi.fn((strings: TemplateStringsArray) => {
+        const text = strings.join('?');
+        if (text.includes('FROM check_in_request')) {
+          calls.push('lock request');
+          return Promise.resolve(
+            opts.waiting === false ? [] : [{ id: 'req-1' }],
+          );
+        }
+        calls.push('read booking');
+        return Promise.resolve(
+          opts.booking === null
+            ? []
+            : [opts.booking ?? { status: 'confirmed', end_at: END }],
+        );
+      }),
+      checkInRequest: {
+        findFirst: vi.fn(() => Promise.resolve(opts.latest ?? null)),
+        update: vi.fn(() => {
+          calls.push('write');
+          return Promise.resolve(written);
+        }),
+      },
+    };
+    const prisma = {
+      $transaction: vi.fn((fn: (t: typeof tx) => unknown) => fn(tx)),
+    };
+    return {
+      r: new CheckInRequestRepository(prisma as never),
+      prisma,
+      tx,
+      calls,
+      written,
+    };
+  }
+  const input = { bookingId: BOOKING, actorId: 'sara', nowMs: NOW };
+  const sqlOf = (call: unknown[]) =>
+    Prisma.sql(...(call as [TemplateStringsArray, ...unknown[]]));
+
+  it('locks the waiting request, then shares the booking, then writes WITHDRAWN as the customer', async () => {
+    const h = withdrawing({});
+    await expect(h.r.withdraw(input)).resolves.toEqual({
+      kind: 'withdrawn',
+      request: h.written,
+    });
+    expect(h.calls).toEqual(['lock request', 'read booking', 'write']);
+    const [lock, read] = h.tx.$queryRaw.mock.calls.map((c) => sqlOf(c));
+    expect(lock?.text).toMatch(/AND state = 'waiting'\s+FOR UPDATE/);
+    expect(read?.text).toMatch(/FROM booking[\s\S]*FOR SHARE/);
+    expect(h.tx.checkInRequest.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'req-1' },
+        data: {
+          state: 'withdrawn',
+          decidedAt: new Date(NOW),
+          decidedByKind: 'customer',
+          // Folded as raised_by_id is: check_in_request_withdrawn_by_raiser.
+          decidedById: toUuid('sara'),
+        },
+      }),
+    );
+  });
+
+  it.each([
+    [
+      'the desk checked them in',
+      { status: 'checked_in', end_at: END },
+      {
+        state: 'closed',
+        reason: 'The booking became checked_in before the desk answered.',
+      },
+    ],
+    [
+      'nobody answered by the end time',
+      { status: 'confirmed', end_at: new Date(NOW) },
+      {
+        state: 'expired',
+        reason: 'Nobody answered before the booking ended.',
+      },
+    ],
+  ] as const)(
+    'lapsed (%s): the JOB’s write, by the system, never a withdrawal',
+    async (_, booking, lapse) => {
+      const h = withdrawing({ booking: { ...booking } });
+      await expect(h.r.withdraw(input)).resolves.toEqual({
+        kind: 'lapsed',
+        request: h.written,
+      });
+      expect(h.tx.checkInRequest.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'req-1' },
+          data: {
+            ...lapse,
+            decidedAt: new Date(NOW),
+            decidedByKind: 'system',
+            decidedById: null,
+          },
+        }),
+      );
+    },
+  );
+
+  it('a second tap: the withdrawn request, and nothing written', async () => {
+    const withdrawn = { id: 'req-1', state: 'withdrawn' };
+    const h = withdrawing({ waiting: false, latest: withdrawn });
+    await expect(h.r.withdraw(input)).resolves.toEqual({
+      kind: 'already_withdrawn',
+      request: withdrawn,
+    });
+    expect(h.tx.checkInRequest.update).not.toHaveBeenCalled();
+  });
+
+  it('nothing waiting: the latest state says why, and nothing written', async () => {
+    const h = withdrawing({ waiting: false, latest: { state: 'approved' } });
+    await expect(h.r.withdraw(input)).resolves.toEqual({
+      kind: 'nothing_waiting',
+      latest: 'approved',
+    });
+    expect(h.tx.checkInRequest.update).not.toHaveBeenCalled();
+  });
+
+  it('no booking: not_found', async () => {
+    const h = withdrawing({ waiting: false, booking: null });
+    await expect(h.r.withdraw(input)).resolves.toEqual({ kind: 'not_found' });
+  });
+
+  it('a malformed id: not_found, without a transaction', async () => {
+    const h = withdrawing({});
+    await expect(
+      h.r.withdraw({ ...input, bookingId: 'GS-1403' }),
+    ).resolves.toEqual({ kind: 'not_found' });
+    expect(h.prisma.$transaction).not.toHaveBeenCalled();
+  });
+});
+
 describe('listForBranch', () => {
   it('waiting: this branch, still CONFIRMED; needsDecision: the sweeper’s own claim rule, past the auto no-show time', async () => {
     const queryRaw = vi.fn(() => Promise.resolve([]));
