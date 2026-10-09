@@ -24,6 +24,7 @@ import {
 import { Logger } from '@nestjs/common';
 import { CheckInRequestHandler } from '@application/commands/check-in-request.handler';
 import { CheckInDeskHandler } from '@application/commands/check-in-desk.handler';
+import { CheckInAttributionHandler } from '@application/queries/check-in-attribution.handler';
 import { LifecycleController } from '@interface/http/lifecycle.controller';
 import { DeskExtrasRepository } from '../persistence/desk-extras.repository';
 import { BookingError } from '@application/contract/errors';
@@ -750,6 +751,79 @@ describe.skipIf(LIVE === '')('self check-in, live', { timeout: 60_000 }, () => {
     });
   });
 
+  it('the welcome read: nothing asked while it waits, then the check-in that stands, from the real history', async () => {
+    const at = BASE + 25 * 60 * MIN;
+    const handler = new LifecycleHandler(
+      lifecycle,
+      new FixtureCustomerContext(),
+    );
+    const desk = {
+      id: DESK,
+      kind: 'staff',
+      branchId: null,
+      tenantId: null,
+    } as const;
+    // Platform, counted: the database is this spec's question, the wire is
+    // grpc-staff-directory.live.spec.ts's.
+    const asked: string[][] = [];
+    const staff = {
+      listStylists: () => Promise.resolve([]),
+      namesOf: (_tenant: string, ids: readonly string[]) => {
+        asked.push([...ids]);
+        return Promise.resolve({
+          kind: 'answered' as const,
+          names: new Map([[DESK, { firstName: 'Layla', lastName: 'Rahman' }]]),
+        });
+      },
+    };
+    const reader = new CheckInRequestHandler(
+      requests,
+      null as never,
+      new CheckInAttributionHandler(requests, staff),
+    );
+    const booking = await seed({ startAtMs: at, tenantId: TENANT });
+
+    // Waiting, polled three times: no welcome, and platform never asked.
+    await raiseAsSara(booking, at);
+    for (let i = 0; i < 3; i += 1) {
+      expect((await reader.read(booking)).checkIn).toBeNull();
+    }
+    expect(asked).toEqual([]);
+
+    // Approved: SELF, by the desk member, asked once for that one id.
+    await new CheckInDeskHandler(requests, handler, null as never).approve({
+      bookingId: booking,
+      actor: 'staff',
+      actorId: DESK,
+    });
+    const approved = await reader.read(booking);
+    expect(approved.request?.state).toBe('APPROVED');
+    expect(approved.checkIn).toMatchObject({ via: 'SELF', byName: 'Layla R.' });
+    expect(asked).toEqual([[DESK]]);
+
+    // Undone: the request still says APPROVED, but no check-in stands, and
+    // with nothing to show, nothing is asked.
+    await new DeskExtrasRepository(prisma).undoCheckIn({
+      bookingId: booking,
+      reason: 'Wrong Amira',
+      actor: 'staff',
+      actorId: DESK,
+    });
+    expect((await reader.read(booking)).checkIn).toBeNull();
+    expect(asked).toHaveLength(1);
+
+    // The desk on its own, after: STAFF, though an approved request is
+    // still the latest.
+    await new LifecycleController(handler, null as never, lifecycle).checkIn(
+      booking,
+      {},
+      desk,
+    );
+    const again = await reader.read(booking);
+    expect(again.request?.state).toBe('APPROVED');
+    expect(again.checkIn).toMatchObject({ via: 'STAFF', byName: 'Layla R.' });
+  });
+
   // ------------------------------------------------------------ withdraw
 
   /** Sara says "I am here", `afterStartMin` minutes into her booking. */
@@ -1159,7 +1233,8 @@ describe.skipIf(LIVE === '')('self check-in, live', { timeout: 60_000 }, () => {
         clients.push(client);
         const chairs = new GrpcChairDirectory(client);
         chairs.onModuleInit();
-        return new CheckInRequestHandler(requests, chairs);
+        // Raise only: the welcome read is not asked here.
+        return new CheckInRequestHandler(requests, chairs, null as never);
       }
 
       afterAll(() => {

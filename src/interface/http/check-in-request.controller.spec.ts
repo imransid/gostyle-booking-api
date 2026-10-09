@@ -55,7 +55,7 @@ function controller(owner: string | null = 'sara', created = true) {
     withdraw: vi.fn(() =>
       Promise.resolve({ request: { ...VIEW, state: 'WITHDRAWN' } }),
     ),
-    latest: vi.fn(() => Promise.resolve(null)),
+    read: vi.fn(() => Promise.resolve({ request: null, checkIn: null })),
   };
   const res = { status: vi.fn() };
   const c = new CheckInRequestController(
@@ -156,7 +156,7 @@ describe('CheckInRequestController', () => {
       );
       expect(h.handler.raise).not.toHaveBeenCalled();
       expect(h.handler.withdraw).not.toHaveBeenCalled();
-      expect(h.handler.latest).not.toHaveBeenCalled();
+      expect(h.handler.read).not.toHaveBeenCalled();
     },
   );
 
@@ -214,15 +214,16 @@ describe('CheckInRequestController', () => {
       expect(h.lookup.byId).not.toHaveBeenCalled();
       expect(h.handler.raise).not.toHaveBeenCalled();
       expect(h.handler.withdraw).not.toHaveBeenCalled();
-      expect(h.handler.latest).not.toHaveBeenCalled();
+      expect(h.handler.read).not.toHaveBeenCalled();
     },
   );
 
-  it('read: { request: null } when none was raised', async () => {
+  it('read: { request, checkIn } as the handler has them, for the customer’s own booking', async () => {
     const h = controller('sara');
     await expect(h.c.read(BOOKING, customer('sara'))).resolves.toEqual({
       request: null,
+      checkIn: null,
     });
-    expect(h.handler.latest).toHaveBeenCalledWith(BOOKING);
+    expect(h.handler.read).toHaveBeenCalledWith(BOOKING);
   });
 });

@@ -36,6 +36,7 @@ import {
   ReceptionCheckInController,
 } from '@interface/http/check-in-desk.controller';
 import { CheckInDeskHandler } from '@application/commands/check-in-desk.handler';
+import { CheckInAttributionHandler } from '@application/queries/check-in-attribution.handler';
 import { WaitlistHandler } from '@application/commands/waitlist.handler';
 import { WaitlistController } from '@interface/http/waitlist.controller';
 import { WebhooksController } from '@interface/http/webhooks.controller';
@@ -164,6 +165,7 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
   providers: [
     BookingScope,
     CheckInRequestHandler,
+    CheckInAttributionHandler,
     CheckInDeskHandler,
     GetSettingsHandler,
     BookingReadHandler,

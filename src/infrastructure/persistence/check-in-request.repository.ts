@@ -15,6 +15,7 @@ import {
   type Lapse,
   type RaiseRefusal,
 } from '@domain/booking/check-in-request';
+import type { HistoryEntry } from '@domain/booking/check-in-attribution';
 import {
   IN_THE_CHAIR,
   chairCheckInVerdict,
@@ -370,6 +371,48 @@ export class CheckInRequestRepository {
       });
       return { kind: 'raised' as const, request };
     });
+  }
+
+  /**
+   * What the welcome screen is made of: the booking's tenant, and its status
+   * history oldest first, for checkInOf (check-in-attribution.ts) to find
+   * the check-in that stands. One query, along
+   * booking_status_history_booking_idx. Null: no such booking.
+   */
+  async checkInFactsOf(bookingId: string): Promise<{
+    readonly tenantId: string | null;
+    readonly history: HistoryEntry[];
+  } | null> {
+    if (!UUID_RE.test(bookingId)) return null;
+    const booking = await this.prisma.booking.findUnique({
+      where: { id: bookingId },
+      select: {
+        tenantId: true,
+        statusHistory: {
+          orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+          select: {
+            fromStatus: true,
+            toStatus: true,
+            createdAt: true,
+            actorKind: true,
+            actorId: true,
+            checkInVia: true,
+          },
+        },
+      },
+    });
+    if (booking === null) return null;
+    return {
+      tenantId: booking.tenantId,
+      history: booking.statusHistory.map((h) => ({
+        fromStatus: h.fromStatus,
+        toStatus: h.toStatus,
+        atMs: h.createdAt.getTime(),
+        actorKind: h.actorKind,
+        actorId: h.actorId,
+        via: h.checkInVia,
+      })),
+    };
   }
 
   /** The booking's latest request, or null if it never had one. */

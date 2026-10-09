@@ -82,6 +82,33 @@ Do these in order.
 - A request the customer withdrew and never raised again does the same: once past start plus 30 minutes, the booking appears under "needs a decision" with the request WITHDRAWN.
 - The desk closes it by hand: check in, mark no-show, or cancel.
 
+## The welcome screen (for the app team)
+
+`GET /v1/bookings/:id/check-in-request` answers `{ request, checkIn }`. `checkIn` is the check-in that stands on the booking, as `{ at, via, byName }`, or null.
+
+**When `checkIn` is null**
+- While the request is WAITING. Polling a waiting request never looks anything up.
+- When no check-in stands: none yet, or the desk undid it.
+- When no request was ever raised (`request` is null too).
+
+**`at`**: when they were checked in.
+
+**`via`**: which welcome to draw.
+- `SELF`: the customer asked first (at a chair, or with Wait for Staff), and the desk approved it.
+- `STAFF`: the desk checked them in on its own: their pass scanned, or the booking found on the calendar. booking-api cannot tell those two apart.
+- `null`: checked in before this release, when it was not recorded. Draw the plain welcome.
+- Draw the screen from `checkIn.via`, not from the request's state. An approval the desk undid and then redid with its own button leaves an APPROVED request behind a STAFF check-in.
+
+**SELF never means nobody at the salon touched it.** The desk approves every self check-in (D1). There is no path where a customer is checked in on their own word. SELF means "the customer asked first". The design's "Welcome - Self-approved" screen describes a path that was deliberately not built: check its words before building it.
+
+**`byName` is best effort, and the screen must work without it.**
+- It is "Layla R.": the first name and the initial of the last, as platform has them now. Who it was exactly is kept by id, not by name.
+- It is null for three different reasons:
+  1. the desk member has no staff profile in platform (an owner's account, say);
+  2. platform did not answer within about a second (the read never waits longer for it);
+  3. the profile has no first name.
+- **When it is null, say "Checked in at 14:24".** Never "Checked in by" followed by nothing.
+
 ## What to watch in the log
 
 - At boot: "Check-in request lapse job armed, every 60s", next to "Auto no-show sweeper armed".
@@ -89,6 +116,7 @@ Do these in order.
 - `CheckInRequestSweeper ... closed`: fine. The desk used the normal button, or the booking was cancelled or moved.
 - `StaffScope REFUSED (always on)` or `HID n row(s) (always on)` for a real salon's own desk: one of its bookings has no tenant or a wrong one. Run step 0. QA tokens on marina-walk rows are refused by design: those rows have no tenant.
 - `CheckInReception names: customer-api unavailable ...` or `did not answer ... within 1000ms`: customer-api is down or slow, and the desk sees the list without names. One line per list load, never one per customer.
+- `WelcomeScreen name: platform unavailable ...` or `did not answer within 1000ms`: platform is down or slow, and a customer's welcome screen went out without the desk member's name. At most one line per read, and only for a check-in that stands: a waiting request never writes one.
 - "Lapse sweep failed" or a no-show "Sweep failed": should never appear.
 - The usual "auto no-show at start plus 30" lines should keep coming for everyone else.
 

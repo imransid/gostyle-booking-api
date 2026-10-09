@@ -18,6 +18,10 @@ import {
   CheckInRequestRepository,
   type CheckInRequestRow,
 } from '@infrastructure/persistence/check-in-request.repository';
+import {
+  CheckInAttributionHandler,
+  type CheckInView,
+} from '@application/queries/check-in-attribution.handler';
 
 /**
  * A check-in request as the customer sees it.
@@ -103,6 +107,7 @@ export class CheckInRequestHandler {
   constructor(
     private readonly requests: CheckInRequestRepository,
     @Inject(CHAIR_DIRECTORY) private readonly chairs: ChairDirectory,
+    private readonly attribution: CheckInAttributionHandler,
   ) {}
 
   /**
@@ -272,10 +277,29 @@ export class CheckInRequestHandler {
     }
   }
 
-  /** The booking's latest request, or null if it never had one. */
-  async latest(bookingId: string): Promise<CheckInRequestView | null> {
+  /**
+   * The booking's latest request, or null if it never had one, and the
+   * check-in that stands on the booking, for the welcome screen.
+   *
+   * NOT WHILE IT WAITS. A waiting request has no answer yet, and the app
+   * polls it: checkIn is null, and neither the history nor platform is
+   * asked, every few seconds, for a name that does not exist. Once it is
+   * answered or ended, the booking's check-in is read: an approval's, or the
+   * desk's own if it used the ordinary button instead (CLOSED).
+   */
+  async read(bookingId: string): Promise<{
+    request: CheckInRequestView | null;
+    checkIn: CheckInView | null;
+  }> {
     const row = await this.requests.latestFor(bookingId);
-    return row === null ? null : viewOf(row);
+    if (row === null) return { request: null, checkIn: null };
+    return {
+      request: viewOf(row),
+      checkIn:
+        row.state === 'waiting'
+          ? null
+          : await this.attribution.ofBooking(bookingId),
+    };
   }
 }
 

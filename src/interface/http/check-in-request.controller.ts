@@ -28,6 +28,7 @@ import {
   CheckInRequestHandler,
   type CheckInRequestView,
 } from '@application/commands/check-in-request.handler';
+import type { CheckInView } from '@application/queries/check-in-attribution.handler';
 import { BookingScope } from './booking-scope';
 import { SelfCheckInEnabledGuard } from './self-check-in.flag';
 
@@ -205,13 +206,22 @@ export class CheckInRequestController {
 
   @Get()
   @ApiOperation({
-    summary: 'My latest check-in request for this booking',
+    summary: 'My latest check-in request for this booking, and the welcome',
     description:
-      'WAITING, APPROVED, REJECTED, EXPIRED (nobody answered before the ' +
-      'end time) or CLOSED (the booking moved on another way). ' +
-      '`request` is null if none was ever raised.',
+      '`request`: WAITING, APPROVED, REJECTED, EXPIRED (nobody answered ' +
+      'before the end time), CLOSED (the booking moved on another way) or ' +
+      'WITHDRAWN; null if none was ever raised. `checkIn`: the check-in that ' +
+      'stands on the booking, for the welcome screen, `{ at, via, byName }`: ' +
+      'via SELF (the customer asked first; the desk still approved it) or ' +
+      'STAFF (the desk on its own), null for a check-in from before it was ' +
+      'recorded; byName "Layla R.", BEST EFFORT, null when there is no staff ' +
+      'profile, platform did not answer in time, or there is no first name, ' +
+      'so the screen must read right without it. Always null while the ' +
+      'request is WAITING: polling it never asks for a name.',
   })
-  @ApiOkResponse({ description: '{ request } or { request: null }.' })
+  @ApiOkResponse({
+    description: '{ request, checkIn }, either of them null.',
+  })
   @ApiForbiddenResponse({ description: 'Not a customer token.' })
   @ApiNotFoundResponse({
     description: 'No such booking, or not the caller’s. Or the flag is off.',
@@ -219,7 +229,10 @@ export class CheckInRequestController {
   async read(
     @Param('id') id: string,
     @CurrentActor() actor: Actor,
-  ): Promise<{ request: CheckInRequestView | null }> {
+  ): Promise<{
+    request: CheckInRequestView | null;
+    checkIn: CheckInView | null;
+  }> {
     customerOnly(actor);
     await this.scope.refuseOutOfScope(
       { bookingId: id },
@@ -227,7 +240,7 @@ export class CheckInRequestController {
       'GET /v1/bookings/:id/check-in-request',
       ALWAYS,
     );
-    return { request: await this.requests.latest(id) };
+    return this.requests.read(id);
   }
 }
 
