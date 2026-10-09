@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Logger } from '@nestjs/common';
-import { CheckInAttributionHandler } from './check-in-attribution.handler';
+import {
+  CheckInAttributionHandler,
+  NAME_OUTAGE_SKIP_MS,
+} from './check-in-attribution.handler';
 import {
   SCREEN_NAME_CAP_MS,
   SCREEN_NAME_LOOKUP_MS,
@@ -172,6 +175,51 @@ describe('CheckInAttributionHandler.ofBooking', () => {
       byName: null,
     });
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('after platform fails to answer, the next reads do not wait on it for 30s, then it is asked again', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(AT);
+    const warn = quiet();
+    let up = false;
+    const h = reader({
+      names: () =>
+        up
+          ? Promise.resolve<StaffNamesLookup>({
+              kind: 'answered',
+              names: new Map([[LAYLA, { firstName: 'Layla', lastName: 'R' }]]),
+            })
+          : Promise.resolve({ kind: 'unavailable', error: 'platform 14 down' }),
+    });
+
+    await expect(h.r.ofBooking('b-1')).resolves.toMatchObject({ byName: null });
+    expect(h.staff.namesOf).toHaveBeenCalledTimes(1);
+
+    // Inside the window, platform back or not: not asked, and nothing logged.
+    up = true;
+    vi.setSystemTime(AT + NAME_OUTAGE_SKIP_MS - 1);
+    await expect(h.r.ofBooking('b-1')).resolves.toMatchObject({
+      via: 'SELF',
+      byName: null,
+    });
+    expect(h.staff.namesOf).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    // The window over: asked again, and the name is back.
+    vi.setSystemTime(AT + NAME_OUTAGE_SKIP_MS);
+    await expect(h.r.ofBooking('b-1')).resolves.toMatchObject({
+      byName: 'Layla R.',
+    });
+    expect(h.staff.namesOf).toHaveBeenCalledTimes(2);
+  });
+
+  it('an answer with no profile opens no window: the next read asks again', async () => {
+    const h = reader({
+      names: () => Promise.resolve({ kind: 'answered', names: new Map() }),
+    });
+    await h.r.ofBooking('b-1');
+    await h.r.ofBooking('b-1');
+    expect(h.staff.namesOf).toHaveBeenCalledTimes(2);
   });
 
   it('platform silent: the read goes out at the cap, not a moment later, with ONE log line', async () => {

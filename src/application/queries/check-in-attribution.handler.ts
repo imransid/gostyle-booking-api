@@ -50,12 +50,31 @@ export interface CheckInView {
  *
  * NEVER IN THE WAY OF THE READ: one lookup, quick (SCREEN_NAME_LOOKUP_MS)
  * and capped (SCREEN_NAME_CAP_MS), and whatever goes wrong with it is a null
- * name and at most one log line. A name missing is a cosmetic loss; the read
- * failing is not.
+ * name and at most one log line; after platform fails to answer, no lookup
+ * at all for NAME_OUTAGE_SKIP_MS. A name missing is a cosmetic loss; the
+ * read failing is not.
  */
+/**
+ * AFTER PLATFORM FAILS TO ANSWER, names are skipped for this long, in this
+ * process. Reads in the window answer at once with no name, instead of each
+ * holding a request open for the full cap for a name nobody will see: in an
+ * outage, that is every checked-in customer in every salon refreshing. At
+ * most one slow read and one log line per window per process; the first
+ * read after it asks again.
+ *
+ * One window for every tenant: an outage is platform's, not a salon's. A
+ * tenant too large to answer in time (the known cost in
+ * SELF_CHECK_IN_HANDOVER.md) closes it for everyone for 30s, which costs
+ * names, never a read.
+ */
+export const NAME_OUTAGE_SKIP_MS = 30_000;
+
 @Injectable()
 export class CheckInAttributionHandler {
   private static readonly log = new Logger('WelcomeScreen');
+
+  /** No name lookups before this (NAME_OUTAGE_SKIP_MS). */
+  private skipNamesUntilMs = 0;
 
   constructor(
     private readonly requests: CheckInRequestRepository,
@@ -83,6 +102,9 @@ export class CheckInAttributionHandler {
     tenantId: string,
     userId: string,
   ): Promise<string | null> {
+    // Platform did not answer a moment ago: do not wait on it again yet.
+    if (Date.now() < this.skipNamesUntilMs) return null;
+
     const answer = await withinCap(
       this.staff
         .namesOf(tenantId, [userId], { quickMs: SCREEN_NAME_LOOKUP_MS })
@@ -94,17 +116,15 @@ export class CheckInAttributionHandler {
       SCREEN_NAME_CAP_MS,
     );
 
-    if (answer === null) {
+    if (answer === null || answer.kind === 'unavailable') {
+      this.skipNamesUntilMs = Date.now() + NAME_OUTAGE_SKIP_MS;
+      const why =
+        answer === null
+          ? `did not answer within ${SCREEN_NAME_CAP_MS}ms`
+          : `unavailable (${answer.error})`;
       CheckInAttributionHandler.log.warn(
-        `name: platform did not answer within ${SCREEN_NAME_CAP_MS}ms; ` +
-          'the screen went out without it',
-      );
-      return null;
-    }
-    if (answer.kind === 'unavailable') {
-      CheckInAttributionHandler.log.warn(
-        `name: platform unavailable (${answer.error}); the screen went out ` +
-          'without it',
+        `name: platform ${why}; the screen went out without it, and names ` +
+          `are skipped for the next ${NAME_OUTAGE_SKIP_MS / 1000}s`,
       );
       return null;
     }
