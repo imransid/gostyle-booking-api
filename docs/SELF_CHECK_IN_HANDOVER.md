@@ -98,7 +98,7 @@ Do these in order.
 
 ## What is not built
 
-- **QR:** pass QR (option A) is decided, but nothing scans yet. The pass already shows the booking code. Chair QR (option B) later adds one column and the scan screen.
+- **QR:** pass QR (option A) is decided, but nothing scans yet. The pass already shows the booking code. Chair QR (option B) is built on `feat/chair-check-in`: three columns, not one, and the app's scan screen is still to come. See `docs/chair-check-in.md`.
 - **The customer-api route (PR 4) is now built**, not pushed: the code on customer-api branch `feat/self-check-in` (`ac343de` the route, `f8e651f` `can_check_in` on My Bookings rows), the app guide on `docs/self-check-in-fe` (`1f65066`, `9403af0`).
 - **The business web:**
   - No reception list screen, approve and reject buttons, reason picker, or "needs a decision" handling.

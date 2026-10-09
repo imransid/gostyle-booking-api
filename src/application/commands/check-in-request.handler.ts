@@ -1,8 +1,19 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { shout, type Shouted } from '@application/contract/wire';
 import { bookingError } from '@application/contract/errors';
 import type { ActorKind } from '@domain/booking/lifecycle';
 import type { CheckInRequestState } from '@domain/booking/check-in-request';
+import {
+  customerReason,
+  customerSentence,
+  type ChairRefusal,
+  type CustomerChairReason,
+  type ScannedChair,
+} from '@domain/booking/chair-check-in';
+import {
+  CHAIR_DIRECTORY,
+  type ChairDirectory,
+} from '@application/ports/chair-directory.port';
 import {
   CheckInRequestRepository,
   type CheckInRequestRow,
@@ -23,6 +34,14 @@ export interface CheckInRequestView {
   readonly raisedAt: string;
   /** Null while WAITING. */
   readonly decidedAt: string | null;
+  /**
+   * The chair claimed with this request, as it was when it was scanned
+   * ("7", "Window section"); null for a request with no chair.
+   */
+  readonly chair: {
+    readonly number: string;
+    readonly zoneName: string | null;
+  } | null;
 }
 
 export function viewOf(row: CheckInRequestRow): CheckInRequestView {
@@ -32,8 +51,34 @@ export function viewOf(row: CheckInRequestRow): CheckInRequestView {
     state: shout(row.state),
     raisedAt: row.raisedAt.toISOString(),
     decidedAt: row.decidedAt === null ? null : row.decidedAt.toISOString(),
+    chair:
+      row.chairId === null || row.chairNumber === null
+        ? null
+        : { number: row.chairNumber, zoneName: row.chairZoneName },
   };
 }
+
+/**
+ * Why a chair was refused, as the app reads it: the rule's reasons
+ * (customerReason), and the one the rule never sees, a code platform never
+ * printed.
+ */
+export type ChairWireReason = CustomerChairReason | 'UNKNOWN_CARD';
+
+/** A code that is not a chair card platform printed: the pass, a poster. */
+const UNKNOWN_CARD_SENTENCE =
+  'This is not a chair card we know. Please scan the card on your chair, ' +
+  'or see the desk.';
+
+/**
+ * Platform did not answer. NOT "check-in is broken": the app falls back to
+ * Wait for Staff, which is this same request with no chairToken, answered
+ * by the desk, and never calls platform. The sentence says so, because a
+ * customer who reads only "try again" walks out.
+ */
+const CHAIR_CHECK_UNAVAILABLE_SENTENCE =
+  'We could not check this chair just now. Please use Wait for Staff and ' +
+  'the desk will check you in.';
 
 /**
  * Self check-in for the customer: say "I am here", and read the answer.
@@ -43,23 +88,43 @@ export function viewOf(row: CheckInRequestRow): CheckInRequestView {
  */
 @Injectable()
 export class CheckInRequestHandler {
-  constructor(private readonly requests: CheckInRequestRepository) {}
+  private readonly logger = new Logger(CheckInRequestHandler.name);
+
+  constructor(
+    private readonly requests: CheckInRequestRepository,
+    @Inject(CHAIR_DIRECTORY) private readonly chairs: ChairDirectory,
+  ) {}
 
   /**
    * `created` is false when a request was already waiting: the same claim,
    * answered with the same request, so a second tap is harmless.
+   *
+   * WITH A CHAIR, platform is asked FIRST, before the booking's row lock is
+   * taken: it is a network call, and the lock would be held for as long as
+   * platform took. Asked once: every answered call is a scan in the salon's
+   * registry, so a second tap is a second real scan, never a retry.
    */
   async raise(cmd: {
     readonly bookingId: string;
     readonly actor: ActorKind;
     readonly actorId: string;
+    /** The raw token off the chair's card. Absent: no chair. */
+    readonly chairToken?: string;
+    /** The app's user agent, for the scan row. */
+    readonly userAgent?: string | null;
     /** Test hook only. A route never passes the caller's clock. */
     readonly nowMs?: number;
   }): Promise<{ created: boolean; request: CheckInRequestView }> {
+    const chair =
+      cmd.chairToken === undefined
+        ? undefined
+        : await this.scanned(cmd.bookingId, cmd.chairToken, cmd.userAgent);
+
     const out = await this.requests.raise({
       bookingId: cmd.bookingId,
       actor: cmd.actor,
       actorId: cmd.actorId,
+      ...(chair !== undefined ? { chair } : {}),
       ...(cmd.nowMs !== undefined ? { nowMs: cmd.nowMs } : {}),
     });
 
@@ -70,6 +135,19 @@ export class CheckInRequestHandler {
         return { created: false, request: viewOf(out.request) };
       case 'not_found':
         throw bookingError('BOOKING_NOT_FOUND', 'No such booking');
+      case 'chair_refused': {
+        // Platform's words (the card status, the chair state) and another
+        // customer's booking go to the log, never to the app: it gets one
+        // sentence and one reason of ours (chair-check-in.ts).
+        const { why } = out.refusal;
+        this.logger.log(
+          `Chair claim refused on booking ${cmd.bookingId}: ${why}` +
+            ` (${refusalDetail(out.refusal)})`,
+        );
+        throw bookingError('BOOKING_CHAIR_REFUSED', customerSentence(why), {
+          reason: customerReason(why) satisfies ChairWireReason,
+        });
+      }
       case 'refused':
         switch (out.why) {
           case 'not_confirmed':
@@ -104,9 +182,54 @@ export class CheckInRequestHandler {
     }
   }
 
+  /**
+   * The chair behind a scanned token, or the refusal. Only a found chair
+   * goes on to the booking's own rules; the other two answers end here.
+   */
+  private async scanned(
+    bookingId: string,
+    token: string,
+    userAgent: string | null | undefined,
+  ): Promise<ScannedChair> {
+    const found = await this.chairs.resolve(token, userAgent ?? null);
+    switch (found.kind) {
+      case 'found':
+        return found.chair;
+      case 'unknown_card':
+        this.logger.log(
+          `Chair claim on booking ${bookingId}: not a card platform printed`,
+        );
+        throw bookingError('BOOKING_CHAIR_REFUSED', UNKNOWN_CARD_SENTENCE, {
+          reason: 'UNKNOWN_CARD' satisfies ChairWireReason,
+        });
+      case 'unavailable':
+        // Logged by the adapter already: a setup fault once per process, and
+        // platform trouble once per scan. Not again here.
+        throw bookingError(
+          'DEPENDENCY_UNAVAILABLE',
+          CHAIR_CHECK_UNAVAILABLE_SENTENCE,
+          { reason: 'CHAIR_CHECK_UNAVAILABLE', fallback: 'WAIT_FOR_STAFF' },
+        );
+    }
+  }
+
   /** The booking's latest request, or null if it never had one. */
   async latest(bookingId: string): Promise<CheckInRequestView | null> {
     const row = await this.requests.latestFor(bookingId);
     return row === null ? null : viewOf(row);
+  }
+}
+
+/** A refusal's own detail, for the log line only. */
+function refusalDetail(refusal: ChairRefusal): string {
+  switch (refusal.why) {
+    case 'card_out_of_date':
+      return `card ${refusal.cardStatus || "''"}`;
+    case 'other_salon':
+      return refusal.which;
+    case 'chair_not_bookable':
+      return `chair state ${refusal.chairState ?? 'none'}`;
+    case 'chair_occupied':
+      return `${refusal.occupant} is in it`;
   }
 }

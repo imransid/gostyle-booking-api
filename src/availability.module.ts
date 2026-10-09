@@ -97,6 +97,7 @@ import { DeskActionsHandler } from '@application/commands/desk-actions.handler';
 import { BookingReadHandler } from '@application/queries/read-models.handler';
 import { ReadModelRepository } from '@infrastructure/persistence/read-model.repository';
 import { ServicesGrpcModule } from './infrastructure/grpc/services-grpc.module';
+import { FloorGrpcModule } from './infrastructure/grpc/floor-grpc.module';
 import { ServicesDirectoryController } from '@interface/http/services-directory.controller';
 import { ListServicesHandler } from '@application/queries/list-services.handler';
 
@@ -112,7 +113,16 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
   // could, dispatching the query would answer "No handler found". This is
   // the first bus in the service -- see the note in stylist.handler.ts,
   // which was written back when there was none.
-  imports: [AuthModule, StaffGrpcModule, CqrsModule, ServicesGrpcModule],
+  //
+  // FloorGrpcModule: platform's ChairDirectory, for self check-in at a chair
+  // (CheckInRequestHandler). Keyed with PLATFORM_INTERNAL_KEY.
+  imports: [
+    AuthModule,
+    StaffGrpcModule,
+    CqrsModule,
+    ServicesGrpcModule,
+    FloorGrpcModule,
+  ],
   controllers: [
     // The /v1/bookings literals come first: BookingsController carries
     // @Get(':id'), which swallows every literal at that depth. Asserted by

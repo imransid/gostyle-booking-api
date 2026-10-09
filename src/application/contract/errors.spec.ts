@@ -44,6 +44,7 @@ describe('the error catalogue', () => {
         'BOOKING_STATE_INVALID',
         'BOOKING_WITHIN_GRACE',
         'BOOKING_CHECKIN_REJECTED',
+        'BOOKING_CHAIR_REFUSED',
         'FORBIDDEN_ROLE',
         'IDEMPOTENCY_KEY_REUSED',
         'UNAUTHENTICATED',

@@ -80,7 +80,7 @@ describe('CheckInRequestController', () => {
   it('raise: 201 with the new request, for the customer’s own booking', async () => {
     const h = controller('sara', true);
     await expect(
-      h.c.raise(BOOKING, customer('sara'), h.res as never),
+      h.c.raise(BOOKING, {}, customer('sara'), h.res as never),
     ).resolves.toEqual({ request: VIEW });
     expect(h.res.status).toHaveBeenCalledWith(201);
     expect(h.handler.raise).toHaveBeenCalledWith({
@@ -90,9 +90,26 @@ describe('CheckInRequestController', () => {
     });
   });
 
+  it('raise at a chair: the token and the app’s user agent go on as sent', async () => {
+    const h = controller('sara', true);
+    await h.c.raise(
+      BOOKING,
+      { chairToken: ' q7Xk2mP9 ', userAgent: 'GoStyle/1.4 (iPhone)' },
+      customer('sara'),
+      h.res as never,
+    );
+    expect(h.handler.raise).toHaveBeenCalledWith({
+      bookingId: BOOKING,
+      actor: 'customer',
+      actorId: 'sara',
+      chairToken: ' q7Xk2mP9 ',
+      userAgent: 'GoStyle/1.4 (iPhone)',
+    });
+  });
+
   it('raise: 200 when one was already waiting', async () => {
     const h = controller('sara', false);
-    await h.c.raise(BOOKING, customer('sara'), h.res as never);
+    await h.c.raise(BOOKING, {}, customer('sara'), h.res as never);
     expect(h.res.status).toHaveBeenCalledWith(200);
   });
 
@@ -100,7 +117,7 @@ describe('CheckInRequestController', () => {
     [
       'raise',
       (h: ReturnType<typeof controller>, a: Actor) =>
-        h.c.raise(BOOKING, a, h.res as never),
+        h.c.raise(BOOKING, {}, a, h.res as never),
     ],
     [
       'read',
@@ -121,7 +138,7 @@ describe('CheckInRequestController', () => {
   it('raise: a booking that is not there is the same 404', async () => {
     const h = controller(null);
     await expect(
-      h.c.raise(BOOKING, customer('sara'), h.res as never),
+      h.c.raise(BOOKING, {}, customer('sara'), h.res as never),
     ).rejects.toThrow(new NotFoundException('No such booking'));
     expect(h.handler.raise).not.toHaveBeenCalled();
   });
@@ -129,7 +146,7 @@ describe('CheckInRequestController', () => {
   it('raise: a malformed id is the same 404', async () => {
     const h = controller('sara');
     await expect(
-      h.c.raise('not-a-uuid', customer('sara'), h.res as never),
+      h.c.raise('not-a-uuid', {}, customer('sara'), h.res as never),
     ).rejects.toThrow(new NotFoundException('No such booking'));
     expect(h.handler.raise).not.toHaveBeenCalled();
   });
@@ -148,7 +165,7 @@ describe('CheckInRequestController', () => {
       const h = controller('sara');
       const actor = { ...staff, kind };
       for (const call of [
-        () => h.c.raise(BOOKING, actor, h.res as never),
+        () => h.c.raise(BOOKING, {}, actor, h.res as never),
         () => h.c.read(BOOKING, actor),
       ]) {
         const err: unknown = await call().catch((e: unknown) => e);

@@ -13,6 +13,13 @@ import {
   type CheckInRequestState,
   type RaiseRefusal,
 } from '@domain/booking/check-in-request';
+import {
+  IN_THE_CHAIR,
+  chairCheckInVerdict,
+  type ChairRefusal,
+  type ClaimedChair,
+  type ScannedChair,
+} from '@domain/booking/chair-check-in';
 
 /**
  * DID THE CUSTOMER SAY THEY ARRIVED? As SQL, because the auto no-show
@@ -55,6 +62,10 @@ export interface CheckInRequestRow {
   readonly decidedByKind: ActorKind | null;
   readonly decidedById: string | null;
   readonly reason: string | null;
+  /** The scanned chair, as platform answered at the scan; null: none. */
+  readonly chairId: string | null;
+  readonly chairNumber: string | null;
+  readonly chairZoneName: string | null;
 }
 
 const ROW_FIELDS = {
@@ -67,12 +78,21 @@ const ROW_FIELDS = {
   decidedByKind: true,
   decidedById: true,
   reason: true,
+  chairId: true,
+  chairNumber: true,
+  chairZoneName: true,
 } as const;
 
 export interface RaiseInput {
   readonly bookingId: string;
   readonly actor: ActorKind;
   readonly actorId: string;
+  /**
+   * The chair the customer scanned, as platform answered. Resolved by the
+   * CALLER, before this runs: platform is a network call, and this holds the
+   * booking's row lock. Absent: a request with no chair.
+   */
+  readonly chair?: ScannedChair;
   /** Test hook. A route passes the server's clock, never the caller's. */
   readonly nowMs?: number;
 }
@@ -86,7 +106,9 @@ export type RaiseOutcome =
       readonly why: RaiseRefusal;
       readonly bookingStatus: BookingStatus;
       readonly opensAtMs?: number;
-    };
+    }
+  /** The booking may raise, but not with this chair (chair-check-in.ts). */
+  | { readonly kind: 'chair_refused'; readonly refusal: ChairRefusal };
 
 /** Who answers a request at the desk. */
 export interface DeciderInput {
@@ -112,6 +134,15 @@ export type ApproveOutcome<T> =
       readonly request: CheckInRequestRow;
       /** What the check-in answered. */
       readonly checkIn: T;
+    }
+  /**
+   * Somebody else is in the claimed chair now. Nothing was checked in, and
+   * the request still waits. For the desk: which chair, and who is in it.
+   */
+  | {
+      readonly kind: 'chair_occupied';
+      readonly chairNumber: string;
+      readonly occupant: string;
     }
   | NothingToAnswer;
 
@@ -151,6 +182,14 @@ interface LockedBookingRow {
   start_at: Date;
   end_at: Date;
   tenant_id: string | null;
+  branch_id: string;
+}
+
+/** The waiting request approve locks, and the chair it claims. */
+interface LockedRequestRow {
+  id: string;
+  chair_id: string | null;
+  chair_number: string | null;
 }
 
 interface ReceptionSqlRow {
@@ -163,6 +202,9 @@ interface ReceptionSqlRow {
   decided_by_kind: ActorKind | null;
   decided_by_id: string | null;
   reason: string | null;
+  chair_id: string | null;
+  chair_number: string | null;
+  chair_zone_name: string | null;
   code: string;
   booking_status: BookingStatus;
   start_at: Date;
@@ -179,6 +221,7 @@ const RECEPTION_COLUMNS = Prisma.sql`
   r.id AS request_id, r.booking_id, r.state::text AS state, r.raised_at,
   r.raised_by_kind::text AS raised_by_kind, r.decided_at,
   r.decided_by_kind::text AS decided_by_kind, r.decided_by_id, r.reason,
+  r.chair_id, r.chair_number, r.chair_zone_name,
   b.code, b.status::text AS booking_status, b.start_at, b.end_at,
   b.customer_id, b.tenant_id, b.branch_id`;
 
@@ -220,7 +263,7 @@ export class CheckInRequestRepository {
 
     return this.prisma.$transaction(async (tx) => {
       const locked = await tx.$queryRaw<LockedBookingRow[]>`
-        SELECT id, status, start_at, end_at, tenant_id
+        SELECT id, status, start_at, end_at, tenant_id, branch_id
           FROM booking
          WHERE id = ${input.bookingId}::uuid
          FOR UPDATE`;
@@ -261,6 +304,28 @@ export class CheckInRequestRepository {
           break;
       }
 
+      // THE CHAIR, after the booking's own answers: a booking that may not
+      // raise at all is told that first, whatever chair it scanned. Asked in
+      // the lock, of this booking's tenant and branch as the row has them.
+      // No chair lock here: approve takes it and asks again, and approve is
+      // the moment a customer is seated.
+      let chair: ClaimedChair | null = null;
+      if (input.chair !== undefined) {
+        const verdict = chairCheckInVerdict({
+          chair: input.chair,
+          booking: { tenantId: booking.tenant_id, branchId: booking.branch_id },
+          occupant: await occupantOf(tx, {
+            chairId: input.chair.chairId,
+            bookingId: booking.id,
+          }),
+        });
+        if (verdict.kind === 'refused') {
+          const { kind: _refused, ...refusal } = verdict;
+          return { kind: 'chair_refused' as const, refusal };
+        }
+        chair = verdict.chair;
+      }
+
       const request = await tx.checkInRequest.create({
         data: {
           bookingId: booking.id,
@@ -269,6 +334,13 @@ export class CheckInRequestRepository {
           raisedByKind: input.actor,
           // Folded as every actor id is written (CLAUDE.md 8).
           raisedById: toUuid(input.actorId),
+          ...(chair === null
+            ? {}
+            : {
+                chairId: chair.chairId,
+                chairNumber: chair.chairNumber,
+                chairZoneName: chair.zoneName,
+              }),
         },
         select: ROW_FIELDS,
       });
@@ -362,8 +434,8 @@ export class CheckInRequestRepository {
 
     return this.prisma.$transaction(
       async (tx) => {
-        const locked = await tx.$queryRaw<{ id: string }[]>`
-          SELECT id
+        const locked = await tx.$queryRaw<LockedRequestRow[]>`
+          SELECT id, chair_id, chair_number
             FROM check_in_request
            WHERE booking_id = ${input.bookingId}::uuid
              AND state = 'waiting'
@@ -371,6 +443,28 @@ export class CheckInRequestRepository {
         const waiting = locked[0];
         if (waiting === undefined) {
           return nothingToAnswer(tx, input.bookingId);
+        }
+
+        // A CLAIMED CHAIR: take the chair's lock, then ask who is in it.
+        // Held until this transaction ends, which is after checkIn() and the
+        // mark below have both committed: a second approval for the same
+        // chair waits here, then finds this booking in it.
+        if (waiting.chair_id !== null) {
+          await tx.$executeRaw`
+            SELECT pg_advisory_xact_lock(${CHAIR_LOCK_CLASS}::int4,
+                                         hashtext(${waiting.chair_id}))`;
+          const occupant = await occupantOf(tx, {
+            chairId: waiting.chair_id,
+            bookingId: input.bookingId,
+          });
+          if (occupant !== null) {
+            return {
+              kind: 'chair_occupied' as const,
+              // Never null with a chair_id: check_in_request_chair_is_whole.
+              chairNumber: waiting.chair_number ?? '',
+              occupant,
+            };
+          }
         }
 
         const result = await checkIn();
@@ -485,6 +579,81 @@ export class CheckInRequestRepository {
   }
 }
 
+/**
+ * THE CHAIR LOCK: one approval at a time per chair.
+ *
+ * Two desks approving two bookings for the same chair each lock only their
+ * own request, so without it both could find the chair free and both seat a
+ * customer in it. approveWith takes this before it asks who is in the chair,
+ * and holds it until its check-in and its mark have committed.
+ *
+ * ITS OWN KEY SPACE, ON PURPOSE: the capacity lock is NOT reused, and the two
+ * can never collide. Capacity (hold, group hold, group confirm, series,
+ * reschedule) locks the ONE-bigint form,
+ * pg_advisory_xact_lock(hashtextextended('<branch>:<type>:<day>', 0)). This
+ * is the TWO-int form, (CHAIR_LOCK_CLASS, hashtext(chair_id)), and Postgres
+ * keeps the two forms in key spaces that do not overlap (pg_locks: objsubid
+ * 1 for the first, 2 for the second), so no capacity key can equal a chair
+ * key, and a hold never waits on an approval or the other way round. Not
+ * reused, because they guard different things: capacity is selling a chair
+ * TYPE on a day, this is one physical chair now, and an approval knows
+ * neither the type nor the capacity it would be queueing behind.
+ *
+ * CHAIR_LOCK_CLASS names this feature in the first int, so a later two-int
+ * lock that picks its own class cannot collide with it either. Inside it,
+ * two chairs whose ids hash alike (32 bits) share a lock: their approvals
+ * take turns, which costs a moment and is never wrong.
+ *
+ * NO DEADLOCK: an approval holds one request row, then one chair lock,
+ * always in that order, and only READS the bookings it asks about.
+ *
+ * Proven live: self-check-in.live.spec.ts holds a one-bigint lock with the
+ * very same 64 bits and takes this one beside it.
+ */
+export const CHAIR_LOCK_CLASS = 0x43484952; // 'CHIR'
+
+/**
+ * WHO IS IN THIS CHAIR, if anybody but the claiming booking: the code of the
+ * booking, or null. The rule is chair-check-in.ts's (4. occupied); this is
+ * that rule as SQL, the one copy, asked by raise and by approve.
+ *
+ *   IN_THE_CHAIR     checked in or in service
+ *   same branch and trading day as the claiming booking: a visit nobody
+ *                    closed yesterday is not in the chair today
+ *   latest request   names this chair and was not rejected, so a customer
+ *                    who scanned it and was checked in with the desk's own
+ *                    button (the request then closes) is in it too
+ *
+ * From the claiming booking's branch and day, so booking_branch_day_idx
+ * finds the day's bookings and check_in_request_booking_idx each one's
+ * latest request. The day is read in SQL, never round-tripped as a JS Date.
+ */
+async function occupantOf(
+  tx: Tx,
+  claim: { readonly chairId: string; readonly bookingId: string },
+): Promise<string | null> {
+  const rows = await tx.$queryRaw<{ code: string }[]>`
+    SELECT b.code
+      FROM booking me
+      JOIN booking b
+        ON b.branch_id = me.branch_id
+       AND b.trading_day = me.trading_day
+       AND b.id <> me.id
+      JOIN LATERAL (
+            SELECT x.state, x.chair_id
+              FROM check_in_request x
+             WHERE x.booking_id = b.id
+             ORDER BY x.raised_at DESC, x.id DESC
+             LIMIT 1) latest ON true
+     WHERE me.id = ${claim.bookingId}::uuid
+       AND b.status = ANY(${[...IN_THE_CHAIR]}::booking_status[])
+       AND latest.chair_id = ${claim.chairId}::uuid
+       AND latest.state <> 'rejected'
+     ORDER BY b.start_at, b.code
+     LIMIT 1`;
+  return rows[0]?.code ?? null;
+}
+
 /** The booking is not there, or nothing on it is waiting: which one. */
 async function nothingToAnswer(
   tx: Tx,
@@ -515,6 +684,9 @@ function receptionRow(row: ReceptionSqlRow): ReceptionRow {
       decidedByKind: row.decided_by_kind,
       decidedById: row.decided_by_id,
       reason: row.reason,
+      chairId: row.chair_id,
+      chairNumber: row.chair_number,
+      chairZoneName: row.chair_zone_name,
     },
     booking: {
       id: row.booking_id,

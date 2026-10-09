@@ -123,6 +123,21 @@ export class CheckInDeskHandler {
           actorId: cmd.actorId,
         }),
     );
+    if (out.kind === 'chair_occupied') {
+      // The desk's own words, so the occupant's code is fine here: it is the
+      // one thing that lets them sort it out.
+      throw bookingError(
+        'BOOKING_CHAIR_REFUSED',
+        `Chair ${out.chairNumber} is taken: ${out.occupant} is checked in ` +
+          'there. If that visit is over, finish it and approve again; ' +
+          'otherwise the customer needs another chair.',
+        {
+          reason: 'CHAIR_OCCUPIED',
+          chairNumber: out.chairNumber,
+          occupant: out.occupant,
+        },
+      );
+    }
     if (out.kind !== 'approved') refuse(out);
     return { request: deskViewOf(out.request), checkIn: out.checkIn };
   }

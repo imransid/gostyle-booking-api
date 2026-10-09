@@ -4,6 +4,7 @@ import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from '../persistence/prisma.service';
 import { LifecycleRepository } from '../persistence/lifecycle.repository';
 import {
+  CHAIR_LOCK_CLASS,
   CheckInRequestRepository,
   arrivalClaimed,
 } from '../persistence/check-in-request.repository';
@@ -12,6 +13,17 @@ import { CheckInRequestSweeper } from './check-in-request-sweeper.service';
 import { ConflictException } from '@nestjs/common';
 import { LifecycleHandler } from '@application/commands/lifecycle.handler';
 import { FixtureCustomerContext } from '../fixtures/fixture-customer-context';
+import type { ScannedChair } from '@domain/booking/chair-check-in';
+import {
+  ClientProxyFactory,
+  Transport,
+  type ClientGrpcProxy,
+} from '@nestjs/microservices';
+import { Logger } from '@nestjs/common';
+import { CheckInRequestHandler } from '@application/commands/check-in-request.handler';
+import { BookingError } from '@application/contract/errors';
+import { GrpcChairDirectory } from '../grpc/grpc-chair-directory';
+import { chairDirectoryClientOptions } from '../grpc/floor-grpc.constants';
 
 /**
  * SELF CHECK-IN AND THE AUTO NO-SHOW SWEEPER, AGAINST A REAL POSTGRES.
@@ -32,6 +44,15 @@ import { FixtureCustomerContext } from '../fixtures/fixture-customer-context';
  * the whole database, not just these.
  */
 const LIVE = process.env.LIVE_DATABASE_URL ?? '';
+/**
+ * The chair section's platform half also needs a platform that serves
+ * ChairDirectory, and its key (see grpc-chair-directory.live.spec.ts):
+ * LIVE_PLATFORM_GRPC_ADDR and LIVE_PLATFORM_KEY. Made-up tokens only, so
+ * platform writes no scan row.
+ */
+const LIVE_PLATFORM = process.env.LIVE_PLATFORM_GRPC_ADDR ?? '';
+const LIVE_PLATFORM_KEY =
+  process.env.LIVE_PLATFORM_KEY ?? 'dev-platform-internal-key';
 
 const MIN = 60_000;
 /** Older than any real booking, so these are always the sweeper's first. */
@@ -103,6 +124,7 @@ describe.skipIf(LIVE === '')('self check-in, live', { timeout: 60_000 }, () => {
     bookingId: string,
     state: 'waiting' | 'approved' | 'rejected' | 'expired' | 'closed',
     raisedAtMs: number,
+    chair?: { readonly id: string; readonly number: string },
   ): Promise<void> {
     const decidedBy =
       state === 'approved' || state === 'rejected'
@@ -113,14 +135,16 @@ describe.skipIf(LIVE === '')('self check-in, live', { timeout: 60_000 }, () => {
     await prisma.$executeRaw`
       INSERT INTO check_in_request (id, booking_id, state, raised_at,
                                     raised_by_kind, raised_by_id, decided_at,
-                                    decided_by_kind, decided_by_id, reason)
+                                    decided_by_kind, decided_by_id, reason,
+                                    chair_id, chair_number)
       VALUES (${randomUUID()}::uuid, ${bookingId}::uuid,
               ${state}::check_in_request_state, ${new Date(raisedAtMs)},
               'customer', ${randomUUID()}::uuid,
               ${state === 'waiting' ? null : new Date(raisedAtMs + MIN)},
               ${decidedBy}::actor_kind,
               ${decidedBy === 'staff' ? randomUUID() : null}::uuid,
-              ${state === 'rejected' ? 'Not at the salon' : null})`;
+              ${state === 'rejected' ? 'Not at the salon' : null},
+              ${chair?.id ?? null}::uuid, ${chair?.number ?? null})`;
   }
 
   async function statusOf(id: string): Promise<string> {
@@ -629,4 +653,360 @@ describe.skipIf(LIVE === '')('self check-in, live', { timeout: 60_000 }, () => {
       data: { status: 'cancelled' },
     });
   });
+
+  // ------------------------------------------------------------ chairs
+
+  const TENANT = 'f2a9882b-c822-4107-b650-29af2e303c24';
+  /** Far ahead: a booking a chair test leaves CONFIRMED is never due. */
+  const AHEAD = Date.UTC(2099, 0, 1, 4, 0);
+
+  const scanned = (
+    chairId: string,
+    over: Partial<ScannedChair> = {},
+  ): ScannedChair => ({
+    cardStatus: 'LIVE',
+    chairId,
+    tenantId: TENANT,
+    branchId: branch,
+    chairNumber: '7',
+    zoneName: 'Window section',
+    chairState: 'ACTIVE',
+    chairBookable: true,
+    ...over,
+  });
+
+  /** "I am here" at a chair, five minutes before the booking starts. */
+  const raiseAt = (bookingId: string, startAtMs: number, chair: ScannedChair) =>
+    requests.raise({
+      bookingId,
+      actor: 'customer',
+      actorId: 'sara',
+      chair,
+      nowMs: startAtMs - 5 * MIN,
+    });
+
+  async function codeOf(id: string): Promise<string> {
+    const b = await prisma.booking.findUniqueOrThrow({
+      where: { id },
+      select: { code: true },
+    });
+    return b.code;
+  }
+
+  /** Can another connection take the chair's lock right now? */
+  async function chairLockFree(chairId: string): Promise<boolean> {
+    const rows = await prisma.$queryRaw<{ got: boolean }[]>`
+      SELECT pg_try_advisory_xact_lock(${CHAIR_LOCK_CLASS}::int4,
+                                       hashtext(${chairId})) AS got`;
+    return rows[0]?.got === true;
+  }
+
+  it('raise at a chair: the claim keeps the chair, and a waiting claim does not block the next customer', async () => {
+    const chair = randomUUID();
+    const at = AHEAD;
+    const first = await seed({ startAtMs: at, tenantId: TENANT });
+    const second = await seed({ startAtMs: at, tenantId: TENANT });
+
+    expect(await raiseAt(first, at, scanned(chair))).toMatchObject({
+      kind: 'raised',
+      request: {
+        state: 'waiting',
+        chairId: chair,
+        chairNumber: '7',
+        chairZoneName: 'Window section',
+      },
+    });
+    // Waiting is not in the chair. And platform's spelling of the branch is
+    // not another salon (CLAUDE.md 8: the column holds the folded uuid).
+    expect(
+      await raiseAt(
+        second,
+        at,
+        scanned(chair, { branchId: branch.toUpperCase(), zoneName: null }),
+      ),
+    ).toMatchObject({
+      kind: 'raised',
+      request: { chairId: chair, chairNumber: '7', chairZoneName: null },
+    });
+
+    const list = await requests.listForBranch(branch, Date.now());
+    const mine = list.waiting.filter((r) =>
+      [first, second].includes(r.booking.id),
+    );
+    expect(mine.map((r) => r.request.chairNumber)).toEqual(['7', '7']);
+  });
+
+  it('raise at a chair: another branch, a booking with no tenant, a stale card are refused, and nothing is written', async () => {
+    const chair = randomUUID();
+    const at = AHEAD + 60 * MIN;
+    const mine = await seed({ startAtMs: at, tenantId: TENANT });
+    const untenanted = await seed({ startAtMs: at, tenantId: null });
+
+    expect(
+      await raiseAt(mine, at, scanned(chair, { branchId: randomUUID() })),
+    ).toEqual({
+      kind: 'chair_refused',
+      refusal: { why: 'other_salon', which: 'other_branch' },
+    });
+    expect(
+      await raiseAt(mine, at, scanned(chair, { cardStatus: 'REPLACED' })),
+    ).toEqual({
+      kind: 'chair_refused',
+      refusal: { why: 'card_out_of_date', cardStatus: 'REPLACED' },
+    });
+    expect(await raiseAt(untenanted, at, scanned(chair))).toEqual({
+      kind: 'chair_refused',
+      refusal: { why: 'other_salon', which: 'untenanted_booking' },
+    });
+    expect(
+      await prisma.checkInRequest.count({
+        where: { bookingId: { in: [mine, untenanted] } },
+      }),
+    ).toBe(0);
+  });
+
+  it('who is in the chair: checked in or in service, the same trading day, and a latest claim that was not rejected', async () => {
+    const at = AHEAD + 2 * 60 * MIN;
+    /** A booking in `status` whose latest claim, in `state`, names a chair. */
+    async function sitting(
+      status: string,
+      state: 'approved' | 'closed' | 'rejected',
+      startAtMs = at,
+    ) {
+      const chair = randomUUID();
+      const id = await seed({ startAtMs, tenantId: TENANT, status });
+      await claim(id, state, startAtMs - 10 * MIN, { id: chair, number: '7' });
+      return { chair, code: await codeOf(id) };
+    }
+    /** Another customer scans that chair. */
+    async function next(chair: string) {
+      const id = await seed({ startAtMs: at, tenantId: TENANT });
+      return raiseAt(id, at, scanned(chair));
+    }
+    const occupied = (occupant: string) => ({
+      kind: 'chair_refused',
+      refusal: { why: 'chair_occupied', occupant },
+    });
+
+    const approved = await sitting('checked_in', 'approved');
+    expect(await next(approved.chair)).toEqual(occupied(approved.code));
+
+    // Scanned, then checked in with the desk's own button: the request closed.
+    const deskButton = await sitting('checked_in', 'closed');
+    expect(await next(deskButton.chair)).toEqual(occupied(deskButton.code));
+
+    const inService = await sitting('in_service', 'approved');
+    expect(await next(inService.chair)).toEqual(occupied(inService.code));
+
+    const rejected = await sitting('checked_in', 'rejected');
+    expect((await next(rejected.chair)).kind).toBe('raised');
+
+    const finished = await sitting('completed', 'approved');
+    expect((await next(finished.chair)).kind).toBe('raised');
+
+    // Checked in yesterday and never closed: not in the chair today.
+    const yesterday = await sitting(
+      'checked_in',
+      'approved',
+      at - 24 * 60 * MIN,
+    );
+    expect((await next(yesterday.chair)).kind).toBe('raised');
+  });
+
+  it('two desks approve two bookings for one chair at once: one is seated, the other is told who is in it', async () => {
+    const chair = randomUUID();
+    const at = BASE + 18 * 60 * MIN;
+    const a = await seed({ startAtMs: at, tenantId: TENANT });
+    const b = await seed({ startAtMs: at, tenantId: TENANT });
+    await claim(a, 'waiting', at, { id: chair, number: '7' });
+    await claim(b, 'waiting', at + MIN, { id: chair, number: '7' });
+    // The wait comes BEFORE the check-in, so both approvals have asked who
+    // is in the chair before either has seated anybody: without the chair
+    // lock, both would find it free.
+    const slow = (id: string) => async () => {
+      await sleep(300);
+      return checkIn(id)();
+    };
+
+    const outs = await Promise.all([
+      requests.approveWith(decider(a), slow(a)),
+      requests.approveWith(decider(b), slow(b)),
+    ]);
+
+    expect(outs.map((o) => o.kind).sort()).toEqual([
+      'approved',
+      'chair_occupied',
+    ]);
+    const seated = outs[0]?.kind === 'approved' ? a : b;
+    const turnedAway = seated === a ? b : a;
+    expect(outs.find((o) => o.kind === 'chair_occupied')).toEqual({
+      kind: 'chair_occupied',
+      chairNumber: '7',
+      occupant: await codeOf(seated),
+    });
+    expect(await statusOf(seated)).toBe('checked_in');
+    expect(await statusOf(turnedAway)).toBe('confirmed');
+    expect((await requests.latestFor(turnedAway))?.state).toBe('waiting');
+  });
+
+  it('approve holds the chair lock while it seats somebody, and lets it go after', async () => {
+    const chair = randomUUID();
+    const at = BASE + 19 * 60 * MIN;
+    const a = await seed({ startAtMs: at, tenantId: TENANT });
+    await claim(a, 'waiting', at, { id: chair, number: '7' });
+
+    expect(await chairLockFree(chair)).toBe(true);
+    const approval = requests.approveWith(decider(a), async () => {
+      await sleep(500);
+      return checkIn(a)();
+    });
+    await sleep(200);
+    expect(await chairLockFree(chair)).toBe(false);
+    expect((await approval).kind).toBe('approved');
+    expect(await chairLockFree(chair)).toBe(true);
+  });
+
+  it('its own key space: a capacity-style one-bigint lock with the very same 64 bits never holds the chair lock', async () => {
+    const chair = randomUUID();
+    await prisma.$transaction(async (tx) => {
+      // The capacity lock's form (hold.repository.ts), on purpose built from
+      // the chair key's own bits: high 32 the class, low 32 the hash.
+      await tx.$executeRaw`
+        SELECT pg_advisory_xact_lock(
+                 (${CHAIR_LOCK_CLASS}::int8 << 32)
+               | (hashtext(${chair})::int8 & 4294967295))`;
+
+      // pg_locks: the same classid and objid as the chair key; only objsubid
+      // (1: one bigint, 2: two ints) tells them apart.
+      const held = await tx.$queryRaw<
+        { classid: bigint; objid: bigint; objsubid: number; want: bigint }[]
+      >`
+        SELECT l.classid::int8 AS classid, l.objid::int8 AS objid,
+               l.objsubid::int AS objsubid,
+               hashtext(${chair})::int8 & 4294967295 AS want
+          FROM pg_locks l
+         WHERE l.locktype = 'advisory' AND l.pid = pg_backend_pid()`;
+      expect(held).toHaveLength(1);
+      expect(Number(held[0]!.classid)).toBe(CHAIR_LOCK_CLASS);
+      expect(held[0]!.objid).toBe(held[0]!.want);
+      expect(held[0]!.objsubid).toBe(1);
+
+      // Another connection takes the chair lock beside it.
+      expect(await chairLockFree(chair)).toBe(true);
+    });
+
+    // Control: the chair lock held, and the same probe is refused.
+    await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`
+        SELECT pg_advisory_xact_lock(${CHAIR_LOCK_CLASS}::int4,
+                                     hashtext(${chair}))`;
+      expect(await chairLockFree(chair)).toBe(false);
+    });
+  });
+
+  describe.skipIf(LIVE_PLATFORM === '')(
+    'raise at a chair, through a real platform',
+    () => {
+      const saved = {
+        addr: process.env.PLATFORM_GRPC_ADDR,
+        key: process.env.PLATFORM_INTERNAL_KEY,
+      };
+      const clients: ClientGrpcProxy[] = [];
+
+      /** The real handler, the real adapter, platform at `addr`. */
+      function handlerAt(addr: string): CheckInRequestHandler {
+        process.env.PLATFORM_GRPC_ADDR = addr;
+        const client = ClientProxyFactory.create({
+          transport: Transport.GRPC,
+          options: chairDirectoryClientOptions(),
+        });
+        clients.push(client);
+        const chairs = new GrpcChairDirectory(client);
+        chairs.onModuleInit();
+        return new CheckInRequestHandler(requests, chairs);
+      }
+
+      afterAll(() => {
+        for (const c of clients) c.close();
+        for (const [name, value] of [
+          ['PLATFORM_GRPC_ADDR', saved.addr],
+          ['PLATFORM_INTERNAL_KEY', saved.key],
+        ] as const) {
+          if (value === undefined) delete process.env[name];
+          else process.env[name] = value;
+        }
+      });
+
+      async function raised(
+        h: CheckInRequestHandler,
+        bookingId: string,
+        startAtMs: number,
+      ): Promise<BookingError> {
+        const err: unknown = await h
+          .raise({
+            bookingId,
+            actor: 'customer',
+            actorId: 'sara',
+            chairToken: 'never-minted-booking-api-live',
+            userAgent: 'booking-api live spec',
+            nowMs: startAtMs - 5 * MIN,
+          })
+          .catch((e: unknown) => e);
+        expect(err).toBeInstanceOf(BookingError);
+        return err as BookingError;
+      }
+
+      it('a code platform never printed: 409 UNKNOWN_CARD, and nothing is written', async () => {
+        process.env.PLATFORM_INTERNAL_KEY = LIVE_PLATFORM_KEY;
+        const at = AHEAD + 4 * 60 * MIN;
+        const booking = await seed({ startAtMs: at, tenantId: TENANT });
+        const e = await raised(handlerAt(LIVE_PLATFORM), booking, at);
+        expect([e.code, e.status, e.details]).toEqual([
+          'BOOKING_CHAIR_REFUSED',
+          409,
+          { reason: 'UNKNOWN_CARD' },
+        ]);
+        expect(await requests.latestFor(booking)).toBeNull();
+      });
+
+      it('platform refuses our key: 503 Wait for Staff, and no request without the chair', async () => {
+        vi.spyOn(Logger.prototype, 'error').mockImplementation(() => {});
+        process.env.PLATFORM_INTERNAL_KEY = 'not-the-key-live-spec';
+        const at = AHEAD + 5 * 60 * MIN;
+        const booking = await seed({ startAtMs: at, tenantId: TENANT });
+        const e = await raised(handlerAt(LIVE_PLATFORM), booking, at);
+        expect([e.code, e.status, e.details]).toEqual([
+          'DEPENDENCY_UNAVAILABLE',
+          503,
+          { reason: 'CHAIR_CHECK_UNAVAILABLE', fallback: 'WAIT_FOR_STAFF' },
+        ]);
+        expect(e.message).toContain('Wait for Staff');
+        expect(await requests.latestFor(booking)).toBeNull();
+        vi.restoreAllMocks();
+      });
+
+      it('platform not there at all: the same 503, and Wait for Staff (no chairToken) still raises', async () => {
+        vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
+        process.env.PLATFORM_INTERNAL_KEY = LIVE_PLATFORM_KEY;
+        const at = AHEAD + 6 * 60 * MIN;
+        const booking = await seed({ startAtMs: at, tenantId: TENANT });
+        // Nothing listens on port 1.
+        const h = handlerAt('127.0.0.1:1');
+        const e = await raised(h, booking, at);
+        expect([e.code, e.status]).toEqual(['DEPENDENCY_UNAVAILABLE', 503]);
+
+        const fallback = await h.raise({
+          bookingId: booking,
+          actor: 'customer',
+          actorId: 'sara',
+          nowMs: at - 5 * MIN,
+        });
+        expect(fallback).toMatchObject({
+          created: true,
+          request: { state: 'WAITING', chair: null },
+        });
+        vi.restoreAllMocks();
+      });
+    },
+  );
 });

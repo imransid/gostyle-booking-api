@@ -4,6 +4,7 @@ import { Metadata } from '@grpc/grpc-js';
 import { Observable } from 'rxjs';
 
 import { callWithRetry, type GrpcCallOptions } from './call-with-retry';
+import { blankToNull } from './blank-to-null';
 import { describeGrpcFailure } from './grpc-failure';
 
 import type {
@@ -145,12 +146,6 @@ function toStylist(row: StylistWire): Stylist {
     closingTime: blankToNull(row.closing_time),
     bio: blankToNull(row.bio),
   };
-}
-
-/** '' or absent becomes null. Both mean the same thing on this wire. */
-function blankToNull(value: string | undefined): string | null {
-  const trimmed = (value ?? '').trim();
-  return trimmed === '' ? null : trimmed;
 }
 
 /** 0 or absent becomes null, with an optional unit conversion applied to the
