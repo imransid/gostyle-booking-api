@@ -14,6 +14,8 @@ import { ConflictException } from '@nestjs/common';
 import { LifecycleHandler } from '@application/commands/lifecycle.handler';
 import { FixtureCustomerContext } from '../fixtures/fixture-customer-context';
 import type { ScannedChair } from '@domain/booking/chair-check-in';
+import type { CheckInRequestState } from '@domain/booking/check-in-request';
+import { toUuid } from '../persistence/hold.repository';
 import {
   ClientProxyFactory,
   Transport,
@@ -119,19 +121,31 @@ describe.skipIf(LIVE === '')('self check-in, live', { timeout: 60_000 }, () => {
     return id;
   }
 
+  /** Who answers a request in each state: the table's own rule. */
+  const ANSWERER = {
+    waiting: null,
+    approved: 'staff',
+    rejected: 'staff',
+    expired: 'system',
+    closed: 'system',
+    withdrawn: 'customer',
+  } as const;
+
   /** A request in any state, written straight to the table. */
   async function claim(
     bookingId: string,
-    state: 'waiting' | 'approved' | 'rejected' | 'expired' | 'closed',
+    state: CheckInRequestState,
     raisedAtMs: number,
     chair?: { readonly id: string; readonly number: string },
   ): Promise<void> {
-    const decidedBy =
-      state === 'approved' || state === 'rejected'
-        ? 'staff'
-        : state === 'waiting'
-          ? null
-          : 'system';
+    const raiser = randomUUID();
+    const decidedBy = ANSWERER[state];
+    const decidedById =
+      decidedBy === 'staff'
+        ? randomUUID()
+        : decidedBy === 'customer'
+          ? raiser // only the one who asked takes it back
+          : null;
     await prisma.$executeRaw`
       INSERT INTO check_in_request (id, booking_id, state, raised_at,
                                     raised_by_kind, raised_by_id, decided_at,
@@ -139,10 +153,10 @@ describe.skipIf(LIVE === '')('self check-in, live', { timeout: 60_000 }, () => {
                                     chair_id, chair_number)
       VALUES (${randomUUID()}::uuid, ${bookingId}::uuid,
               ${state}::check_in_request_state, ${new Date(raisedAtMs)},
-              'customer', ${randomUUID()}::uuid,
+              'customer', ${raiser}::uuid,
               ${state === 'waiting' ? null : new Date(raisedAtMs + MIN)},
               ${decidedBy}::actor_kind,
-              ${decidedBy === 'staff' ? randomUUID() : null}::uuid,
+              ${decidedById}::uuid,
               ${state === 'rejected' ? 'Not at the salon' : null},
               ${chair?.id ?? null}::uuid, ${chair?.number ?? null})`;
   }
@@ -224,6 +238,7 @@ describe.skipIf(LIVE === '')('self check-in, live', { timeout: 60_000 }, () => {
     const approved = await seed({ startAtMs: at }); // check-in then undone
     const expired = await seed({ startAtMs: at }); // nobody answered
     const closed = await seed({ startAtMs: at });
+    const withdrawn = await seed({ startAtMs: at }); // took it back to rescan
     const rejected = await seed({ startAtMs: at });
     const rejectedLast = await seed({ startAtMs: at });
 
@@ -231,6 +246,7 @@ describe.skipIf(LIVE === '')('self check-in, live', { timeout: 60_000 }, () => {
     await claim(approved, 'approved', at);
     await claim(expired, 'expired', at);
     await claim(closed, 'closed', at);
+    await claim(withdrawn, 'withdrawn', at);
     await claim(rejected, 'rejected', at);
     // An older closed request, then a rejection: the rejection is latest.
     await claim(rejectedLast, 'closed', at);
@@ -245,6 +261,7 @@ describe.skipIf(LIVE === '')('self check-in, live', { timeout: 60_000 }, () => {
     expect(await statusOf(approved)).toBe('confirmed');
     expect(await statusOf(expired)).toBe('confirmed');
     expect(await statusOf(closed)).toBe('confirmed');
+    expect(await statusOf(withdrawn)).toBe('confirmed');
   });
 
   it(
@@ -654,6 +671,141 @@ describe.skipIf(LIVE === '')('self check-in, live', { timeout: 60_000 }, () => {
     });
   });
 
+  // ------------------------------------------------------------ withdraw
+
+  /** Sara says "I am here", `afterStartMin` minutes into her booking. */
+  const raiseAsSara = (bookingId: string, at: number, afterStartMin = 5) =>
+    requests.raise({
+      bookingId,
+      actor: 'customer',
+      actorId: 'sara',
+      nowMs: at + afterStartMin * MIN,
+    });
+  const withdrawAsSara = (bookingId: string, nowMs: number) =>
+    requests.withdraw({ bookingId, actorId: 'sara', nowMs });
+
+  it('withdraw: Sara takes it back, the sweeper still leaves her to the desk, and she may raise again', async () => {
+    expect(await dueAnywhere()).toBe(0);
+    const at = BASE + 20 * 60 * MIN;
+    const booking = await seed({ startAtMs: at });
+    // Past start plus 30: without a claim, the sweeper would take her now.
+    expect((await raiseAsSara(booking, at, 35)).kind).toBe('raised');
+
+    const out = await withdrawAsSara(booking, at + 40 * MIN);
+    expect(out).toMatchObject({
+      kind: 'withdrawn',
+      request: {
+        state: 'withdrawn',
+        decidedAt: new Date(at + 40 * MIN),
+        decidedByKind: 'customer',
+        decidedById: toUuid('sara'),
+        reason: null,
+      },
+    });
+    const first = out.kind === 'withdrawn' ? out.request.id : '';
+
+    // A second tap: the same request, nothing written.
+    const again = await withdrawAsSara(booking, at + 41 * MIN);
+    expect(again.kind).toBe('already_withdrawn');
+    expect(again.kind === 'already_withdrawn' && again.request.id).toBe(first);
+
+    // She withdrew to rescan; she is still in the salon. Not swept, and the
+    // desk sees her under needs-a-decision.
+    await noShow.sweep();
+    expect(await statusOf(booking)).toBe('confirmed');
+    const list = await requests.listForBranch(branch, Date.now());
+    expect(
+      list.needsDecision.find((r) => r.booking.id === booking)?.request.state,
+    ).toBe('withdrawn');
+
+    // And asks again (Wait for Staff this time): a new request.
+    const reraised = await raiseAsSara(booking, at, 42);
+    expect(reraised).toMatchObject({
+      kind: 'raised',
+      request: { state: 'waiting' },
+    });
+    expect(reraised.kind === 'raised' && reraised.request.id).not.toBe(first);
+  });
+
+  it('withdraw while the desk approves: it waits on the request, then finds it approved, and nothing is withdrawn', async () => {
+    const at = BASE + 21 * 60 * MIN;
+    const booking = await seed({ startAtMs: at });
+    await raiseAsSara(booking, at);
+
+    const approval = requests.approveWith(decider(booking), async () => {
+      const out = await checkIn(booking)();
+      await sleep(400);
+      return out;
+    });
+    await sleep(150);
+    const withdrawal = await withdrawAsSara(booking, at + 10 * MIN);
+
+    expect((await approval).kind).toBe('approved');
+    expect(withdrawal).toEqual({ kind: 'nothing_waiting', latest: 'approved' });
+    expect(await statusOf(booking)).toBe('checked_in');
+  });
+
+  it('withdraw while a desk check-in is in flight: it waits on the booking, then writes the JOB’s closed, never a withdrawal', async () => {
+    const at = BASE + 22 * 60 * MIN;
+    const booking = await seed({ startAtMs: at });
+    await raiseAsSara(booking, at);
+
+    // The desk's own check-in, held open: the booking's row lock taken and
+    // CHECKED_IN written, not yet committed. A real one cannot be paused, so
+    // this is its transaction's shape, held for half a second.
+    const desk = prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`
+          SELECT id FROM booking WHERE id = ${booking}::uuid FOR UPDATE`;
+        await tx.$executeRaw`
+          UPDATE booking SET status = 'checked_in'
+           WHERE id = ${booking}::uuid`;
+        await sleep(500);
+      },
+      { timeout: 10_000 },
+    );
+    await sleep(150);
+    const out = await withdrawAsSara(booking, at + 10 * MIN);
+    await desk;
+
+    expect(out).toMatchObject({
+      kind: 'lapsed',
+      request: {
+        state: 'closed',
+        decidedAt: new Date(at + 10 * MIN),
+        decidedByKind: 'system',
+        decidedById: null,
+        reason: 'The booking became checked_in before the desk answered.',
+      },
+    });
+    expect((await requests.latestFor(booking))?.state).toBe('closed');
+  });
+
+  it('withdraw after the end time: the JOB’s expired, written now, so the app reads it at once', async () => {
+    const at = BASE + 23 * 60 * MIN;
+    const booking = await seed({ startAtMs: at });
+    await raiseAsSara(booking, at);
+
+    const out = await withdrawAsSara(booking, at + 60 * MIN);
+
+    expect(out).toMatchObject({
+      kind: 'lapsed',
+      request: {
+        state: 'expired',
+        decidedByKind: 'system',
+        decidedById: null,
+        reason: 'Nobody answered before the booking ended.',
+      },
+    });
+    // What the app reads next is what the answer said: not WAITING.
+    expect((await requests.latestFor(booking))?.state).toBe('expired');
+    // And the job has nothing left to write on it.
+    const lapsed = await requests.lapseWaiting(Date.now());
+    expect(lapsed.map((l) => l.id)).not.toContain(
+      out.kind === 'lapsed' ? out.request.id : '',
+    );
+  });
+
   // ------------------------------------------------------------ chairs
 
   const TENANT = 'f2a9882b-c822-4107-b650-29af2e303c24';
@@ -765,12 +917,12 @@ describe.skipIf(LIVE === '')('self check-in, live', { timeout: 60_000 }, () => {
     ).toBe(0);
   });
 
-  it('who is in the chair: checked in or in service, the same trading day, and a latest claim that was not rejected', async () => {
+  it('who is in the chair: checked in or in service, the same trading day, and a latest claim neither rejected nor withdrawn', async () => {
     const at = AHEAD + 2 * 60 * MIN;
     /** A booking in `status` whose latest claim, in `state`, names a chair. */
     async function sitting(
       status: string,
-      state: 'approved' | 'closed' | 'rejected',
+      state: 'approved' | 'closed' | 'rejected' | 'withdrawn',
       startAtMs = at,
     ) {
       const chair = randomUUID();
@@ -800,6 +952,11 @@ describe.skipIf(LIVE === '')('self check-in, live', { timeout: 60_000 }, () => {
 
     const rejected = await sitting('checked_in', 'rejected');
     expect((await next(rejected.chair)).kind).toBe('raised');
+
+    // Took the claim back, then was checked in at the desk: not in the chair
+    // they said was wrong.
+    const withdrawn = await sitting('checked_in', 'withdrawn');
+    expect((await next(withdrawn.chair)).kind).toBe('raised');
 
     const finished = await sitting('completed', 'approved');
     expect((await next(finished.chair)).kind).toBe('raised');

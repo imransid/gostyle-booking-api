@@ -10,7 +10,9 @@ import {
 import {
   lapseOf,
   raiseVerdict,
+  withdrawVerdict,
   type CheckInRequestState,
+  type Lapse,
   type RaiseRefusal,
 } from '@domain/booking/check-in-request';
 import {
@@ -30,8 +32,9 @@ import {
  *   lifecycle.repository.ts      <this>, again inside the booking's row lock
  *
  * True when the booking's LATEST request is anything but rejected: waiting,
- * and also expired, approved or closed. Only the desk saying no hands the
- * booking back to the sweeper; domain/booking/check-in-request.ts says why.
+ * and also expired, approved, closed or withdrawn. Only the desk saying no
+ * hands the booking back to the sweeper; domain/booking/check-in-request.ts
+ * says why.
  *
  * WHY IN THE QUERY, NOT IN THE LOOP. The sweeper takes the oldest 50 due
  * bookings. Skipped in the loop instead, a claimed booking would keep its
@@ -148,6 +151,27 @@ export type ApproveOutcome<T> =
 
 export type RejectOutcome =
   | { readonly kind: 'rejected'; readonly request: CheckInRequestRow }
+  | NothingToAnswer;
+
+/** The customer taking their own request back. */
+export interface WithdrawInput {
+  readonly bookingId: string;
+  /** The customer. Only the one who raised it (check_in_request_withdrawn_by_raiser). */
+  readonly actorId: string;
+  /** Test hook. A route passes the server's clock, never the caller's. */
+  readonly nowMs?: number;
+}
+
+export type WithdrawOutcome =
+  | { readonly kind: 'withdrawn'; readonly request: CheckInRequestRow }
+  /** A second tap: the request it withdrew, and nothing written. */
+  | { readonly kind: 'already_withdrawn'; readonly request: CheckInRequestRow }
+  /**
+   * It had lapsed. The lapse job's own write was made here (closed or
+   * expired, by the system, with the job's reason), and this is the request
+   * as it now stands. Never a withdrawal.
+   */
+  | { readonly kind: 'lapsed'; readonly request: CheckInRequestRow }
   | NothingToAnswer;
 
 /** One row of the reception list: the request and its booking. */
@@ -392,13 +416,7 @@ export class CheckInRequestRepository {
 
       const written = await this.prisma.checkInRequest.updateMany({
         where: { id: row.id, state: 'waiting' },
-        data: {
-          state: lapse.to,
-          decidedAt: new Date(nowMs),
-          decidedByKind: 'system',
-          decidedById: null,
-          reason: lapse.reason,
-        },
+        data: lapseWrite(lapse, nowMs),
       });
       if (written.count === 1) {
         lapsed.push({ id: row.id, code: row.code, to: lapse.to });
@@ -523,6 +541,111 @@ export class CheckInRequestRepository {
   }
 
   /**
+   * The customer takes their request back (the app's Cancel Request).
+   * domain withdrawVerdict decides; this locks, reads the facts, and writes.
+   *
+   * THE REQUEST'S ROW FIRST, THEN THE BOOKING'S, the order approve takes
+   * them in (its request lock, then the booking's inside the check-in), so
+   * the two can never deadlock:
+   *
+   *   - an approval in progress holds the request: this waits, then finds
+   *     it approved, and nothing is withdrawn;
+   *   - a desk check-in in progress holds the booking: this waits on the
+   *     FOR SHARE, then reads CHECKED_IN, and the request has lapsed;
+   *   - the lapse job's compare-and-set waits on the request, then finds it
+   *     withdrawn and writes nothing.
+   *
+   * FOR SHARE, not a plain read: a check-in committing between the read and
+   * the write would otherwise leave WITHDRAWN on a checked-in booking.
+   *
+   * LAPSED: the booking moved on or has ended, so it is the job's to end,
+   * and the job's write is made here, now (lapseWrite, the same one): closed
+   * or expired, by the system, with the job's reason. The customer's tap is
+   * never recorded as a withdrawal of what the desk or the clock had already
+   * ended, and the answer carries the state as it now is, so the app moves
+   * on at once instead of reading WAITING until the job's next run.
+   */
+  async withdraw(input: WithdrawInput): Promise<WithdrawOutcome> {
+    if (!UUID_RE.test(input.bookingId)) return { kind: 'not_found' };
+    const nowMs = input.nowMs ?? Date.now();
+
+    return this.prisma.$transaction(async (tx) => {
+      const locked = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id
+          FROM check_in_request
+         WHERE booking_id = ${input.bookingId}::uuid
+           AND state = 'waiting'
+         FOR UPDATE`;
+      const bookings = await tx.$queryRaw<
+        { status: BookingStatus; end_at: Date }[]
+      >`
+        SELECT status, end_at
+          FROM booking
+         WHERE id = ${input.bookingId}::uuid
+         FOR SHARE`;
+      const booking = bookings[0];
+      if (booking === undefined) return { kind: 'not_found' as const };
+
+      const waitingId = locked[0]?.id;
+      const latest =
+        waitingId === undefined
+          ? await tx.checkInRequest.findFirst({
+              where: { bookingId: input.bookingId },
+              orderBy: [{ raisedAt: 'desc' }, { id: 'desc' }],
+              select: ROW_FIELDS,
+            })
+          : null;
+
+      const verdict = withdrawVerdict({
+        latest: waitingId === undefined ? (latest?.state ?? null) : 'waiting',
+        bookingStatus: booking.status,
+        endAtMs: booking.end_at.getTime(),
+        nowMs,
+      });
+
+      switch (verdict.kind) {
+        case 'already_withdrawn':
+          // latest is the withdrawn one: that is what the verdict read.
+          return {
+            kind: 'already_withdrawn' as const,
+            request: latest as CheckInRequestRow,
+          };
+        case 'refused':
+          if (verdict.why === 'nothing_waiting') {
+            return {
+              kind: 'nothing_waiting' as const,
+              latest: latest?.state ?? null,
+            };
+          }
+          return {
+            kind: 'lapsed' as const,
+            request: await tx.checkInRequest.update({
+              // The locked waiting row: lapsed is only ever said of one.
+              where: { id: waitingId as string },
+              data: lapseWrite(verdict.lapse, nowMs),
+              select: ROW_FIELDS,
+            }),
+          };
+        case 'withdraw':
+          return {
+            kind: 'withdrawn' as const,
+            request: await tx.checkInRequest.update({
+              where: { id: waitingId as string },
+              data: {
+                state: 'withdrawn',
+                decidedAt: new Date(nowMs),
+                decidedByKind: 'customer',
+                // Folded as raised_by_id was (CLAUDE.md 8), so the two match.
+                decidedById: toUuid(input.actorId),
+              },
+              select: ROW_FIELDS,
+            }),
+          };
+      }
+    });
+  }
+
+  /**
    * THE RECEPTION LIST for one branch, in two halves:
    *
    *   waiting         requests nobody has answered yet, on bookings still
@@ -620,9 +743,12 @@ export const CHAIR_LOCK_CLASS = 0x43484952; // 'CHIR'
  *   IN_THE_CHAIR     checked in or in service
  *   same branch and trading day as the claiming booking: a visit nobody
  *                    closed yesterday is not in the chair today
- *   latest request   names this chair and was not rejected, so a customer
- *                    who scanned it and was checked in with the desk's own
- *                    button (the request then closes) is in it too
+ *   latest request   names this chair and was neither rejected nor
+ *                    withdrawn, so a customer who scanned it and was checked
+ *                    in with the desk's own button (the request then
+ *                    closes) is in it too, and one who took the claim back
+ *                    and was then checked in at the desk is not: the chair
+ *                    they scanned is the one they said was wrong
  *
  * From the claiming booking's branch and day, so booking_branch_day_idx
  * finds the day's bookings and check_in_request_booking_idx each one's
@@ -648,10 +774,26 @@ async function occupantOf(
      WHERE me.id = ${claim.bookingId}::uuid
        AND b.status = ANY(${[...IN_THE_CHAIR]}::booking_status[])
        AND latest.chair_id = ${claim.chairId}::uuid
-       AND latest.state <> 'rejected'
+       AND latest.state NOT IN ('rejected', 'withdrawn')
      ORDER BY b.start_at, b.code
      LIMIT 1`;
   return rows[0]?.code ?? null;
+}
+
+/**
+ * THE LAPSE JOB'S WRITE: lapseOf's state and reason, answered by the system,
+ * which is nobody. One copy, for the job and for a withdrawal that finds the
+ * request already lapsed, because either way it is the job's write and never
+ * the customer's.
+ */
+function lapseWrite(lapse: Lapse, nowMs: number) {
+  return {
+    state: lapse.to,
+    decidedAt: new Date(nowMs),
+    decidedByKind: 'system' as const,
+    decidedById: null,
+    reason: lapse.reason,
+  };
 }
 
 /** The booking is not there, or nothing on it is waiting: which one. */

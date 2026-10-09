@@ -533,6 +533,7 @@ enum CheckInRequestState {
   rejected
   expired
   closed
+  withdrawn
 
   @@map("check_in_request_state")
 }
@@ -577,8 +578,9 @@ model CheckInRequest {
   chairZoneName String? @map("chair_zone_name")
 
   /// All three null while waiting, all set once it ends. system for expired
-  /// and closed, staff or manager for approved and rejected. CHECKs in the
-  /// migration hold each of these.
+  /// and closed, staff or manager for approved and rejected, and for
+  /// withdrawn the customer who raised it. CHECKs in the migrations hold
+  /// each of these.
   decidedAt     DateTime?  @map("decided_at") @db.Timestamptz(6)
   decidedByKind ActorKind? @map("decided_by_kind")
   decidedById   String?    @map("decided_by_id") @db.Uuid
