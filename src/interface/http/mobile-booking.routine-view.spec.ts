@@ -3,9 +3,11 @@ import { MobileBookingController } from './mobile-booking.controller';
 
 /**
  * STEP B7 at the edge (gostyle-customer-api docs/ROUTINE_FE_CONTRACT_AUDIT.md):
- * the Recurring rows with view=booking, and booking_type and series_id on
- * the single read, only behind MOBILE_ROUTINE_CONTRACT. Off, exactly as
- * before.
+ * the Recurring rows with view=booking, and series_id on the single read,
+ * only behind MOBILE_ROUTINE_CONTRACT. Off, exactly as before.
+ *
+ * booking_type is NOT behind it: it is a fact of the booking row, on the
+ * handler's own shape (present()), so the read carries it with the flag off.
  */
 
 const actor = {
@@ -15,21 +17,27 @@ const actor = {
   tenantId: null,
 };
 const BOOKING = 'b0000000-0000-4000-8000-000000000002';
+// The handler's answer: booking_type is its own, from the row.
 const SINGLE = {
   id: BOOKING,
   status: 'CONFIRMED_BY_SALON',
+  booking_type: 'SINGLE',
   created_at: '2026-10-01T11:00:00+06:00',
 };
+const ROUTINE_VISIT = { ...SINGLE, booking_type: 'ROUTINE' };
 const PAGE = {
   count: 0,
   counts: { upcoming: 3, archive: 1, recurring: 0 },
   results: [],
 };
 
-function build(link: unknown = { booking_type: 'ROUTINE', series_id: 'S' }) {
+function build(
+  link: unknown = { booking_type: 'ROUTINE', series_id: 'S' },
+  read: unknown = ROUTINE_VISIT,
+) {
   const handler = {
     list: vi.fn(() => Promise.resolve(PAGE)),
-    read: vi.fn(() => Promise.resolve(SINGLE)),
+    read: vi.fn(() => Promise.resolve(read)),
   };
   const series = {
     listForCustomer: vi.fn(() =>
@@ -119,39 +127,40 @@ describe('the Recurring rows, view=booking', () => {
   });
 });
 
-describe('the single read: booking_type and series_id', () => {
-  it('flag on: the two fields added at the end, nothing else changes', async () => {
+describe('the single read: booking_type always, series_id behind the flag', () => {
+  it('flag on: series_id added at the end; booking_type where the read put it, the same value', async () => {
     process.env.MOBILE_ROUTINE_CONTRACT = 'true';
     const { controller, series } = build();
     const answer = (await controller.read(BOOKING, actor as never)) as Record<
       string,
       unknown
     >;
-    expect(answer).toStrictEqual({
-      ...SINGLE,
-      booking_type: 'ROUTINE',
-      series_id: 'S',
-    });
+    expect(answer).toStrictEqual({ ...ROUTINE_VISIT, series_id: 'S' });
     expect(Object.keys(answer)).toStrictEqual([
-      ...Object.keys(SINGLE),
-      'booking_type',
+      ...Object.keys(ROUTINE_VISIT),
       'series_id',
     ]);
     expect(series.bookingLinkOf).toHaveBeenCalledWith(BOOKING);
   });
 
-  it('a single booking: SINGLE and null', async () => {
+  it('a single booking, flag on: SINGLE and null', async () => {
     process.env.MOBILE_ROUTINE_CONTRACT = 'true';
-    const { controller } = build({ booking_type: 'SINGLE', series_id: null });
-    expect(await controller.read(BOOKING, actor as never)).toMatchObject({
-      booking_type: 'SINGLE',
+    const { controller } = build(
+      { booking_type: 'SINGLE', series_id: null },
+      SINGLE,
+    );
+    expect(await controller.read(BOOKING, actor as never)).toStrictEqual({
+      ...SINGLE,
       series_id: null,
     });
   });
 
-  it('flag off: the booking exactly as the read gave it, and nothing is asked', async () => {
-    const { controller, series } = build();
-    expect(await controller.read(BOOKING, actor as never)).toBe(SINGLE);
+  it('flag off: booking_type, from the read itself, and no series_id; nothing extra is asked', async () => {
+    const { controller, series } = build(undefined, SINGLE);
+    const answer = await controller.read(BOOKING, actor as never);
+    expect(answer).toBe(SINGLE);
+    expect(answer).toHaveProperty('booking_type', 'SINGLE');
+    expect(answer).not.toHaveProperty('series_id');
     expect(series.bookingLinkOf).not.toHaveBeenCalled();
   });
 });

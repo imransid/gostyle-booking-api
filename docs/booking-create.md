@@ -232,6 +232,7 @@ The created booking, as the app will re-read it later.
   "id": "bkg_01j9m2k",
   "salon_id": "sal_01j8xk2e9",
   "status": "BOOKED",
+  "booking_type": "SINGLE",
   "date": "2026-09-20",
   "start_time": "2026-09-20T20:00:00+04:00",
   "end_time": "2026-09-20T20:45:00+04:00",
@@ -327,6 +328,10 @@ Rules:
 3. **`DRAFT` bookings are readable too**, so an interrupted checkout can be
    resumed. Include `expires_at` while the draft hold is still running, and drop
    it once the booking is paid.
+4. **`booking_type` is always there**: `SINGLE`, or `ROUTINE` for a routine's
+   visit, a fact of the booking itself, on the create, the read and the payment
+   alike. `series_id` (the visit's routine) is added on the read only while
+   `MOBILE_ROUTINE_CONTRACT` is on.
 
 | Case                                         | Status | `code`      |
 | -------------------------------------------- | ------ | ----------- |
