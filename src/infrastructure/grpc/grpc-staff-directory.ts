@@ -1,14 +1,20 @@
 import { Inject, Injectable, OnModuleInit, Logger } from '@nestjs/common';
 import { ClientGrpc } from '@nestjs/microservices';
-import { Metadata } from '@grpc/grpc-js';
+import { Metadata, status } from '@grpc/grpc-js';
 import { Observable } from 'rxjs';
 
-import { callWithRetry, type GrpcCallOptions } from './call-with-retry';
+import {
+  callOnce,
+  callWithRetry,
+  type GrpcCallOptions,
+} from './call-with-retry';
 import { blankToNull } from './blank-to-null';
-import { describeGrpcFailure } from './grpc-failure';
+import { describeGrpcFailure, grpcStatusOf } from './grpc-failure';
 
 import type {
   StaffDirectoryReader,
+  StaffName,
+  StaffNamesLookup,
   Stylist,
 } from '@application/ports/staff-directory.port';
 import { STAFF_DIRECTORY_CLIENT } from './staff-grpc.constants';
@@ -106,6 +112,54 @@ export class GrpcStaffDirectory implements StaffDirectoryReader, OnModuleInit {
         `listStylists failed for tenant ${tenantId}: ${describeGrpcFailure(err)}`,
       );
       return [];
+    }
+  }
+
+  /**
+   * Who these desk members are, by platform user id: one ListStylists for
+   * the whole tenant (no branch, since a manager covering another branch
+   * has their profile at their own), with the ids picked out.
+   *
+   * NOT listStylists above: that one retries, waits up to CALL_TIMEOUT_MS,
+   * and answers an outage with an empty roster. This is for a screen, so it
+   * is callOnce: one attempt, bounded by quickMs, no log line of its own,
+   * and an outage is `unavailable`, never "nobody".
+   *
+   * INVALID_ARGUMENT (a tenant id platform will not take) is an answer: no
+   * names. Asking again would get the same.
+   */
+  async namesOf(
+    tenantId: string,
+    userIds: readonly string[],
+    options: { readonly quickMs: number },
+  ): Promise<StaffNamesLookup> {
+    const wanted = new Set(userIds.map((id) => id.toLowerCase()));
+    const names = new Map<string, StaffName>();
+    // Nothing to show, nothing to ask.
+    if (wanted.size === 0) return { kind: 'answered', names };
+
+    try {
+      const res = await callOnce(options.quickMs, (md, opts) =>
+        this.svc.listStylists({ tenant_id: tenantId, branch_id: '' }, md, opts),
+      );
+      for (const row of res.stylists ?? []) {
+        const id = (row.user_id ?? '').toLowerCase();
+        // A user with profiles at two branches is one person: the first.
+        if (!wanted.has(id) || names.has(id)) continue;
+        names.set(id, {
+          firstName: blankToNull(row.first_name),
+          lastName: blankToNull(row.last_name),
+        });
+      }
+      return { kind: 'answered', names };
+    } catch (e) {
+      if (grpcStatusOf(e) === status.INVALID_ARGUMENT) {
+        return { kind: 'answered', names };
+      }
+      return {
+        kind: 'unavailable',
+        error: `platform ${describeGrpcFailure(e)}`,
+      };
     }
   }
 }

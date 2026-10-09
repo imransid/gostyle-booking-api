@@ -101,6 +101,19 @@ Do these in order.
   - There is nothing to clean up. The table can stay.
 - **Full rollback:** deploy the previous image by its sha. The table stays, unused. The old sweeper does not know about requests: it will mark claimed bookings no-show and keep the deposit. Close those by hand first, or accept that.
 
+## Known cost: the desk member's name
+
+The welcome screen says who checked the customer in ("Checked in by Layla R."). booking-api keeps only that person's id, on the check-in's status history row. It looks the name up when the screen is read, never at check-in, so a lookup never sits in front of a receptionist with a customer waiting. The name shown is the one platform has now.
+
+- **Platform has no "get one staff member by user id".** So each lookup asks platform for the whole tenant's staff (`StaffDirectory.ListStylists` with no branch) and picks the person out. That grows with the salon, and it is on a read path.
+- **Measured 2026-10-09** against the local platform, with 3 staff in the tenant:
+  - whole tenant: 34 ms typical, 63 ms p95, 105 ms worst of 30;
+  - one branch, for comparison: 7 ms typical;
+  - the first call after a start: about 580 ms.
+  - A fifty-person salon will be slower. Production was not measured.
+- **What keeps it in bounds today:** one attempt, about a second at most, each distinct id once per read, and no name on a miss. A read never fails or waits longer for a name.
+- **The ask, for platform:** an RPC that returns one staff member's first and last name by tenant and user id (or a batch of user ids). `GrpcStaffDirectory.namesOf` would call it instead of `ListStylists`; nothing above the port changes.
+
 ## What is not built
 
 - **QR:** pass QR (option A) is decided, but nothing scans yet. The pass already shows the booking code. Chair QR (option B) is built on `feat/chair-check-in`: three columns, not one, and the app's scan screen is still to come. See `docs/chair-check-in.md`.
