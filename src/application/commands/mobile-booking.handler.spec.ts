@@ -988,6 +988,55 @@ describe('create and read agree: the products are counted once', () => {
   });
 });
 
+// ------------------------------------------------------------ booking_type
+
+/**
+ * booking_type is a fact of the booking row, on every answer of the one
+ * booking shape (present()): the create's 201, the read, the payment's
+ * PATCH. Not behind MOBILE_ROUTINE_CONTRACT, which the handler never reads:
+ * the controller adds series_id behind it, and that is all it adds.
+ */
+describe('booking_type: the row says it, on every answer of the shape', () => {
+  it.each([
+    ['single', 'SINGLE'],
+    ['routine', 'ROUTINE'],
+  ])('a %s row reads %s', async (stored, wire) => {
+    const { handler } = handlerWith({ row: { bookingType: stored } });
+    const view = (await handler.read(OWNER)) as Record<string, unknown>;
+    expect(view.booking_type).toBe(wire);
+  });
+
+  it('the create, the read and the payment answer it alike: one shape, three routes', async () => {
+    const { handler } = handlerWith({ productsEnabled: true });
+    const created = (await handler.execute(withOil())) as Record<
+      string,
+      unknown
+    >;
+    const read = (await handler.read(OWNER)) as Record<string, unknown>;
+    const paid = (await handler.recordPayment(patch())) as Record<
+      string,
+      unknown
+    >;
+    expect([
+      created.booking_type,
+      read.booking_type,
+      paid.booking_type,
+    ]).toEqual(['SINGLE', 'SINGLE', 'SINGLE']);
+  });
+
+  it('no series_id: that is the routine contract, the controller adds it behind its flag', async () => {
+    const { handler } = handlerWith({});
+    const view = (await handler.read(OWNER)) as Record<string, unknown>;
+    expect(view).not.toHaveProperty('series_id');
+  });
+
+  it('reads the row it already loaded: one detail() per read, nothing more', async () => {
+    const { handler, of } = handlerWith({});
+    await handler.read(OWNER);
+    expect(of('bookings.detail')).toHaveLength(2); // the owner check, and present()
+  });
+});
+
 // ------------------------------------------------------------ B7
 
 /**

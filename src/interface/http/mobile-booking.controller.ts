@@ -619,10 +619,11 @@ export class MobileBookingController {
     if (typeof booking !== 'object' || booking === null) return booking;
     let out: object = booking;
 
-    // Step B7, behind MOBILE_ROUTINE_CONTRACT: two fields added at the end,
-    // `booking_type` (SINGLE or ROUTINE) and `series_id` (its app routine,
-    // or null), so a visit opened from Upcoming can open its routine.
-    // Nothing else changes; off, the booking exactly as before.
+    // Step B7, behind MOBILE_ROUTINE_CONTRACT: `series_id` (its app routine,
+    // or null) added at the end, so a visit opened from Upcoming can open its
+    // routine. `booking_type` is the booking's own now, always on the
+    // handler's shape (present()); bookingLinkOf answers it too, from the
+    // same row, so the spread below leaves it as it was. Off, no series_id.
     if (MOBILE_ROUTINE_CONTRACT() && this.series !== undefined) {
       const link = await this.series.bookingLinkOf(id);
       if (link !== null) out = { ...out, ...link };
