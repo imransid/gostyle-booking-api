@@ -43,9 +43,10 @@ No body behaves exactly as before. With `chairToken`, the answers are:
 | 409    | `BOOKING_CHAIR_REFUSED`  | `reason: UNKNOWN_CARD`                                        | "This is not a chair card we know. Please scan the card on your chair, or see the desk." |
 | 503    | `DEPENDENCY_UNAVAILABLE` | `reason: CHAIR_CHECK_UNAVAILABLE`, `fallback: WAIT_FOR_STAFF` | "We could not check this chair just now. Please use Wait for Staff and the desk will check you in." |
 
-The booking's own refusals (`BOOKING_STATE_INVALID`, `BOOKING_CHECKIN_WINDOW`,
-`BOOKING_CHECKIN_REJECTED`) come first and are unchanged: a booking that may not
-raise at all is told so, whatever chair it scanned.
+The card is read first, before the booking: `UNKNOWN_CARD` and the 503 come
+before the booking's own refusals (`BOOKING_STATE_INVALID`,
+`BOOKING_CHECKIN_WINDOW`, `BOOKING_CHECKIN_REJECTED`, unchanged), and the other
+three chair reasons only after them (`check-in-request.handler.ts` `raise`).
 
 **The app shows `message` and may switch on `details.reason`. Nothing else.**
 `CHAIR_NOT_AVAILABLE` covers both "the chair may not take a booking" and
