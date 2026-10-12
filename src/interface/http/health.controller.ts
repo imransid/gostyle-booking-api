@@ -9,6 +9,10 @@ import {
   type JournalSyncStats,
 } from '../../infrastructure/persistence/journal-sync.repository';
 import { journalPostingEnabled } from '@application/commands/journal-sync.flag';
+import {
+  ReminderHealth,
+  type ReminderHealthView,
+} from '../../infrastructure/scheduling/reminder-health';
 
 interface OutboxHealth {
   readonly pending: number;
@@ -57,6 +61,8 @@ interface HealthView {
   readonly uptimeSeconds: number;
   readonly customerAuth: CustomerAuthHealth;
   readonly outbox?: OutboxHealth;
+  /** The reminder pipeline: ladder, delivery queue, dispatcher. */
+  readonly reminders: ReminderHealthView;
   readonly journal?: JournalHealth;
   readonly error?: string;
 }
@@ -69,6 +75,7 @@ export class HealthController {
     private readonly prisma: PrismaService,
     private readonly relay: OutboxRelay,
     private readonly consumerAuth: AuthService,
+    private readonly reminders: ReminderHealth,
     private readonly journal: JournalSyncRepository,
   ) {}
 
@@ -87,7 +94,12 @@ export class HealthController {
       'checked against over gRPC. Unreachable means customer requests are ' +
       'getting 503 and staff requests are unaffected, because staff tokens ' +
       'are verified locally. It is reported here so that is known before a ' +
-      'customer finds it.',
+      'customer finds it.\n\n' +
+      'reminders is the reminder pipeline: the ladder that claims, the ' +
+      'delivery queue, and the dispatcher that sends push and email. Alert on ' +
+      'reminders.queue.oldestDueSeconds: a due reminder waiting minutes means ' +
+      'nothing is dispatching. reminders.delivery is off until ' +
+      'REMINDER_DELIVERY=true.',
   })
   @ApiOkResponse({
     schema: {
@@ -125,9 +137,13 @@ export class HealthController {
     // on several things at once, so one dead dependency must not decide what
     // is known about the others: the database being down should not blank the
     // auth rail, and the probe deliberately never rejects, so it does not.
-    const [db, customerAuth] = await Promise.all([
+    const [db, customerAuth, reminders] = await Promise.all([
       this.databaseRail(),
       this.customerAuthRail(),
+      // Informational, not a vote: a reminder backlog is something to alert
+      // on (queue.oldestDueSeconds), not a reason to pull this replica out of
+      // rotation -- serving bookings does not depend on it.
+      this.reminders.report(),
     ]);
 
     // Every rail votes, and any one of them not being ok is degraded. The
@@ -145,6 +161,7 @@ export class HealthController {
       ...db,
       uptimeSeconds,
       customerAuth,
+      reminders,
     };
   }
 

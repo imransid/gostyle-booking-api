@@ -102,7 +102,7 @@ The rest of the request:
 
 | Field | Value |
 |---|---|
-| `entry_date` | The branch-local date of `deposit_ledger.created_at` (`branchToday`, in `BRANCH_TIMEZONE`, Asia/Dubai by default: the same zone as `trading_day`) |
+| `entry_date` | The branch-local date of `deposit_ledger.created_at` (`branchToday`, in `BRANCH_TIMEZONE`, Asia/Dhaka by default: the same zone as `trading_day`) |
 | `source_id` | The booking id |
 | `memo` | e.g. `Deposit captured (card), booking GS-1010` |
 | `branch_id` | Set on every line |

@@ -10,7 +10,7 @@ import {
 } from '@application/ports/booking-context.port';
 import { BookingRepository } from '@infrastructure/persistence/booking.repository';
 import {
-  BRANCH_UTC_OFFSET_MIN,
+  branchUtcOffsetMin,
   branchInstant,
   toUuid,
 } from '@infrastructure/persistence/hold.repository';
@@ -267,8 +267,8 @@ export class MobileBookingHandler {
     }
 
     // ---- 2. Time ---------------------------------------------------------
-    const start = toBranchMoment(cmd.startTime, BRANCH_UTC_OFFSET_MIN);
-    const end = toBranchMoment(cmd.endTime, BRANCH_UTC_OFFSET_MIN);
+    const start = toBranchMoment(cmd.startTime, branchUtcOffsetMin());
+    const end = toBranchMoment(cmd.endTime, branchUtcOffsetMin());
     if (start === null || end === null) {
       throw MobileContractError.of(
         'start_time',
@@ -790,11 +790,11 @@ export class MobileBookingHandler {
           date: day,
           start_time: toOffsetIso(
             branchInstant(day, b.startMinute),
-            BRANCH_UTC_OFFSET_MIN,
+            branchUtcOffsetMin(),
           ),
           end_time: toOffsetIso(
             branchInstant(day, b.startMinute + b.durationMin),
-            BRANCH_UTC_OFFSET_MIN,
+            branchUtcOffsetMin(),
           ),
           /** §3: `{ id, name }` only. The amounts are the drawer's job. */
           services: b.items.map((i) => ({
@@ -811,7 +811,7 @@ export class MobileBookingHandler {
             totalFils === null
               ? null
               : filsToAed(Math.max(0, totalFils - captured)),
-          created_at: toOffsetIso(b.createdAt, BRANCH_UTC_OFFSET_MIN),
+          created_at: toOffsetIso(b.createdAt, branchUtcOffsetMin()),
         };
       }),
     );
@@ -1311,9 +1311,9 @@ export class MobileBookingHandler {
       date: day,
       start_time: toOffsetIso(
         branchInstant(day, b.startMinute),
-        BRANCH_UTC_OFFSET_MIN,
+        branchUtcOffsetMin(),
       ),
-      end_time: toOffsetIso(branchInstant(day, endMin), BRANCH_UTC_OFFSET_MIN),
+      end_time: toOffsetIso(branchInstant(day, endMin), branchUtcOffsetMin()),
       services: b.items.map((i) => ({
         id: index.toSlug(i.serviceId),
         name: i.serviceName,
@@ -1354,8 +1354,8 @@ export class MobileBookingHandler {
       expires_at:
         linkExpiresAt === null
           ? null
-          : toOffsetIso(new Date(linkExpiresAt), BRANCH_UTC_OFFSET_MIN),
-      created_at: toOffsetIso(b.createdAt, BRANCH_UTC_OFFSET_MIN),
+          : toOffsetIso(new Date(linkExpiresAt), branchUtcOffsetMin()),
+      created_at: toOffsetIso(b.createdAt, branchUtcOffsetMin()),
     };
   }
 }

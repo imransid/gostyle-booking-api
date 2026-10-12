@@ -50,7 +50,27 @@ services:
       DATABASE_URL: postgresql://gostyle:gostyle@postgres:5432/gostyle_booking?schema=public
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      BRANCH_TIMEZONE: ${BRANCH_TIMEZONE:-Asia/Dubai}
+      # The branch's IANA zone; every trading day and minute converts with it.
+      # Asia/Dhaka is what every booking since 2026-09-18 was written at.
+      # Changing it re-reads stored bookings at a new offset: the boot log
+      # says so loudly (BranchClockCheck) if they disagree.
+      BRANCH_TIMEZONE: ${BRANCH_TIMEZONE:-Asia/Dhaka}
+      # Customer reminders (24h, 3h, 15m) by push and email. Off: claimed by
+      # the ladder, never sent -- exactly today's behaviour.
+      REMINDER_DELIVERY: ${REMINDER_DELIVERY:-false}
+      PUSH_API_URL: ${PUSH_API_URL:-http://push-app:3351}
+      PUSH_API_KEY: ${PUSH_API_KEY:-}
+      # customer-api's ConsumerDirectory answers only with this key; the same
+      # value goes in customer-api's grpc service.
+      INTERNAL_GRPC_KEY: ${INTERNAL_GRPC_KEY:-}
+      # Reminder email. Same names as gostyle-platform's EmailService, so one
+      # relay account serves both. No SMTP_HOST: email rows are skipped.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      MAIL_FROM_NAME: ${MAIL_FROM_NAME:-GoStyle}
       DEFAULT_CURRENCY: ${DEFAULT_CURRENCY:-AED}
       JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev-access-change-me}
       # Which browser origins may call this. Empty falls back to the

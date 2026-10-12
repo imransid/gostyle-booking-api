@@ -40,9 +40,9 @@ const BOOKING = 'eeeeeeee-5555-4eee-8eee-eeeeeeeeeeee';
 const OIL = 'cccccccc-3333-4ccc-8ccc-cccccccccccc';
 const SPRAY = 'dddddddd-4444-4ddd-8ddd-dddddddddddd';
 
-/** Asia/Dubai, +04:00: the same offset the handler reads times with. */
-const START = '2026-09-20T14:00:00+04:00';
-const END = '2026-09-20T14:45:00+04:00';
+/** Asia/Dhaka, +06:00: the same offset the handler reads times with. */
+const START = '2026-09-20T14:00:00+06:00';
+const END = '2026-09-20T14:45:00+06:00';
 
 const HAIRCUT: Service = {
   id: 'haircut-finish',
@@ -144,7 +144,7 @@ function handlerWith(options: HandlerOptions = {}) {
   const links = {
     execute: (bookingId: string, actor: unknown) => {
       record('links.execute', { bookingId, actor });
-      return Promise.resolve({ expiresAt: '2026-09-20T14:00:00.000Z' });
+      return Promise.resolve({ expiresAt: '2026-09-20T12:00:00.000Z' });
     },
   };
 
@@ -172,7 +172,7 @@ function handlerWith(options: HandlerOptions = {}) {
     tradingDay: new Date('2026-09-20T00:00:00.000Z'),
     startMinute: 840,
     durationMin: 45,
-    createdAt: new Date('2026-09-19T12:00:00.000Z'),
+    createdAt: new Date('2026-09-19T10:00:00.000Z'),
     linkExpiresAt: null,
     netFils: null,
     taxFils: null,
@@ -660,7 +660,7 @@ describe('a basket does not disturb the rest of the create', () => {
     const { handler } = handlerWith(on);
 
     const e = await refusal(
-      handler.execute(withOil({ endTime: '2026-09-20T15:30:00+04:00' })),
+      handler.execute(withOil({ endTime: '2026-09-20T15:30:00+06:00' })),
     );
 
     expect(e.errors[0]!.code).toBe('invalid_window');

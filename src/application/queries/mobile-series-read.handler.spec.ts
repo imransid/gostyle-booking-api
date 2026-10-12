@@ -18,7 +18,7 @@ import { toUuid } from '@infrastructure/persistence/hold.repository';
 const SERIES = 'aaaaaaaa-0000-4aaa-8aaa-aaaaaaaaaaaa';
 const CUSTOMER = '11111111-1111-4111-8111-111111111111';
 const STRANGER = '33333333-3333-4333-8333-333333333333';
-/** 2026-10-20 09:00 at the branch (UTC+4). */
+/** 2026-10-20 09:00 at the branch (UTC+6). */
 const NOW = Date.UTC(2026, 9, 20, 3, 0);
 
 const owner: SeriesReader = {
@@ -58,7 +58,7 @@ function series(over: Record<string, unknown> = {}) {
     pausedUntil: null as Date | null,
     pauseReason: null as string | null,
     pauseNote: null as string | null,
-    createdAt: new Date('2026-09-20T07:00:00Z'),
+    createdAt: new Date('2026-09-20T05:00:00Z'),
     occurrences: [
       occ(0, '2026-09-29', 'materialised', 'b-0'),
       occ(1, '2026-10-06', 'materialised', 'b-1'),
@@ -222,7 +222,7 @@ describe('the hub', () => {
       payment_plan: 'PAY_AT_SALON',
       pause: null,
       rules: { min_sessions: 2, max_sessions: 6, lock_hours: 24 },
-      created_at: '2026-09-20T11:00:00+04:00',
+      created_at: '2026-09-20T11:00:00+06:00',
     });
   });
 
@@ -243,8 +243,8 @@ describe('the hub', () => {
       id: 'occ-4',
       booking_id: 'b-4',
       booking_code: 'GS-b-4',
-      start_time: '2026-10-27T16:30:00+04:00',
-      end_time: '2026-10-27T17:15:00+04:00',
+      start_time: '2026-10-27T16:30:00+06:00',
+      end_time: '2026-10-27T17:15:00+06:00',
       stylist: { id: 'maya', name: 'Maya' },
       total: 105,
     });
@@ -392,8 +392,8 @@ describe('the desk moves or reschedules a routine visit', () => {
       index: 4,
       booking_id: 'b-4',
       date: '2026-10-27',
-      start_time: '2026-10-27T18:00:00+04:00',
-      end_time: '2026-10-27T18:45:00+04:00',
+      start_time: '2026-10-27T18:00:00+06:00',
+      end_time: '2026-10-27T18:45:00+06:00',
       state: 'SCHEDULED',
       can_skip: true,
       can_reschedule: true,
@@ -419,7 +419,7 @@ describe('the desk moves or reschedules a routine visit', () => {
     expect(hub.sessions[4]).toMatchObject({
       booking_id: 'b-4',
       date: '2026-10-29',
-      start_time: '2026-10-29T15:00:00+04:00',
+      start_time: '2026-10-29T15:00:00+06:00',
       state: 'SCHEDULED',
     });
     // Rana is not on the fake roster, so her id comes back unresolved; what

@@ -20,13 +20,16 @@ const setup = () => {
   const next = { publish: vi.fn(async (_e: DomainEvent) => {}) };
   const prisma = {
     booking: {
-      findUnique: vi.fn(async (_args: unknown) => ({
-        customerId: CUSTOMER_ID,
-        code: 'GS-1050',
-      })),
+      findUnique: vi.fn((_args: unknown) =>
+        Promise.resolve({ customerId: CUSTOMER_ID, code: 'GS-1050' }),
+      ),
     },
   };
-  const push = { send: vi.fn(async (_m: PushMessage) => true) };
+  const push = {
+    send: vi.fn((_m: PushMessage) =>
+      Promise.resolve({ kind: 'sent', ref: 'devices=1' } as const),
+    ),
+  };
   const listener = new PushListener(next, prisma as any, push as any);
   return { listener, next, prisma, push };
 };

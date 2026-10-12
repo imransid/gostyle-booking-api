@@ -3,6 +3,7 @@ import { PrismaService } from './prisma.service';
 import { toUuid, branchInstant } from './hold.repository';
 import { canUndoCheckIn, shortenTo } from '@domain/booking/lifecycle';
 import type { ActorKind } from '@domain/booking/lifecycle';
+import { REMINDER_LIVE_STATUSES } from '@domain/booking/reminders';
 
 /**
  * The desk actions that were listed in the contract and had no home.
@@ -282,12 +283,12 @@ export class DeskExtrasRepository {
     if (input.bookingIds.length === 0) return { sent: 0, codes: [] };
 
     return this.prisma.$transaction(async (tx) => {
-      const rows = await tx.$queryRaw<{ id: string; code: string }[]>`
+      const rows = await tx.$queryRaw<RemindedRow[]>`
         UPDATE booking
            SET reminded_24h_at = now(), updated_at = now()
          WHERE id = ANY(${input.bookingIds.map((i) => i)}::uuid[])
-           AND status IN ('confirmed', 'pending_payment', 'pending_confirmation')
-        RETURNING id, code`;
+           AND status = ANY(${[...REMINDER_LIVE_STATUSES]}::booking_status[])
+        RETURNING id, code, start_at, customer_id`;
 
       for (const r of rows) {
         await tx.eventOutbox.create({
@@ -299,6 +300,11 @@ export class DeskExtrasRepository {
               code: r.code,
               manual: true,
               queuedUntil: input.queuedUntil?.toISOString() ?? null,
+              // What a delivery needs, exactly as the ladder writes it: the
+              // start this reminder is about (a move since makes it
+              // superseded) and who it is for.
+              startAt: r.start_at.toISOString(),
+              customerId: r.customer_id,
             },
           },
         });
@@ -314,12 +320,20 @@ export class DeskExtrasRepository {
       SELECT id FROM booking
        WHERE branch_id = ${toUuid(branchId)}::uuid
          AND reminded_24h_at IS NULL
-         AND status IN ('confirmed', 'pending_payment', 'pending_confirmation')
+         AND status = ANY(${[...REMINDER_LIVE_STATUSES]}::booking_status[])
          AND start_at > now()
        ORDER BY start_at
        LIMIT ${limit}`;
     return rows.map((r) => r.id);
   }
+}
+
+/** A booking the manual reminder stamped. Named for the heredoc's sake. */
+interface RemindedRow {
+  readonly id: string;
+  readonly code: string;
+  readonly start_at: Date;
+  readonly customer_id: string;
 }
 
 function actorUuid(input: {

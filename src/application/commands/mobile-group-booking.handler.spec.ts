@@ -20,10 +20,10 @@ const HOLD = 'bbbbbbbb-0000-4bbb-8bbb-bbbbbbbbbbbb';
 const POMADE = 'cccccccc-3333-4ccc-8ccc-cccccccccccc';
 const GEL = 'dddddddd-4444-4ddd-8ddd-dddddddddddd';
 
-/** 09:00 at the branch (+04:00). Every start below is measured from here. */
-const NOW = new Date('2026-10-11T05:00:00Z');
+/** 09:00 at the branch (+06:00). Every start below is measured from here. */
+const NOW = new Date('2026-10-11T03:00:00Z');
 /** 15:00 at the branch. */
-const START = '2026-10-11T15:00:00+04:00';
+const START = '2026-10-11T15:00:00+06:00';
 
 const HAIRCUT: Service = {
   id: 'haircut-finish',
@@ -119,7 +119,7 @@ function command(
 const HELD = {
   groupId: GROUP,
   holdId: HOLD,
-  expiresAt: '2026-10-11T05:15:00.000Z',
+  expiresAt: '2026-10-11T03:15:00.000Z',
   expiresInSeconds: 900,
   mode: 'TOGETHER',
   lanes: [
@@ -383,7 +383,7 @@ describe('MobileGroupBookingHandler: refused before anything is held', () => {
   it('a party that would run past the hours taken online', async () => {
     const h = harness();
     const e = await refusal(
-      h.handler.execute(command({ startTime: '2026-10-11T21:30:00+04:00' })),
+      h.handler.execute(command({ startTime: '2026-10-11T21:30:00+06:00' })),
     );
     expect(e.errors[0]).toMatchObject({
       field: 'start_time',
@@ -423,7 +423,7 @@ describe('MobileGroupBookingHandler: refused before anything is held', () => {
   it('a start that has already passed', async () => {
     const h = harness();
     const e = await refusal(
-      h.handler.execute(command({ startTime: '2026-10-11T08:30:00+04:00' })),
+      h.handler.execute(command({ startTime: '2026-10-11T08:30:00+06:00' })),
     );
     expect(e.errors[0]).toMatchObject({
       field: 'start_time',
@@ -435,7 +435,7 @@ describe('MobileGroupBookingHandler: refused before anything is held', () => {
   it('takes a start only ninety minutes away: nothing is paid online, so no window closes', async () => {
     const h = harness();
     await h.handler.execute(
-      command({ startTime: '2026-10-11T10:30:00+04:00' }),
+      command({ startTime: '2026-10-11T10:30:00+06:00' }),
     );
     expect(h.holds.execute).toHaveBeenCalledOnce();
   });

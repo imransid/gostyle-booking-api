@@ -4,6 +4,10 @@ import type { PrismaService } from '../../infrastructure/persistence/prisma.serv
 import type { OutboxRelay } from '../../infrastructure/messaging/outbox-relay.service';
 import type { AuthService, ConsumerAuthProbe } from '../../auth/auth.service';
 import type {
+  ReminderHealth,
+  ReminderHealthView,
+} from '../../infrastructure/scheduling/reminder-health';
+import type {
   JournalSyncRepository,
   JournalSyncStats,
 } from '../../infrastructure/persistence/journal-sync.repository';
@@ -39,6 +43,33 @@ const relayWith = (over: Partial<typeof OUTBOX> = {}): OutboxRelay =>
   ({
     stats: () => Promise.resolve({ ...OUTBOX, ...over }),
   }) as unknown as OutboxRelay;
+
+const REMINDERS: ReminderHealthView = {
+  delivery: 'on',
+  ladder: {
+    intervalMs: 60_000,
+    sentTotal: 3,
+    skippedTotal: 1,
+    consecutiveFailures: 0,
+  },
+  dispatch: {
+    intervalMs: 10_000,
+    consecutiveFailures: 0,
+    sinceStart: {
+      sent: 4,
+      retrying: 1,
+      failed: 0,
+      skipped: 1,
+      superseded: 0,
+      lost: 0,
+    },
+  },
+  queue: { pending: 2, due: 1, oldestDueSeconds: 600 },
+};
+
+const remindersUp = {
+  report: () => Promise.resolve(REMINDERS),
+} as unknown as ReminderHealth;
 
 const JOURNAL: JournalSyncStats = {
   waitingForTenant: 0,
@@ -76,6 +107,7 @@ describe('everything is up', () => {
       prismaUp,
       relayWith(),
       authWith(reachable),
+      remindersUp,
       journalWith(),
     ).check();
 
@@ -91,6 +123,7 @@ describe('the consumer API is unreachable', () => {
       prismaUp,
       relayWith(),
       authWith(unreachable),
+      remindersUp,
       journalWith(),
     );
 
@@ -123,6 +156,7 @@ describe('rails fail independently', () => {
       prismaDown,
       relayWith(),
       authWith(reachable),
+      remindersUp,
       journalWith(),
     ).check();
 
@@ -138,6 +172,7 @@ describe('rails fail independently', () => {
       prismaDown,
       relayWith(),
       authWith(unreachable),
+      remindersUp,
       journalWith(),
     ).check();
 
@@ -153,6 +188,7 @@ describe('the outbox rail still votes', () => {
       prismaUp,
       relayWith({ stuck: 1 }),
       authWith(reachable),
+      remindersUp,
       journalWith(),
     ).check();
 
@@ -166,6 +202,7 @@ describe('the journal rail votes too', () => {
       prismaUp,
       relayWith(),
       authWith(reachable),
+      remindersUp,
       journalWith({ pending: 3, oldestPendingSeconds: 12 }),
     ).check();
 
@@ -178,9 +215,41 @@ describe('the journal rail votes too', () => {
       prismaUp,
       relayWith(),
       authWith(reachable),
+      remindersUp,
       journalWith({ parked: 1 }),
     ).check();
 
     expect(got.status).toBe('degraded');
+  });
+});
+
+describe('the reminder pipeline', () => {
+  it('is reported: ladder, queue and dispatcher', async () => {
+    const got = await new HealthController(
+      prismaUp,
+      relayWith(),
+      authWith(reachable),
+      remindersUp,
+      journalWith(),
+    ).check();
+    expect(got.reminders).toEqual(REMINDERS);
+  });
+
+  it('informs but does not vote: a reminder backlog does not pull the replica', async () => {
+    const backlog = {
+      report: () =>
+        Promise.resolve({
+          ...REMINDERS,
+          queue: { pending: 500, due: 500, oldestDueSeconds: 3600 },
+        }),
+    } as unknown as ReminderHealth;
+    const got = await new HealthController(
+      prismaUp,
+      relayWith(),
+      authWith(reachable),
+      backlog,
+      journalWith(),
+    ).check();
+    expect(got.status).toBe('ok');
   });
 });

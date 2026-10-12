@@ -16,12 +16,13 @@ export default defineConfig({
     include: ['src/**/*.spec.ts'],
     environment: 'node',
     /**
-     * Pinned, so the suite means the same on every machine. The branch zone
-     * is read once at import (src/infrastructure/persistence/branch-timezone.ts)
-     * and every time-shaped expectation is written in it; a developer's shell
-     * exporting another zone must not turn the suite red.
+     * Pinned, so the suite means the same on every machine. Every
+     * time-shaped expectation is written in the default branch zone
+     * (hold.repository.ts `DEFAULT_BRANCH_TIMEZONE`); a developer's shell
+     * exporting another zone must not turn the suite red. A spec that needs
+     * another zone sets it itself (branch-clock.check.spec.ts).
      */
-    env: { BRANCH_TIMEZONE: 'Asia/Dubai' },
+    env: { BRANCH_TIMEZONE: 'Asia/Dhaka' },
   },
   resolve: {
     alias: {

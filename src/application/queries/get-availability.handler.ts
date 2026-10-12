@@ -27,7 +27,10 @@ import type { StaffBooking } from '@domain/availability/staff-mask';
 import { resolveSelection } from '@domain/booking/package';
 import { PACKAGES } from '@infrastructure/fixtures/fixture-booking-context';
 import { priceOf } from '@application/commands/confirm-booking.handler';
-import { BRANCH_TIMEZONE } from '@infrastructure/persistence/hold.repository';
+import {
+  branchNowMinute,
+  branchToday,
+} from '@infrastructure/persistence/hold.repository';
 import {
   fragmentationScore,
   rankAndSelect,
@@ -85,27 +88,6 @@ export interface AvailabilityView {
   readonly refusals: readonly { id: string; name: string; reason: string }[];
   readonly closureReason?: string;
   readonly computeMs: number;
-}
-
-/** The branch's own wall clock, not the server's. */
-function branchNow(timeZone: string): { day: string; minuteOfDay: number } {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(new Date());
-
-  const get = (t: string): string =>
-    parts.find((p) => p.type === t)?.value ?? '00';
-
-  return {
-    day: `${get('year')}-${get('month')}-${get('day')}`,
-    minuteOfDay: Number(get('hour')) * 60 + Number(get('minute')),
-  };
 }
 
 export function describeRefusal(reason: {
@@ -185,7 +167,8 @@ export class GetAvailabilityHandler {
 
     const day = await this.context.loadDay(query.branchId, query.tradingDay);
 
-    const clock = branchNow(BRANCH_TIMEZONE);
+    // The branch's own wall clock, not the server's (hold.repository.ts).
+    const clock = { day: branchToday(), minuteOfDay: branchNowMinute() };
     const isToday = query.tradingDay === clock.day;
     const nowMin = query.nowOverrideMin ?? clock.minuteOfDay;
     const channel: Channel =

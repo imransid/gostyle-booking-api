@@ -20,7 +20,7 @@ import { MobileGroupConfirmRepository } from '@infrastructure/persistence/mobile
 import { LifecycleRepository } from '@infrastructure/persistence/lifecycle.repository';
 import { PlatformProductCatalogue } from '@infrastructure/persistence/platform-product-catalogue';
 import {
-  BRANCH_UTC_OFFSET_MIN,
+  branchUtcOffsetMin,
   branchInstant,
 } from '@infrastructure/persistence/hold.repository';
 import type { Service } from '@domain/availability/feasible';
@@ -147,7 +147,7 @@ export class MobileGroupBookingHandler {
       );
     }
 
-    const start = toBranchMoment(cmd.startTime, BRANCH_UTC_OFFSET_MIN);
+    const start = toBranchMoment(cmd.startTime, branchUtcOffsetMin());
     if (start === null) {
       throw MobileContractError.of(
         'start_time',

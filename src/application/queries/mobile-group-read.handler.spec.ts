@@ -68,7 +68,7 @@ function group(over: Record<string, unknown> = {}) {
     tradingDay: DAY,
     source: 'mobile',
     depositPercent: 20,
-    createdAt: new Date('2026-10-11T05:00:00Z'),
+    createdAt: new Date('2026-10-11T03:00:00Z'),
     participants: [
       participant(0, BOOKER),
       participant(1, RANA),
@@ -250,13 +250,13 @@ describe('MobileGroupReadHandler: the one booking the app sees (§6)', () => {
       status_detail: 'CONFIRMED',
       payment_status: 'PAY_AFTER_CHECK_IN',
       date: '2026-10-11',
-      start_time: '2026-10-11T15:00:00+04:00',
-      end_time: '2026-10-11T15:45:00+04:00',
+      start_time: '2026-10-11T15:00:00+06:00',
+      end_time: '2026-10-11T15:45:00+06:00',
       member_count: 3,
       promo_code: 'WELCOME',
       pass_qr_code: 'GS-1001',
       expires_at: null,
-      created_at: '2026-10-11T09:00:00+04:00',
+      created_at: '2026-10-11T09:00:00+06:00',
     });
   });
 
@@ -291,8 +291,8 @@ describe('MobileGroupReadHandler: the one booking the app sees (§6)', () => {
       ],
       products: [{ id: POMADE, name: 'Matte Pomade', amount: 25, quantity: 1 }],
       stylist: { id: 'maya', name: 'Maya E.' },
-      start_time: '2026-10-11T15:00:00+04:00',
-      end_time: '2026-10-11T15:45:00+04:00',
+      start_time: '2026-10-11T15:00:00+06:00',
+      end_time: '2026-10-11T15:45:00+06:00',
     });
     expect(v.members[2]!.services[0]!.amount).toBe(80);
   });
@@ -390,8 +390,8 @@ describe('MobileGroupReadHandler: My Bookings shows a party as one GROUP row', (
       booking_type: 'GROUP',
       member_count: 3,
       date: '2026-10-11',
-      start_time: '2026-10-11T15:00:00+04:00',
-      end_time: '2026-10-11T15:45:00+04:00',
+      start_time: '2026-10-11T15:00:00+06:00',
+      end_time: '2026-10-11T15:45:00+06:00',
       services: [
         { id: 'haircut-finish', name: 'Haircut & finish' },
         { id: 'haircut-finish', name: 'Haircut & finish' },
@@ -404,7 +404,7 @@ describe('MobileGroupReadHandler: My Bookings shows a party as one GROUP row', (
       ],
       total: 446.25,
       due_amount: 446.25,
-      created_at: '2026-10-11T09:00:00+04:00',
+      created_at: '2026-10-11T09:00:00+06:00',
     });
   });
 
