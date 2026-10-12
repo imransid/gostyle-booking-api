@@ -102,7 +102,7 @@ export class MobileGroupReadHandler {
    * the group's (what GET /v1/mobile-booking/group/:groupId takes), and the
    * money is the party's.
    */
-  async decorateList(page: unknown): Promise<unknown> {
+  async decorateList(page: unknown, viewerId?: string): Promise<unknown> {
     if (typeof page !== 'object' || page === null) return page;
     const results = (page as { results?: unknown }).results;
     if (!Array.isArray(results)) return page;
@@ -119,10 +119,13 @@ export class MobileGroupReadHandler {
     if (lanes.length === 0) return page;
 
     const views = new Map<string, MobileGroupView>();
+    const organisers = new Map<string, string>();
     for (const groupId of new Set(lanes.map((l) => l.groupId!))) {
       const group = await this.load(groupId);
-      if (group !== null)
+      if (group !== null) {
         views.set(groupId, await this.present(group, new Map()));
+        organisers.set(groupId, group.organiserId);
+      }
     }
     const groupOf = new Map(lanes.map((l) => [l.id, l.groupId!]));
 
@@ -131,7 +134,15 @@ export class MobileGroupReadHandler {
       results: (results as unknown[]).map((row): unknown => {
         const groupId = groupOf.get((row as { id?: string }).id ?? '');
         const view = groupId === undefined ? undefined : views.get(groupId);
-        return view === undefined ? row : groupRow(view);
+        if (view === undefined) return row;
+        // is_booker only when the caller asked (MOBILE_GROUP_CHECK_IN):
+        // without a viewer, the row is exactly what it was.
+        return viewerId === undefined
+          ? groupRow(view)
+          : {
+              ...groupRow(view),
+              is_booker: organisers.get(groupId!) === toUuid(viewerId),
+            };
       }),
     };
   }
