@@ -58,6 +58,14 @@ export const ERROR_CODES = [
    */
   'BOOKING_CHECKIN_REJECTED',
   /**
+   * GROUP CHECK-IN: the booker said "we are here" and nothing could be done
+   * for anyone in the party (none raised, none already waiting), and the
+   * lanes do not share one reason. `details.lanes` says what happened to
+   * each one. When every lane has the same refusal, that refusal is answered
+   * instead, so the app reads it as it does for one booking.
+   */
+  'BOOKING_GROUP_CHECKIN_NONE',
+  /**
    * SELF CHECK-IN AT A CHAIR: not with THIS chair (chair-check-in.ts). The
    * booking itself may still check in. `details.reason` is ours, never
    * platform's: CARD_OUT_OF_DATE, OTHER_SALON or CHAIR_NOT_AVAILABLE for the
@@ -173,6 +181,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   BOOKING_GATE_BLOCKED: 409,
   BOOKING_CHECKIN_WINDOW: 409,
   BOOKING_CHECKIN_REJECTED: 409,
+  BOOKING_GROUP_CHECKIN_NONE: 409,
   BOOKING_CHAIR_REFUSED: 409,
   BOOKING_WITHIN_GRACE: 409,
   BOOKING_SERIAL_RESCHEDULE: 409,
