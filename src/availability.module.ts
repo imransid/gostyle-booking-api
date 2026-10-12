@@ -72,6 +72,7 @@ import { MoneyController } from '@interface/http/money.controller';
 import { MobileBookingController } from '@interface/http/mobile-booking.controller';
 import { MobileBookingHandler } from '@application/commands/mobile-booking.handler';
 import { MobileGroupBookingController } from '@interface/http/mobile-group-booking.controller';
+import { MobileGroupCheckInController } from '@interface/http/mobile-group-check-in.controller';
 import { MobileSeriesController } from '@interface/http/mobile-series.controller';
 import { MobileSeriesHandler } from '@application/commands/mobile-series.handler';
 import { MobileSeriesReadHandler } from '@application/queries/mobile-series-read.handler';
@@ -87,6 +88,7 @@ import { MobileSeriesJobController } from '@interface/http/mobile-series-job.con
 import { MobileGroupBookingHandler } from '@application/commands/mobile-group-booking.handler';
 import { MobileGroupReadHandler } from '@application/queries/mobile-group-read.handler';
 import { MobileGroupCancelHandler } from '@application/commands/mobile-group-cancel.handler';
+import { MobileGroupCheckInHandler } from '@application/commands/mobile-group-check-in.handler';
 import { DeskExtrasController } from '@interface/http/desk-extras.controller';
 import { DeskExtrasHandler } from '@application/commands/desk-extras.handler';
 import { MoneyRepository } from '@infrastructure/persistence/money.repository';
@@ -135,6 +137,7 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     // Before MobileBookingController: nothing of that one may be tried
     // first for a path under /mobile-booking/group or /mobile-booking/series.
     MobileGroupBookingController,
+    MobileGroupCheckInController,
     MobileSeriesController,
     MobileSeriesJobController,
     MobileBookingController,
@@ -174,6 +177,7 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     MobileGroupBookingHandler,
     MobileGroupReadHandler,
     MobileGroupCancelHandler,
+    MobileGroupCheckInHandler,
     MobileSeriesHandler,
     MobileSeriesReadHandler,
     MobileRoutineBookingViewHandler,
