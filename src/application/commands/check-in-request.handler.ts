@@ -22,6 +22,7 @@ import {
   CheckInAttributionHandler,
   type CheckInView,
 } from '@application/queries/check-in-attribution.handler';
+import { raiseRefusalError } from '@application/commands/check-in-refusal';
 
 /**
  * A check-in request as the customer sees it.
@@ -164,36 +165,8 @@ export class CheckInRequestHandler {
         });
       }
       case 'refused':
-        switch (out.why) {
-          case 'not_confirmed':
-            throw bookingError(
-              'BOOKING_STATE_INVALID',
-              `A ${out.bookingStatus} booking cannot be checked in.`,
-              { status: shout(out.bookingStatus) },
-            );
-          case 'rejected_before':
-            throw bookingError(
-              'BOOKING_CHECKIN_REJECTED',
-              'The desk could not confirm your arrival. Please speak to ' +
-                'the desk.',
-            );
-          case 'too_early': {
-            // The desk check-in's own sentence and detail
-            // (lifecycle.handler.ts), so the app reads one shape for both.
-            const opensAt = new Date(out.opensAtMs ?? 0).toISOString();
-            throw bookingError(
-              'BOOKING_CHECKIN_WINDOW',
-              `Check-in opens at ${opensAt}.`,
-              { windowOpensAt: opensAt },
-            );
-          }
-          case 'too_late':
-            throw bookingError(
-              'BOOKING_CHECKIN_WINDOW',
-              'Check-in for this booking has closed.',
-              { windowClosed: true },
-            );
-        }
+        // One mapping, shared with the group route (check-in-refusal.ts).
+        throw raiseRefusalError(out);
     }
   }
 
