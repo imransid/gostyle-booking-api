@@ -3,6 +3,10 @@ import { HealthController } from './health.controller';
 import type { PrismaService } from '../../infrastructure/persistence/prisma.service';
 import type { OutboxRelay } from '../../infrastructure/messaging/outbox-relay.service';
 import type { AuthService, ConsumerAuthProbe } from '../../auth/auth.service';
+import type {
+  JournalSyncRepository,
+  JournalSyncStats,
+} from '../../infrastructure/persistence/journal-sync.repository';
 
 /**
  * /health is read before anyone hits the thing it describes -- that is the
@@ -36,6 +40,20 @@ const relayWith = (over: Partial<typeof OUTBOX> = {}): OutboxRelay =>
     stats: () => Promise.resolve({ ...OUTBOX, ...over }),
   }) as unknown as OutboxRelay;
 
+const JOURNAL: JournalSyncStats = {
+  waitingForTenant: 0,
+  pending: 0,
+  parked: 0,
+  oldestPendingSeconds: null,
+};
+
+const journalWith = (
+  over: Partial<JournalSyncStats> = {},
+): JournalSyncRepository =>
+  ({
+    stats: () => Promise.resolve({ ...JOURNAL, ...over }),
+  }) as unknown as JournalSyncRepository;
+
 const authWith = (probe: ConsumerAuthProbe): AuthService =>
   ({ probe: () => Promise.resolve(probe) }) as unknown as AuthService;
 
@@ -58,6 +76,7 @@ describe('everything is up', () => {
       prismaUp,
       relayWith(),
       authWith(reachable),
+      journalWith(),
     ).check();
 
     expect(got.status).toBe('ok');
@@ -68,7 +87,12 @@ describe('everything is up', () => {
 
 describe('the consumer API is unreachable', () => {
   const controller = () =>
-    new HealthController(prismaUp, relayWith(), authWith(unreachable));
+    new HealthController(
+      prismaUp,
+      relayWith(),
+      authWith(unreachable),
+      journalWith(),
+    );
 
   it('is degraded, not ok', async () => {
     expect((await controller().check()).status).toBe('degraded');
@@ -99,6 +123,7 @@ describe('rails fail independently', () => {
       prismaDown,
       relayWith(),
       authWith(reachable),
+      journalWith(),
     ).check();
 
     expect(got.status).toBe('degraded');
@@ -113,6 +138,7 @@ describe('rails fail independently', () => {
       prismaDown,
       relayWith(),
       authWith(unreachable),
+      journalWith(),
     ).check();
 
     expect(got.status).toBe('degraded');
@@ -127,6 +153,32 @@ describe('the outbox rail still votes', () => {
       prismaUp,
       relayWith({ stuck: 1 }),
       authWith(reachable),
+      journalWith(),
+    ).check();
+
+    expect(got.status).toBe('degraded');
+  });
+});
+
+describe('the journal rail votes too', () => {
+  it('reports the posting queue beside the outbox', async () => {
+    const got = await new HealthController(
+      prismaUp,
+      relayWith(),
+      authWith(reachable),
+      journalWith({ pending: 3, oldestPendingSeconds: 12 }),
+    ).check();
+
+    expect(got.status).toBe('ok');
+    expect(got.journal).toMatchObject({ pending: 3, oldestPendingSeconds: 12 });
+  });
+
+  it('a parked posting degrades: money that will not reach the books', async () => {
+    const got = await new HealthController(
+      prismaUp,
+      relayWith(),
+      authWith(reachable),
+      journalWith({ parked: 1 }),
     ).check();
 
     expect(got.status).toBe('degraded');

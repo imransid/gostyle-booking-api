@@ -20,7 +20,7 @@ import { toUuid } from '@infrastructure/persistence/hold.repository';
 const SERIES = 'aaaaaaaa-0000-4aaa-8aaa-aaaaaaaaaaaa';
 const CUSTOMER = '11111111-1111-4111-8111-111111111111';
 const STRANGER = '33333333-3333-4333-8333-333333333333';
-/** 2026-10-20 09:00 at the branch (UTC+6). */
+/** 2026-10-20 09:00 at the branch (UTC+4). */
 const NOW = Date.UTC(2026, 9, 20, 3, 0);
 const owner = { actorId: CUSTOMER, actorKind: 'customer', actorBranchId: null };
 
@@ -63,7 +63,7 @@ const bookingRow = (v: Visit) => ({
   netFils: 10_000,
   taxFils: 500,
   discountFils: 0,
-  createdAt: new Date('2026-10-01T05:00:00Z'),
+  createdAt: new Date('2026-10-01T07:00:00Z'),
   linkExpiresAt: null,
   items: [
     {
@@ -108,7 +108,7 @@ function build(sessions: readonly Session[]) {
     pausedUntil: null,
     pauseReason: null,
     pauseNote: null,
-    createdAt: new Date('2026-10-01T05:00:00Z'),
+    createdAt: new Date('2026-10-01T07:00:00Z'),
     occurrences,
   };
   const rows = sessions.flatMap((s) => (s.visit ? [bookingRow(s.visit)] : []));
@@ -289,8 +289,8 @@ describe('B7 top: date, start and end of the next session, else the last one', (
     const r = await view.read(SERIES, owner, NOW);
     expect([r.date, r.start_time, r.end_time, r.pass_qr_code]).toStrictEqual([
       '2026-10-27',
-      '2026-10-27T16:30:00+06:00',
-      '2026-10-27T17:15:00+06:00',
+      '2026-10-27T16:30:00+04:00',
+      '2026-10-27T17:15:00+04:00',
       'GS-2',
     ]);
   });
@@ -300,8 +300,8 @@ describe('B7 top: date, start and end of the next session, else the last one', (
     const r = await view.read(SERIES, owner, NOW);
     expect([r.date, r.start_time, r.end_time, r.pass_qr_code]).toStrictEqual([
       '2027-02-02',
-      '2027-02-02T16:30:00+06:00',
-      '2027-02-02T17:15:00+06:00',
+      '2027-02-02T16:30:00+04:00',
+      '2027-02-02T17:15:00+04:00',
       null,
     ]);
   });
@@ -318,8 +318,8 @@ describe('B7 top: date, start and end of the next session, else the last one', (
     const r = await view.read(SERIES, owner, NOW);
     expect([r.date, r.start_time, r.end_time, r.pass_qr_code]).toStrictEqual([
       '2026-10-13',
-      '2026-10-13T16:30:00+06:00',
-      '2026-10-13T17:15:00+06:00',
+      '2026-10-13T16:30:00+04:00',
+      '2026-10-13T17:15:00+04:00',
       'GS-1',
     ]);
   });

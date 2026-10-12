@@ -47,6 +47,7 @@ import { WalkInSeatedListener } from '../messaging/walk-in-seated-listener';
 import { StylistRepository } from './stylist.repository';
 import { PlatformProductCatalogue } from './platform-product-catalogue';
 import { ProductsGrpcModule } from '../grpc/products-grpc.module';
+import { JournalSyncRepository } from './journal-sync.repository';
 
 import { PushListener } from '../messaging/push-listener';
 import { PushNotificationClient } from '../messaging/push-notification.client';
@@ -151,6 +152,7 @@ import { PushNotificationClient } from '../messaging/push-notification.client';
     FixtureBookingContext,
     StylistRepository,
     PlatformProductCatalogue,
+    JournalSyncRepository,
   ],
   exports: [
     TenantContext,
@@ -191,6 +193,7 @@ import { PushNotificationClient } from '../messaging/push-notification.client';
     FixtureBookingContext,
     StylistRepository,
     PlatformProductCatalogue,
+    JournalSyncRepository,
   ],
 })
 export class PersistenceModule {}

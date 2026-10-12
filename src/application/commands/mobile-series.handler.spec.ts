@@ -21,7 +21,7 @@ import { branchInstant } from '@infrastructure/persistence/hold.repository';
  * only (D7), and a failure part way through leaves nothing behind.
  */
 
-/** 2026-10-01 09:00 at the branch (UTC+6). 2026-10-06 is a Tuesday. */
+/** 2026-10-01 09:00 at the branch (UTC+4). 2026-10-06 is a Tuesday. */
 const NOW = Date.UTC(2026, 9, 1, 3, 0);
 const CUSTOMER = '11111111-1111-4111-8111-111111111111';
 
@@ -257,8 +257,8 @@ describe('dry_run with a time', () => {
     expect(out.sessions[0]).toMatchObject({
       index: 0,
       date: '2026-10-06',
-      start_time: '2026-10-06T16:30:00+06:00',
-      end_time: '2026-10-06T17:15:00+06:00',
+      start_time: '2026-10-06T16:30:00+04:00',
+      end_time: '2026-10-06T17:15:00+04:00',
       free: true,
       later: false,
       alternatives: [],
@@ -298,7 +298,7 @@ describe('dry_run with a time', () => {
     expect(out.all_free).toBe(false);
     const busy = out.sessions[1]!;
     expect(busy).toMatchObject({ date: '2026-10-13', free: false });
-    expect(busy.start_time).toBe('2026-10-13T16:30:00+06:00');
+    expect(busy.start_time).toBe('2026-10-13T16:30:00+04:00');
     // Same stylist same day, then the same time with someone else, then
     // the same stylist and time the nearest other day (never the day of
     // another session: the 6th and the 20th are taken by the routine).
@@ -306,19 +306,19 @@ describe('dry_run with a time', () => {
       {
         date: '2026-10-13',
         time: '17:00',
-        start_time: '2026-10-13T17:00:00+06:00',
+        start_time: '2026-10-13T17:00:00+04:00',
         stylist_id: 'maya',
       },
       {
         date: '2026-10-13',
         time: '16:30',
-        start_time: '2026-10-13T16:30:00+06:00',
+        start_time: '2026-10-13T16:30:00+04:00',
         stylist_id: 'rana',
       },
       {
         date: '2026-10-12',
         time: '16:30',
-        start_time: '2026-10-12T16:30:00+06:00',
+        start_time: '2026-10-12T16:30:00+04:00',
         stylist_id: 'maya',
       },
     ]);
@@ -379,8 +379,8 @@ describe('create', () => {
       products: undefined,
       stylists: ['maya'],
       date: '2026-10-06',
-      startTime: '2026-10-06T16:30:00+06:00',
-      endTime: '2026-10-06T17:15:00+06:00',
+      startTime: '2026-10-06T16:30:00+04:00',
+      endTime: '2026-10-06T17:15:00+04:00',
       amountWithoutTax: 100,
       taxAmount: 5,
       discount: 0,
@@ -472,7 +472,7 @@ describe('create', () => {
     const second = single.execute.mock.calls[1]![0] as unknown as {
       startTime: string;
     };
-    expect(second.startTime).toBe('2026-10-13T17:00:00+06:00');
+    expect(second.startTime).toBe('2026-10-13T17:00:00+04:00');
     const input = repo.create.mock.calls[0]![0] as {
       sessions: { index: number; startMin: number }[];
     };
@@ -806,19 +806,19 @@ describe('B2 on: check_later, sessions past the 90 days', () => {
       {
         date: '2027-01-05',
         time: '16:30',
-        start_time: '2027-01-05T16:30:00+06:00',
+        start_time: '2027-01-05T16:30:00+04:00',
         stylist_id: 'maya',
       },
       {
         date: '2027-01-07',
         time: '16:30',
-        start_time: '2027-01-07T16:30:00+06:00',
+        start_time: '2027-01-07T16:30:00+04:00',
         stylist_id: 'maya',
       },
       {
         date: '2027-01-04',
         time: '16:30',
-        start_time: '2027-01-04T16:30:00+06:00',
+        start_time: '2027-01-04T16:30:00+04:00',
         stylist_id: 'maya',
       },
     ]);
@@ -858,7 +858,7 @@ describe('B2 on: check_later, sessions past the 90 days', () => {
     );
     expect(sessionsOf(now)[3]).toMatchObject({
       date: '2027-01-07',
-      start_time: '2027-01-07T17:00:00+06:00',
+      start_time: '2027-01-07T17:00:00+04:00',
       stylist_id: 'maya',
       picked: true,
       later: true,
@@ -1089,7 +1089,7 @@ describe('B2 on: check_later, sessions past the 90 days', () => {
 
     // 2026-12-01 at the branch: 2027-01-06 and 2027-02-07 are inside the
     // 90 days now, 2027-03-06 is not yet.
-    await job.run(Date.parse('2026-12-01T09:00:00+06:00'));
+    await job.run(Date.parse('2026-12-01T09:00:00+04:00'));
     expect(
       bookSession.mock.calls.map((c) => {
         const i = c[0] as { day: string; startMin: number; stylistId: string };
@@ -1324,19 +1324,19 @@ describe('B4: alternative_rule SAME_STYLIST_FORWARD', () => {
       {
         date: '2026-11-07',
         time: '16:30',
-        start_time: '2026-11-07T16:30:00+06:00',
+        start_time: '2026-11-07T16:30:00+04:00',
         stylist_id: 'maya',
       },
       {
         date: '2026-11-07',
         time: '16:00',
-        start_time: '2026-11-07T16:00:00+06:00',
+        start_time: '2026-11-07T16:00:00+04:00',
         stylist_id: 'maya',
       },
       {
         date: '2026-11-08',
         time: '16:30',
-        start_time: '2026-11-08T16:30:00+06:00',
+        start_time: '2026-11-08T16:30:00+04:00',
         stylist_id: 'maya',
       },
     ]);
@@ -1774,7 +1774,7 @@ describe('B5: Any Available Expert (stylist_candidates, no stylist_id)', () => {
     const saved = now.saved[0] as Parameters<typeof jobBooks>[0];
     expect(saved.stylistId).toBe('rana');
     expect(
-      await jobBooks(saved, Date.parse('2026-12-01T09:00:00+06:00')),
+      await jobBooks(saved, Date.parse('2026-12-01T09:00:00+04:00')),
     ).toStrictEqual([
       ['2027-01-06', 990, 'rana'],
       ['2027-02-06', 990, 'rana'],

@@ -2,9 +2,10 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { SeriesRepository } from '../persistence/series.repository';
 import { MaterialiseSeriesHandler } from '@application/commands/materialise-series.handler';
+import { BRANCH_TIMEZONE } from '../persistence/hold.repository';
 
 /**
- * The nightly occurrence horizon job: 02:00 branch time.
+ * The nightly occurrence horizon job: 02:00 branch time (BRANCH_TIMEZONE).
  *
  * An open-ended series always has about ten weeks of concrete,
  * conflict-checked bookings on the calendar and never an infinite tail. This
@@ -16,9 +17,6 @@ import { MaterialiseSeriesHandler } from '@application/commands/materialise-seri
  * existed an hour earlier.
  */
 export const MATERIALISE_CRON = '0 2 * * *';
-
-/** Asia/Dubai is UTC+4 all year, matching the rest of the service. */
-const BRANCH_TIMEZONE = 'Asia/Dhaka';
 
 /**
  * How many series one run will touch.

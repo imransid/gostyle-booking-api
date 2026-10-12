@@ -62,6 +62,11 @@ services:
       # while nothing answers, which is the documented behaviour.
       CONSUMER_GRPC_ADDR: ${CONSUMER_GRPC_ADDR:-host.docker.internal:50051}
       PLATFORM_GRPC_ADDR: ${PLATFORM_GRPC_ADDR:-platform-api:50052}
+      # General-ledger sync (docs/journal-integration.md). Off: nothing is
+      # sent, and new money rows wait as pending with their own dates. The
+      # allow-list narrows sending to the named tenants; empty is every tenant.
+      JOURNAL_POSTING_ENABLED: ${JOURNAL_POSTING_ENABLED:-false}
+      JOURNAL_POSTING_TENANTS: ${JOURNAL_POSTING_TENANTS:-}
       # No GRPC_PORT here. This service is a gRPC CLIENT, not a server: it
       # DIALS platform-api for stylist data. Nothing in src/ reads GRPC_PORT
       # and main.ts never calls connectMicroservice, so the variable only ever

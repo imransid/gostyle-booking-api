@@ -15,6 +15,13 @@ export default defineConfig({
      */
     include: ['src/**/*.spec.ts'],
     environment: 'node',
+    /**
+     * Pinned, so the suite means the same on every machine. The branch zone
+     * is read once at import (src/infrastructure/persistence/branch-timezone.ts)
+     * and every time-shaped expectation is written in it; a developer's shell
+     * exporting another zone must not turn the suite red.
+     */
+    env: { BRANCH_TIMEZONE: 'Asia/Dubai' },
   },
   resolve: {
     alias: {

@@ -86,6 +86,14 @@ import { DeskActionsHandler } from '@application/commands/desk-actions.handler';
 import { BookingReadHandler } from '@application/queries/read-models.handler';
 import { ReadModelRepository } from '@infrastructure/persistence/read-model.repository';
 import { ServicesGrpcModule } from './infrastructure/grpc/services-grpc.module';
+import { JournalGrpcModule } from './infrastructure/grpc/journal-grpc.module';
+import { JournalSyncHandler } from '@application/commands/journal-sync.handler';
+import { BookingJournalHandler } from '@application/queries/booking-journal.handler';
+import { JournalSyncWorker } from '@infrastructure/scheduling/journal-sync-worker.service';
+import {
+  BookingJournalController,
+  JournalSyncController,
+} from '@interface/http/journal.controller';
 import { ServicesDirectoryController } from '@interface/http/services-directory.controller';
 import { ListServicesHandler } from '@application/queries/list-services.handler';
 
@@ -101,7 +109,14 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
   // could, dispatching the query would answer "No handler found". This is
   // the first bus in the service -- see the note in stylist.handler.ts,
   // which was written back when there was none.
-  imports: [AuthModule, StaffGrpcModule, CqrsModule, ServicesGrpcModule],
+  imports: [
+    AuthModule,
+    StaffGrpcModule,
+    CqrsModule,
+    ServicesGrpcModule,
+    // JOURNAL_LEDGER, owned by the journal handlers (CLAUDE.md 7).
+    JournalGrpcModule,
+  ],
   controllers: [
     // The /v1/bookings literals come first: BookingsController carries
     // @Get(':id'), which swallows every literal at that depth. Asserted by
@@ -110,6 +125,8 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     SettingsController,
     ReadModelsController,
     MoneyController,
+    BookingJournalController,
+    JournalSyncController,
     // Before MobileBookingController: nothing of that one may be tried
     // first for a path under /mobile-booking/group or /mobile-booking/series.
     MobileGroupBookingController,
@@ -152,6 +169,9 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     MobileSeriesCancelHandler,
     MobileSeriesJobHandler,
     MobileSeriesJob,
+    JournalSyncHandler,
+    BookingJournalHandler,
+    JournalSyncWorker,
     DeskExtrasHandler,
     DeskActionsHandler,
     ReadModelRepository,

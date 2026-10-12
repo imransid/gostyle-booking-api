@@ -27,6 +27,7 @@ import type { StaffBooking } from '@domain/availability/staff-mask';
 import { resolveSelection } from '@domain/booking/package';
 import { PACKAGES } from '@infrastructure/fixtures/fixture-booking-context';
 import { priceOf } from '@application/commands/confirm-booking.handler';
+import { BRANCH_TIMEZONE } from '@infrastructure/persistence/hold.repository';
 import {
   fragmentationScore,
   rankAndSelect,
@@ -85,8 +86,6 @@ export interface AvailabilityView {
   readonly closureReason?: string;
   readonly computeMs: number;
 }
-
-const BRANCH_TIMEZONE = 'Asia/Dhaka';
 
 /** The branch's own wall clock, not the server's. */
 function branchNow(timeZone: string): { day: string; minuteOfDay: number } {

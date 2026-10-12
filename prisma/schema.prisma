@@ -499,8 +499,39 @@ model DepositLedger {
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
+  // ---------------------------------------------------------------- journal sync
+  //
+  // Whether this row has reached the general ledger on the platform. The
+  // books themselves live THERE; this is only the delivery receipt, kept on
+  // the row because the platform cannot tell us about an entry it never got.
+  //
+  // The append-only trigger lets ONLY these columns change. Null status is a
+  // row from before the cutover, never posted.
+  journalSyncStatus JournalSyncStatus? @default(pending) @map("journal_sync_status")
+  /// The platform's journal entry for this row. What a void needs.
+  journalEntryId    String?            @map("journal_entry_id") @db.Uuid
+  journalAttempts   Int                @default(0) @map("journal_attempts")
+  /// When to send next. Null once there is nothing left to send.
+  journalNextAt     DateTime?          @default(now()) @map("journal_next_at") @db.Timestamptz(6)
+  journalError      String?            @map("journal_error")
+  /// The platform's refusal code (ACCOUNT_NOT_FOUND, ...), or NO_MAPPING.
+  journalErrorCode  String?            @map("journal_error_code")
+
   @@index([bookingId, createdAt], map: "deposit_ledger_booking_idx")
   @@map("deposit_ledger")
+}
+
+enum JournalSyncStatus {
+  /// Waiting to be sent (or for its booking's tenant).
+  pending
+  /// The platform has it: journal_entry_id says which entry.
+  posted
+  /// Refused by the platform, or no account mapping: needs a person.
+  parked
+  /// Never posted from here (applied_at_pos: the till posts it).
+  skipped
+
+  @@map("journal_sync_status")
 }
 
 // Append-only. Every transition, with who did it and why.

@@ -1,0 +1,240 @@
+syntax = "proto3";
+package gostyle.journal.v1;
+
+// ──────────────────────────────────────────────────────────────────────
+// The general ledger, for booking-api: read the journal, and post to it.
+//
+// No credentials, like the directory services: the service is reachable only
+// on gostyle-net, and port 50052 is never published in production. Every
+// request names its tenant in `tenant_id`.
+//
+// CONVENTIONS, the same as the sibling protos:
+//   - Field names are snake_case and arrive that way: both sides must load
+//     this file with `keepCase: true`.
+//   - proto3 has no null. A string that has no value is '', and a field this
+//     file calls optional is "unset" when it is '' (or 0).
+//   - Every id is a UUID. A malformed one is INVALID_ARGUMENT, never treated
+//     as absent.
+//   - Dates are 'YYYY-MM-DD' and mean the ACCOUNTING date. Timestamps are
+//     ISO-8601 UTC.
+//   - Money is in MINOR UNITS (AED 110.00 is 11000) and is always positive;
+//     the side says which way. int32 on an entry, because that is the column.
+//     The two REPORT totals are int64: load the proto with `longs: Number` (or
+//     String) or they arrive as Long objects.
+//   - Enums travel as their names: status DRAFT | POSTED | VOIDED; side
+//     DEBIT | CREDIT; account_kind ASSET | LIABILITY | EQUITY | INCOME |
+//     EXPENSE; source as listed on JournalEntry.source.
+//
+// ERRORS carry the platform's own error code in `error-code` trailing
+// metadata (JOURNAL_UNBALANCED, ACCOUNT_NOT_FOUND, ...), and as the prefix of
+// the status message, so a caller can branch on it without parsing prose.
+// ──────────────────────────────────────────────────────────────────────
+service JournalLedger {
+  // Read.
+  rpc ListJournalEntries (ListJournalEntriesRequest) returns (ListJournalEntriesResponse);
+  rpc GetJournalEntry (GetJournalEntryRequest) returns (GetJournalEntryResponse);
+  rpc GetJournalReport (GetJournalReportRequest) returns (GetJournalReportResponse);
+
+  // Write. Both are safe to retry.
+  rpc CreateJournalEntry (CreateJournalEntryRequest) returns (CreateJournalEntryResponse);
+  rpc VoidJournalEntry (VoidJournalEntryRequest) returns (VoidJournalEntryResponse);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// One entry: one economic event, with one line per account it touched.
+// Debits equal credits, always.
+// ──────────────────────────────────────────────────────────────────────
+message JournalEntry {
+  string entry_id = 1;
+  string number = 2;          // "JE-1041". '' while DRAFT.
+  string entry_date = 3;      // YYYY-MM-DD, the accounting date
+  string status = 4;          // DRAFT | POSTED | VOIDED
+  // What caused it: MANUAL | OPENING_BALANCE | BILL | BILL_PAYMENT | EXPENSE |
+  // PURCHASE_ORDER | SALE | SALE_REFUND | PAYMENT | STOCK_MOVEMENT |
+  // POS_DRAWER | BOOKING. Everything CreateJournalEntry posts is BOOKING.
+  string source = 5;
+  string source_id = 6;       // the document behind it; '' if none
+  string memo = 7;
+  int32 total_minor = 8;      // the debit total, which is also the credit total
+  string posted_at = 9;       // ISO-8601; '' while DRAFT
+  string reversal_of_id = 10; // set on an entry that REVERSES another; else ''
+  string created_at = 11;     // ISO-8601
+  repeated JournalLine lines = 12;
+}
+
+message JournalLine {
+  string line_id = 1;
+  string account_id = 2;
+  string account_code = 3;
+  string account_name = 4;
+  // What the account IS. `side` alone does not say which way a line moved the
+  // account: a DEBIT raises an ASSET and lowers a LIABILITY.
+  string account_kind = 5;
+  string side = 6;            // DEBIT | CREDIT
+  int32 amount_minor = 7;     // always positive
+  string memo = 8;
+  int32 position = 9;         // order within the entry, from 0
+  string branch_id = 10;
+  string supplier_id = 11;
+  string customer_id = 12;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// ListJournalEntries — the journal, NEWEST FIRST, paginated.
+//
+// Only tenant_id is required. `source` + `source_id` together answer "which
+// entries did this booking produce", and include the voided original and its
+// reversal, which is what an audit trail needs.
+// ──────────────────────────────────────────────────────────────────────
+message ListJournalEntriesRequest {
+  string tenant_id = 1;  // required
+  string status = 2;     // optional
+  string source = 3;     // optional
+  string source_id = 4;  // optional
+  string from = 5;       // optional, YYYY-MM-DD, inclusive
+  string to = 6;         // optional, YYYY-MM-DD, inclusive
+  int32 offset = 7;      // rows to skip; 0 = from the start
+  int32 limit = 8;       // 1..200; 0 = the default of 50
+}
+
+message ListJournalEntriesResponse {
+  repeated JournalEntry entries = 1;
+  int32 total = 2;   // every match, ignoring paging
+  int32 offset = 3;
+  int32 limit = 4;   // the limit actually applied
+}
+
+// NOT_FOUND for an unknown id, and for an id that belongs to another tenant.
+message GetJournalEntryRequest {
+  string tenant_id = 1;  // required
+  string entry_id = 2;   // required
+}
+
+message GetJournalEntryResponse {
+  JournalEntry entry = 1;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// GetJournalReport — the general journal for a period: every entry, OLDEST
+// FIRST, with its lines split into debit and credit columns.
+//
+// Drafts are left out unless `status` asks for them. Capped at 5000 entries;
+// when `truncated` is true, narrow from/to to see the rest.
+// ──────────────────────────────────────────────────────────────────────
+message GetJournalReportRequest {
+  string tenant_id = 1;  // required
+  string from = 2;       // optional, YYYY-MM-DD, inclusive
+  string to = 3;         // optional, YYYY-MM-DD, inclusive
+  string source = 4;     // optional
+  string status = 5;     // optional; '' = everything except DRAFT
+}
+
+message GetJournalReportResponse {
+  string from = 1;       // echoed; '' when not sent
+  string to = 2;
+  string currency = 3;   // the tenant's base currency
+  repeated JournalReportEntry entries = 4;
+  int32 entry_count = 5;
+  int64 total_debit_minor = 6;
+  int64 total_credit_minor = 7;
+  bool balanced = 8;     // the two totals are equal
+  bool truncated = 9;
+}
+
+message JournalReportEntry {
+  string entry_id = 1;
+  string number = 2;
+  string entry_date = 3;
+  string status = 4;
+  string source = 5;
+  string transaction_type = 6;  // a label for a human: "Invoice", "Booking"
+  string name = 7;              // the customer or supplier it is against; '' if none
+  string memo = 8;
+  repeated JournalReportLine lines = 9;
+  int32 total_debit_minor = 10;
+  int32 total_credit_minor = 11;
+}
+
+message JournalReportLine {
+  string account_id = 1;
+  string account_code = 2;
+  string account_name = 3;
+  string account_kind = 4;
+  int32 debit_minor = 5;   // one of these two is 0
+  int32 credit_minor = 6;
+  string memo = 7;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// CreateJournalEntry — post one balanced entry. It is POSTED at once and
+// gets its number; there is no draft over gRPC.
+//
+// IDEMPOTENT ON idempotency_key. Send the same key on every retry of the same
+// posting. The first call posts; any later call with that key returns the
+// SAME entry with `replayed = true` and writes nothing. A key reused for a
+// DIFFERENT posting (another date, booking, or set of amounts) is refused
+// with ALREADY_EXISTS / IDEMPOTENCY_KEY_REUSED. Keys are scoped to the tenant.
+//
+// Refused whole, with nothing written, when:
+//   INVALID_ARGUMENT     the debits and credits differ (JOURNAL_UNBALANCED),
+//                        or a field is missing or malformed
+//   NOT_FOUND            an account does not exist in this tenant
+//                        (ACCOUNT_NOT_FOUND)
+//   FAILED_PRECONDITION  an account is archived (ACCOUNT_ARCHIVED)
+// ──────────────────────────────────────────────────────────────────────
+message CreateJournalEntryRequest {
+  string tenant_id = 1;        // required
+  string idempotency_key = 2;  // required, 1..200 characters
+  string entry_date = 3;       // required, YYYY-MM-DD
+  string source_id = 4;        // optional: the booking this entry is for
+  string memo = 5;             // optional, up to 1000 characters
+  repeated NewJournalLine lines = 6;  // at least two
+  string posted_by_id = 7;     // optional: the user who caused it
+}
+
+message NewJournalLine {
+  // WHICH ACCOUNT. Set exactly one of these three.
+  string account_id = 1;
+  string account_code = 2;  // the tenant's own code, e.g. "1010"
+  // The stable name of a seeded account, e.g. BANK, UNDEPOSITED_FUNDS,
+  // ACCOUNTS_RECEIVABLE, SERVICE_INCOME, SALES_TAX_PAYABLE. Prefer this: it
+  // survives the tenant renaming or recoding the account.
+  string system_key = 3;
+
+  string side = 4;          // required: DEBIT | CREDIT
+  int32 amount_minor = 5;   // required, greater than 0
+  string memo = 6;          // optional, up to 500 characters
+  string branch_id = 7;     // optional
+  string customer_id = 8;   // optional
+  string supplier_id = 9;   // optional
+}
+
+message CreateJournalEntryResponse {
+  JournalEntry entry = 1;
+  bool replayed = 2;  // true: this key had already posted; `entry` is that entry
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// VoidJournalEntry — reverse an entry by posting its mirror image. The
+// original keeps every row it had and is marked VOIDED; nothing is edited or
+// deleted. The reversal is dated today.
+//
+// ONLY FOR ENTRIES booking-api POSTED. Any other source is PERMISSION_DENIED
+// (JOURNAL_NOT_BOOKING_ENTRY): a bill or a till sale is reversed through its
+// own document. A reversal cannot itself be voided (FAILED_PRECONDITION /
+// JOURNAL_IS_REVERSAL).
+//
+// IDEMPOTENT. Voiding an entry that is already voided returns the existing
+// reversal with `already_voided = true`.
+// ──────────────────────────────────────────────────────────────────────
+message VoidJournalEntryRequest {
+  string tenant_id = 1;     // required
+  string entry_id = 2;      // required: the entry to reverse
+  string reason = 3;        // optional; becomes the reversal's memo
+  string voided_by_id = 4;  // optional: the user who caused it
+}
+
+message VoidJournalEntryResponse {
+  JournalEntry reversal = 1;  // the opposing entry
+  bool already_voided = 2;
+}

@@ -226,12 +226,13 @@ export class MoneyController {
   }
 }
 
-function manager(actor: Actor): void {
+/** Manager only. Shared with the journal routes rather than copied. */
+export function manager(
+  actor: Actor,
+  message = 'Only a manager may move money against policy.',
+): void {
   if (actor.kind !== 'manager') {
-    throw bookingError(
-      'FORBIDDEN_ROLE',
-      'Only a manager may move money against policy.',
-    );
+    throw bookingError('FORBIDDEN_ROLE', message);
   }
 }
 

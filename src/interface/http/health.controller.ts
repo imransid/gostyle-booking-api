@@ -4,6 +4,11 @@ import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { PrismaService } from '../../infrastructure/persistence/prisma.service';
 import { OutboxRelay } from '../../infrastructure/messaging/outbox-relay.service';
 import { AuthService } from '../../auth/auth.service';
+import {
+  JournalSyncRepository,
+  type JournalSyncStats,
+} from '../../infrastructure/persistence/journal-sync.repository';
+import { journalPostingEnabled } from '@application/commands/journal-sync.flag';
 
 interface OutboxHealth {
   readonly pending: number;
@@ -26,11 +31,22 @@ interface CustomerAuthHealth {
   readonly error?: string;
 }
 
-/** Postgres and the queue that lives in it: one rail, one round trip. */
+/**
+ * Money rows on their way to the platform's general ledger. `parked` is the
+ * number to alert on: each one is money that will not reach the books until
+ * somebody acts. `oldestPendingSeconds` growing means the platform is
+ * unreachable (or sending is switched off, which `sendingEnabled` says).
+ */
+interface JournalHealth extends JournalSyncStats {
+  readonly sendingEnabled: boolean;
+}
+
+/** Postgres and the queues that live in it: one rail. */
 interface DatabaseHealth {
   readonly database: string;
   readonly databaseLatencyMs: number | null;
   readonly outbox?: OutboxHealth;
+  readonly journal?: JournalHealth;
   readonly error?: string;
 }
 
@@ -41,6 +57,7 @@ interface HealthView {
   readonly uptimeSeconds: number;
   readonly customerAuth: CustomerAuthHealth;
   readonly outbox?: OutboxHealth;
+  readonly journal?: JournalHealth;
   readonly error?: string;
 }
 
@@ -52,6 +69,7 @@ export class HealthController {
     private readonly prisma: PrismaService,
     private readonly relay: OutboxRelay,
     private readonly consumerAuth: AuthService,
+    private readonly journal: JournalSyncRepository,
   ) {}
 
   @Get()
@@ -90,6 +108,13 @@ export class HealthController {
           publishedTotal: 6,
           failedTotal: 0,
         },
+        journal: {
+          waitingForTenant: 0,
+          pending: 0,
+          parked: 0,
+          oldestPendingSeconds: null,
+          sendingEnabled: true,
+        },
       },
     },
   })
@@ -112,7 +137,8 @@ export class HealthController {
     const degraded =
       db.database !== 'ok' ||
       customerAuth.status !== 'ok' ||
-      (db.outbox?.stuck ?? 0) > 0;
+      (db.outbox?.stuck ?? 0) > 0 ||
+      (db.journal?.parked ?? 0) > 0;
 
     return {
       status: degraded ? 'degraded' : 'ok',
@@ -130,6 +156,10 @@ export class HealthController {
         database: 'ok',
         databaseLatencyMs,
         outbox: await this.relay.stats(),
+        journal: {
+          ...(await this.journal.stats()),
+          sendingEnabled: journalPostingEnabled(),
+        },
       };
     } catch (e) {
       return {

@@ -1,3 +1,5 @@
+// FIRST: everything below may read process.env as it is imported.
+import './load-env';
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';

@@ -8,8 +8,9 @@
  * is the reason the horizon exists at all.
  *
  * Dates are 'YYYY-MM-DD' trading-day strings, the same currency the waitlist
- * and every repository already speak. All arithmetic is UTC: the branch is
- * UTC+6 with no DST, so a trading day is a calendar day and nothing drifts.
+ * and every repository already speak. All arithmetic is UTC: the branch zone
+ * is a fixed offset with no DST (BRANCH_TIMEZONE, Asia/Dubai by default), so a
+ * trading day is a calendar day and nothing drifts.
  */
 
 /** A trading day, 'YYYY-MM-DD'. */
