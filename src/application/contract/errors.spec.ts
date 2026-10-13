@@ -30,6 +30,7 @@ describe('the error catalogue', () => {
         'BOOKING_CAPACITY_BLOCKED',
         'BOOKING_CHECKIN_WINDOW',
         'BOOKING_GATE_BLOCKED',
+        'BOOKING_GROUP_CHECKIN_NONE',
         'BOOKING_HOLD_EXPIRED',
         'BOOKING_LEAD_HORIZON',
         'BOOKING_NOT_FOUND',

@@ -245,7 +245,7 @@ export class CheckInRequestController {
 }
 
 /** Before any lookup, so a refusal says nothing about the id. */
-function customerOnly(actor: Actor): void {
+export function customerOnly(actor: Actor): void {
   if (actor.kind === 'customer') return;
   throw bookingError(
     'FORBIDDEN_ROLE',

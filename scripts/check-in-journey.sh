@@ -312,12 +312,12 @@ start consumer-grpc "$CUSTOMER_DIR" "$LOGS/consumer-grpc.log" \
 wait_for "platform (gRPC)" $P_PLATFORM_GRPC
 wait_for "customer-api's ConsumerAuth gRPC" $P_CONSUMER_GRPC
 start booking-api "$BOOKING_DIR" "$LOGS/booking-api.log" \
-  env DATABASE_URL="$PROOF_URL" PORT=$P_BOOKING SELF_CHECK_IN_V1=true \
+  env DATABASE_URL="$PROOF_URL" PORT=$P_BOOKING SELF_CHECK_IN_V1=true MOBILE_GROUP_BOOKING=true MOBILE_GROUP_CHECK_IN=true \
       CONSUMER_GRPC_ADDR=localhost:$P_CONSUMER_GRPC PLATFORM_GRPC_ADDR=localhost:$P_PLATFORM_GRPC \
       PLATFORM_INTERNAL_KEY=$PLATFORM_KEY INTERNAL_GRPC_KEY=$INTERNAL_KEY \
   node dist/main.js
 start customer-api "$CUSTOMER_DIR" "$LOGS/customer-api.log" \
-  env BOOKING_API_URL=http://localhost:$P_BOOKING SELF_CHECK_IN_V1=true \
+  env BOOKING_API_URL=http://localhost:$P_BOOKING SELF_CHECK_IN_V1=true CHAIR_SCAN_V1=true \
       EMAIL_HOST=127.0.0.1 EMAIL_PORT=1025 EMAIL_USE_TLS=False \
   "$PY" manage.py runserver 127.0.0.1:$P_CUSTOMER --noreload
 wait_for "booking-api" $P_BOOKING
@@ -506,6 +506,111 @@ must_be 11 409
 must_equal 11 .code BOOKING_CHECKIN_REJECTED
 step 11c "She tries \"I am here\" again" "$CODE" "refused: \"$(field .message)\""
 
+# ------------------------------------------------------------ a party
+
+head_line "A party: \"we are here\" for everyone"
+
+# 12. A second real customer, and Sara's party of three, 10 minutes from now:
+# Sara (the booker), Rana, and a guest. Seeded as the app's create writes one:
+# a 'mobile' group, one ordinary booking (lane) per member, and a guest's
+# lane filed under the group.
+EMAIL2="journey-$RUN-rana@example.test"
+call POST "$CUSTOMER_API/auth/register" "" "$(jq -nc --arg e "$EMAIL2" '{
+  destination_type: "email", destination: $e, full_name: "Rana Saleh",
+  password: "Journey-pass-2026", confirm_password: "Journey-pass-2026", gender: "female" }')"
+must_be 12 201
+TOKEN2=$(field .access)
+RANA_ID=$(node -e 'console.log(JSON.parse(Buffer.from(process.argv[1].split(".")[1], "base64url")).consumer_id)' "$TOKEN2")
+G=$(new_id); P1=$(new_id); P2=$(new_id); P3=$(new_id)
+P_START=$(seed_booking "$P1" "GS-J-$RUN-P1" 10) || die "party lane 1 did not seed"
+seed_booking "$P2" "GS-J-$RUN-P2" 10 >/dev/null || die "party lane 2 did not seed"
+seed_booking "$P3" "GS-J-$RUN-P3" 10 >/dev/null || die "party lane 3 did not seed"
+psql "$PROOF_PSQL" -X -q -v ON_ERROR_STOP=1 <<SQL || die "the party did not seed"
+BEGIN;
+INSERT INTO booking_group (id, tenant_id, branch_id, organiser_id, trading_day,
+                           target_min, mode, arrangement, status, active_count,
+                           source, updated_at)
+SELECT '$G', '$TENANT', '$BRANCH', '$CUSTOMER_ID', b.trading_day, b.start_minute,
+       'arrive_together', 'organiser_pays_all', 'confirmed', 3, 'mobile', now()
+  FROM booking b WHERE b.id = '$P1';
+UPDATE booking SET group_id = '$G' WHERE id IN ('$P1', '$P2', '$P3');
+UPDATE booking SET customer_id = '$RANA_ID' WHERE id = '$P2';
+UPDATE booking SET customer_id = '$G' WHERE id = '$P3';
+INSERT INTO group_participant (id, group_id, position, customer_id, guest_name, booking_id)
+VALUES (gen_random_uuid(), '$G', 0, '$CUSTOMER_ID', NULL, '$P1'),
+       (gen_random_uuid(), '$G', 1, '$RANA_ID', NULL, '$P2'),
+       (gen_random_uuid(), '$G', 2, NULL, 'Mina', '$P3');
+COMMIT;
+SQL
+step 12 "Rana Saleh signs up; Sara's party (Sara, Rana, a guest) is at $(salon_time "$P_START")" \
+  "$CODE" "three ordinary bookings, one party"
+
+# 13. The booker says "we are here" for everyone.
+GROUP_URL="$BOOKING_API/mobile-booking/group/$G/check-in"
+call POST "$GROUP_URL" "$TOKEN"
+must_be 13 201
+must_equal 13 '[.lanes[].outcome] | join(",")' 'RAISED,RAISED,RAISED'
+must_equal 13 '[.lanes[].memberKind] | join(",")' 'self,registered,guest'
+must_equal 13 '[.lanes[].request.state] | join(",")' 'WAITING,WAITING,WAITING'
+step 13 "Sara taps \"We are here\" for her party" "$CODE" \
+  "one request for each of the three (self, registered, guest), every one WAITING"
+
+# 14. Again: nothing new.
+call POST "$GROUP_URL" "$TOKEN"
+must_be 14 200
+must_equal 14 '[.lanes[].outcome] | join(",")' 'WAITING,WAITING,WAITING'
+step 14 "She taps it again" "$CODE" "nothing new: the same three requests, WAITING"
+
+# 15. My Bookings: who may see the button.
+call GET "$BOOKING_API/mobile-booking?filter=upcoming&page=1&pageSize=50" "$TOKEN"
+must_be 15 200
+sara_sees=$(jq -r --arg g "$G" '.results[] | select(.id == $g) | .is_booker' "$BODY")
+call GET "$BOOKING_API/mobile-booking?filter=upcoming&page=1&pageSize=50" "$TOKEN2"
+must_be 15 200
+rana_sees=$(jq -r --arg g "$G" '.results[] | select(.id == $g) | .is_booker' "$BODY")
+[ "$sara_sees" = true ] && [ "$rana_sees" = false ] ||
+  failed 15 "expected is_booker true for Sara and false for Rana, got '$sara_sees' and '$rana_sees'"
+step 15 "Both open My Bookings" "$CODE" "one party row each; is_booker: Sara true, Rana false"
+
+# 16. Only the booker, and only a customer.
+call POST "$GROUP_URL" "$TOKEN2"
+must_be 16 404
+rana_code=$CODE
+call POST "$GROUP_URL" "$DESK"
+must_be 16 403
+must_equal 16 .code FORBIDDEN_ROLE
+step 16 "Rana, then the desk, try the party's button" "$rana_code/$CODE" \
+  "Rana: no such party (the booker only); the desk: not a customer"
+
+# 17. The desk sees three ordinary requests.
+call GET "$BOOKING_API/check-in-requests?branchId=$BRANCH" "$DESK"
+must_be 17 200
+n=$(jq --arg a "$P1" --arg b "$P2" --arg c "$P3" \
+  '[.waiting[] | select(.booking.bookingId == $a or .booking.bookingId == $b or .booking.bookingId == $c)] | length' "$BODY")
+[ "$n" = 3 ] || failed 17 "expected the party's three requests in the desk's waiting list, got $n"
+step 17 "The desk opens its list" "$CODE" "three ordinary requests, one per member of the party"
+
+# 18. The desk approves each one, as it always does.
+for id in "$P1" "$P2" "$P3"; do
+  call POST "$BOOKING_API/bookings/$id/check-in-request/approve" "$DESK"
+  must_be 18 200
+  must_equal 18 .checkIn.to CHECKED_IN
+done
+step 18 "The desk approves each of the three" "$CODE" "three ordinary approvals, three CHECKED_IN"
+
+# 19. The booker reads the party's check-in.
+call GET "$GROUP_URL" "$TOKEN"
+must_be 19 200
+must_equal 19 '[.lanes[].request.state] | join(",")' 'APPROVED,APPROVED,APPROVED'
+step 19 "Sara reads her party's check-in" "$CODE" "every member APPROVED"
+
+# 20. Once more, with everyone in: nothing to do.
+call POST "$GROUP_URL" "$TOKEN"
+must_be 20 409
+must_equal 20 .code BOOKING_GROUP_CHECKIN_NONE
+must_equal 20 '[.details.lanes[].outcome] | join(",")' 'CHECKED_IN,CHECKED_IN,CHECKED_IN'
+step 20 "She taps it once more" "$CODE" "nothing to do: all three are already in"
+
 # ------------------------------------------------------------ tidy, through the desk
 
 head_line "Tidying up, through the desk's own routes"
@@ -519,6 +624,13 @@ for id in "$B" "$D"; do
   must_be tidy 200 201
 done
 note "$B_CODE and $D_CODE: cancelled, so neither is left waiting or due"
+for id in "$P1" "$P2" "$P3"; do
+  call POST "$BOOKING_API/bookings/$id/start" "$DESK" '{}'
+  must_be tidy 200 201
+  call POST "$BOOKING_API/bookings/$id/complete" "$DESK" '{}'
+  must_be tidy 200 201
+done
+note "the party's three bookings: started and completed"
 
 say ""
 say "All steps went as they must. Logs: $LOGS"
