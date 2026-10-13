@@ -50,4 +50,19 @@ describe('My Bookings and mobile parties', () => {
     expect(await c.list(actor, 'upcoming')).toBe(DECORATED);
     expect(groups.decorateList).toHaveBeenCalledWith(PAGE);
   });
+
+  it('our switch on too: the caller is passed, for is_booker', async () => {
+    process.env.MOBILE_GROUP_BOOKING = 'true';
+    process.env.MOBILE_GROUP_CHECK_IN = 'true';
+    try {
+      const { c, groups } = controller();
+      await c.list(actor, 'upcoming');
+      expect(groups.decorateList).toHaveBeenCalledWith(
+        PAGE,
+        (actor as { id: string }).id,
+      );
+    } finally {
+      delete process.env.MOBILE_GROUP_CHECK_IN;
+    }
+  });
 });

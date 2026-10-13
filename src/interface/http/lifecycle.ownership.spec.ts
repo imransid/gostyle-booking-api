@@ -65,6 +65,28 @@ describe('cancel and the rest: staff are unchanged', () => {
   });
 });
 
+describe('check-in says how; nothing else does', () => {
+  it('the desk’s own check-in is STAFF', async () => {
+    const h = controller(ME);
+    await h.c.checkIn(BOOKING, {}, staff);
+    expect(h.handed()).toMatchObject({
+      to: 'checked_in',
+      checkInVia: 'staff',
+    });
+  });
+
+  it.each(['start', 'complete', 'settle', 'noShow', 'cancel'] as const)(
+    '%s carries no checkInVia (the database would refuse it)',
+    async (route) => {
+      const h = controller(ME);
+      await (
+        h.c[route] as (id: string, dto: never, a: Actor) => Promise<unknown>
+      ).call(h.c, BOOKING, { reason: 'r' } as never, staff);
+      expect(h.handed()).not.toHaveProperty('checkInVia');
+    },
+  );
+});
+
 describe('cancel and the rest: a customer token', () => {
   it('cancels their own booking', async () => {
     const h = controller(ME);

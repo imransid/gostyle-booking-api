@@ -3,7 +3,7 @@ import { Logger } from '@nestjs/common';
 import { status } from '@grpc/grpc-js';
 import { Metadata } from '@grpc/grpc-js';
 import { of, throwError, timer, NEVER } from 'rxjs';
-import { callWithRetry } from './call-with-retry';
+import { callOnce, callWithRetry } from './call-with-retry';
 
 const quiet = () =>
   ({ warn: vi.fn(), error: vi.fn(), log: vi.fn() }) as unknown as Logger;
@@ -134,5 +134,43 @@ describe('callWithRetry', () => {
 
     expect(warn).toHaveBeenCalledOnce();
     expect(warn.mock.calls[0]![0]).toContain('listServices');
+  });
+});
+
+describe('callOnce', () => {
+  it('returns the answer of one call', async () => {
+    const issue = vi.fn(() => of('ok'));
+    await expect(callOnce(100, issue)).resolves.toBe('ok');
+    expect(issue).toHaveBeenCalledTimes(1);
+  });
+
+  it('never retries, not even UNAVAILABLE, which callWithRetry would', async () => {
+    // A chair scan answered by platform is a scan row; a second attempt
+    // could be a second row. And a screen must not wait for one.
+    const issue = vi.fn(() => throwError(() => grpc(status.UNAVAILABLE)));
+    await expect(callOnce(100, issue)).rejects.toMatchObject({
+      code: status.UNAVAILABLE,
+    });
+    expect(issue).toHaveBeenCalledTimes(1);
+  });
+
+  it('carries a deadline of now plus the budget, and no waitForReady', async () => {
+    const seen: { md: Metadata; deadline: number | undefined }[] = [];
+    const before = Date.now();
+    await callOnce(900, (md, opts) => {
+      seen.push({ md, deadline: opts.deadline });
+      return of('ok');
+    });
+    expect(seen[0]!.deadline).toBeGreaterThanOrEqual(before + 900);
+    expect(seen[0]!.deadline).toBeLessThanOrEqual(Date.now() + 900);
+    expect(seen[0]!.md.getOptions().waitForReady).toBeFalsy();
+  });
+
+  it('gives up at the budget when nothing answers', async () => {
+    const started = Date.now();
+    await expect(callOnce(50, () => NEVER)).rejects.toMatchObject({
+      name: 'TimeoutError',
+    });
+    expect(Date.now() - started).toBeLessThan(1_000);
   });
 });

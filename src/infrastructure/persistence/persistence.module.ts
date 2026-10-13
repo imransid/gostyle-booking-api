@@ -21,6 +21,8 @@ import { WaitlistListener } from '../messaging/waitlist-listener';
 import { GroupStatusListener } from '../messaging/group-status-listener';
 import { WaitlistSweeper } from '../scheduling/waitlist-sweeper.service';
 import { NoShowSweeper } from '../scheduling/no-show-sweeper.service';
+import { CheckInRequestSweeper } from '../scheduling/check-in-request-sweeper.service';
+import { CheckInRequestRepository } from './check-in-request.repository';
 import { PaymentLinkSweeper } from '../scheduling/payment-link-sweeper.service';
 import { PAYMENT_GATEWAY } from '@application/ports/payment-gateway.port';
 import { SimulatedGateway } from '../payments/simulated-gateway';
@@ -35,6 +37,7 @@ import { EVENT_PUBLISHER } from '@application/ports/event-publisher.port';
 import { HoldRepository } from './hold.repository';
 import { BookingRepository } from './booking.repository';
 import { LifecycleRepository } from './lifecycle.repository';
+import { BookingScopeRepository } from './booking-scope.repository';
 import { DbBookingContext } from './db-booking-context';
 import { FixtureBookingContext } from '../fixtures/fixture-booking-context';
 import { HoldSweeper } from '../scheduling/hold-sweeper.service';
@@ -108,6 +111,8 @@ import { EMAIL_SENDER } from '@application/ports/email-sender.port';
     { provide: PAYMENT_GATEWAY, useExisting: SimulatedGateway },
     PaymentLinkSweeper,
     NoShowSweeper,
+    CheckInRequestRepository,
+    CheckInRequestSweeper,
     WaitlistRepository,
     WaitlistSweeper,
     RescheduleRepository,
@@ -188,6 +193,7 @@ import { EMAIL_SENDER } from '@application/ports/email-sender.port';
       ],
     },
     LifecycleRepository,
+    BookingScopeRepository,
     BookingRepository,
     HoldRepository,
     HoldSweeper,
@@ -220,6 +226,7 @@ import { EMAIL_SENDER } from '@application/ports/email-sender.port';
     SimulatedGateway,
     PaymentLinkSweeper,
     NoShowSweeper,
+    CheckInRequestRepository,
     WaitlistRepository,
     WaitlistSweeper,
     RescheduleRepository,
@@ -229,6 +236,7 @@ import { EMAIL_SENDER } from '@application/ports/email-sender.port';
     PrismaService,
     OutboxRelay,
     LifecycleRepository,
+    BookingScopeRepository,
     BookingRepository,
     HoldRepository,
     HoldSweeper,

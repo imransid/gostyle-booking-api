@@ -167,6 +167,7 @@ function deskJob(rows: readonly Row[]) {
   const job = new SeriesMaterialiser(
     new SeriesRepository(prisma, new TenantContext()),
     handler,
+    new TenantContext(),
   );
   return { job, ran, writes };
 }

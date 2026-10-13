@@ -1,7 +1,10 @@
 import type { PaymentStatus } from '../../generated/prisma/enums';
 import { Injectable, Logger } from '@nestjs/common';
+import { Prisma } from '../../generated/prisma/client';
 import { PrismaService } from './prisma.service';
 import { toUuid } from './hold.repository';
+import { arrivalClaimed } from './check-in-request.repository';
+import type { CheckInVia } from '@domain/booking/check-in-attribution';
 import {
   checkTransition,
   releasesCapacity,
@@ -72,6 +75,26 @@ export interface TransitionInput {
   /** A salon-initiated cancel refunds in full, whatever the timing. */
   readonly initiatedBy?: CancelInitiator;
   readonly vipStandingReservation?: boolean;
+  /**
+   * THE AUTO NO-SHOW SWEEPER'S, AND NOBODY ELSE'S. Refuse (as illegal) when
+   * the customer said they arrived: the booking's latest check-in request is
+   * anything but rejected (check-in-request.repository.ts arrivalClaimed).
+   *
+   * Asked AFTER the row lock, because the sweeper picked this booking a
+   * moment ago, outside any lock, and a raise may have committed since. A
+   * raise takes the same lock, so here the answer is final.
+   *
+   * Absent everywhere else: the desk marking a no-show by hand is the desk
+   * deciding, which is exactly what an unanswered request is waiting for.
+   */
+  readonly unlessArrivalClaimed?: boolean;
+  /**
+   * HOW a customer was checked in: on a move into CHECKED_IN, and only
+   * there. Written to the history row as given, with NO DEFAULT: a check-in
+   * without it, or another move with it, is refused by
+   * booking_status_history_check_in_says_how.
+   */
+  readonly checkInVia?: CheckInVia;
 }
 
 export interface TransitionedBooking {
@@ -203,6 +226,20 @@ export class LifecycleRepository {
         const booking = locked[0];
         if (booking === undefined) return { kind: 'not_found' as const };
 
+        // 1b. Self check-in. Only the sweeper asks (unlessArrivalClaimed).
+        if (input.unlessArrivalClaimed === true) {
+          const claim = await tx.$queryRaw<{ claimed: boolean }[]>`
+            SELECT ${arrivalClaimed(Prisma.sql`${booking.id}::uuid`)} AS claimed`;
+          if (claim[0]?.claimed === true) {
+            return {
+              kind: 'illegal' as const,
+              message:
+                `${booking.code}: the customer said they arrived, ` +
+                'so the desk decides.',
+            };
+          }
+        }
+
         // 2. Legality is judged against what the database says NOW, not
         //    against whatever the client had on screen a minute ago.
         const verdict = checkTransition({
@@ -330,6 +367,8 @@ export class LifecycleRepository {
               input.actor === 'system' || input.actorId === null
                 ? null
                 : toUuid(input.actorId),
+            // As the caller said, or nothing: never a default (the CHECK).
+            checkInVia: input.checkInVia ?? null,
           },
         });
 

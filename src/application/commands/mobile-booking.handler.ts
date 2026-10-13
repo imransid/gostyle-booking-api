@@ -1308,6 +1308,15 @@ export class MobileBookingHandler {
        * tell which of the two a booking is actually in.
        */
       status_detail: b.status.toUpperCase(),
+      /**
+       * SINGLE or ROUTINE: a fact of the booking row, as on the list's rows.
+       * On every answer of this shape (the create's 201, the read, the
+       * payment's PATCH), so one booking never has two shapes. NOT behind
+       * MOBILE_ROUTINE_CONTRACT: it shipped beside series_id, which is the
+       * routine contract's and still is (the controller's read adds it).
+       * From the row this method already loaded: no query of its own.
+       */
+      booking_type: b.bookingType.toUpperCase(),
       date: day,
       start_time: toOffsetIso(
         branchInstant(day, b.startMinute),

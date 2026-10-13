@@ -31,6 +31,7 @@ import {
   outcomeOf,
 } from '@domain/booking/lifecycle';
 import { bookingError } from '@application/contract/errors';
+import type { CheckInVia } from '@domain/booking/check-in-attribution';
 
 export interface LifecycleView {
   readonly code: string;
@@ -83,6 +84,14 @@ export interface LifecycleCommand {
   readonly reason?: string;
   readonly initiatedBy?: CancelInitiator;
   readonly vipStandingReservation?: boolean;
+  /**
+   * HOW, on a move into CHECKED_IN and only there: 'self' from the approval
+   * of a check-in request (CheckInDeskHandler.approve), 'staff' from the
+   * desk's own POST /v1/bookings/:id/check-in. Every caller says which; no
+   * default anywhere, so a caller that forgot is refused by the database
+   * instead of being recorded as staff.
+   */
+  readonly checkInVia?: CheckInVia;
   /** Test hook, so the refund bands can be exercised without waiting a day. */
   readonly nowMs?: number;
   /**
@@ -144,6 +153,7 @@ export class LifecycleHandler {
       ...(cmd.vipStandingReservation !== undefined
         ? { vipStandingReservation: cmd.vipStandingReservation }
         : {}),
+      ...(cmd.checkInVia !== undefined ? { checkInVia: cmd.checkInVia } : {}),
     };
 
     // Settlement is the only transition that needs money computed BEFORE the

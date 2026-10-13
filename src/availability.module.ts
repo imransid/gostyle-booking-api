@@ -27,7 +27,16 @@ import { BookingsController } from '@interface/http/bookings.controller';
 import { ConfirmBookingHandler } from '@application/commands/confirm-booking.handler';
 
 import { LifecycleController } from '@interface/http/lifecycle.controller';
+import { BookingScope } from '@interface/http/booking-scope';
 import { RescheduleHandler } from '@application/commands/reschedule.handler';
+import { CheckInRequestController } from '@interface/http/check-in-request.controller';
+import { CheckInRequestHandler } from '@application/commands/check-in-request.handler';
+import {
+  CheckInDeskController,
+  ReceptionCheckInController,
+} from '@interface/http/check-in-desk.controller';
+import { CheckInDeskHandler } from '@application/commands/check-in-desk.handler';
+import { CheckInAttributionHandler } from '@application/queries/check-in-attribution.handler';
 import { WaitlistHandler } from '@application/commands/waitlist.handler';
 import { WaitlistController } from '@interface/http/waitlist.controller';
 import { WebhooksController } from '@interface/http/webhooks.controller';
@@ -63,6 +72,7 @@ import { MoneyController } from '@interface/http/money.controller';
 import { MobileBookingController } from '@interface/http/mobile-booking.controller';
 import { MobileBookingHandler } from '@application/commands/mobile-booking.handler';
 import { MobileGroupBookingController } from '@interface/http/mobile-group-booking.controller';
+import { MobileGroupCheckInController } from '@interface/http/mobile-group-check-in.controller';
 import { MobileSeriesController } from '@interface/http/mobile-series.controller';
 import { MobileSeriesHandler } from '@application/commands/mobile-series.handler';
 import { MobileSeriesReadHandler } from '@application/queries/mobile-series-read.handler';
@@ -78,6 +88,7 @@ import { MobileSeriesJobController } from '@interface/http/mobile-series-job.con
 import { MobileGroupBookingHandler } from '@application/commands/mobile-group-booking.handler';
 import { MobileGroupReadHandler } from '@application/queries/mobile-group-read.handler';
 import { MobileGroupCancelHandler } from '@application/commands/mobile-group-cancel.handler';
+import { MobileGroupCheckInHandler } from '@application/commands/mobile-group-check-in.handler';
 import { DeskExtrasController } from '@interface/http/desk-extras.controller';
 import { DeskExtrasHandler } from '@application/commands/desk-extras.handler';
 import { MoneyRepository } from '@infrastructure/persistence/money.repository';
@@ -89,6 +100,7 @@ import { DeskActionsHandler } from '@application/commands/desk-actions.handler';
 import { BookingReadHandler } from '@application/queries/read-models.handler';
 import { ReadModelRepository } from '@infrastructure/persistence/read-model.repository';
 import { ServicesGrpcModule } from './infrastructure/grpc/services-grpc.module';
+import { FloorGrpcModule } from './infrastructure/grpc/floor-grpc.module';
 import { JournalGrpcModule } from './infrastructure/grpc/journal-grpc.module';
 import { JournalSyncHandler } from '@application/commands/journal-sync.handler';
 import { BookingJournalHandler } from '@application/queries/booking-journal.handler';
@@ -112,11 +124,15 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
   // could, dispatching the query would answer "No handler found". This is
   // the first bus in the service -- see the note in stylist.handler.ts,
   // which was written back when there was none.
+  //
+  // FloorGrpcModule: platform's ChairDirectory, for self check-in at a chair
+  // (CheckInRequestHandler). Keyed with PLATFORM_INTERNAL_KEY.
   imports: [
     AuthModule,
     StaffGrpcModule,
     CqrsModule,
     ServicesGrpcModule,
+    FloorGrpcModule,
     // JOURNAL_LEDGER, owned by the journal handlers (CLAUDE.md 7).
     JournalGrpcModule,
   ],
@@ -133,6 +149,7 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     // Before MobileBookingController: nothing of that one may be tried
     // first for a path under /mobile-booking/group or /mobile-booking/series.
     MobileGroupBookingController,
+    MobileGroupCheckInController,
     MobileSeriesController,
     MobileSeriesJobController,
     MobileBookingController,
@@ -156,8 +173,15 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     HoldsController,
     BookingsController,
     LifecycleController,
+    CheckInRequestController,
+    CheckInDeskController,
+    ReceptionCheckInController,
   ],
   providers: [
+    BookingScope,
+    CheckInRequestHandler,
+    CheckInAttributionHandler,
+    CheckInDeskHandler,
     GetSettingsHandler,
     BookingReadHandler,
     MoneyRepository,
@@ -165,6 +189,7 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     MobileGroupBookingHandler,
     MobileGroupReadHandler,
     MobileGroupCancelHandler,
+    MobileGroupCheckInHandler,
     MobileSeriesHandler,
     MobileSeriesReadHandler,
     MobileRoutineBookingViewHandler,
