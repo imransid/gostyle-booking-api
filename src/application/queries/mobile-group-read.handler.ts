@@ -67,13 +67,20 @@ export class MobileGroupReadHandler {
    * "not yours" must look the same from outside, or the id space can be
    * walked. A desk party (`source` null) is 404 too: this route answers for
    * the parties the app made and no others.
+   *
+   * `viewerId` only when the caller asked (MOBILE_GROUP_SELF_CHECK_IN):
+   * without it, the party is exactly what it was.
    */
-  async read(groupId: string, who: GroupReader): Promise<MobileGroupView> {
+  async read(
+    groupId: string,
+    who: GroupReader,
+    viewerId?: string,
+  ): Promise<MobileGroupView> {
     const group = await this.load(groupId);
     if (group === null || !this.visible(group, who)) {
       throw MobileContractError.notFoundBooking();
     }
-    return this.present(group, new Map());
+    return this.present(group, new Map(), viewerId);
   }
 
   /**
@@ -197,9 +204,14 @@ export class MobileGroupReadHandler {
     );
   }
 
+  /**
+   * `_viewerId`: who is looking, or nothing. Nothing reads it yet; the
+   * member rows will use it to say which one is the viewer's own.
+   */
   private async present(
     group: NonNullable<Awaited<ReturnType<MobileGroupReadHandler['load']>>>,
     names: ReadonlyMap<number, string>,
+    _viewerId?: string,
   ): Promise<MobileGroupView> {
     const day = group.tradingDay.toISOString().slice(0, 10);
     const { index, staff } = await this.namesFor(group, day);

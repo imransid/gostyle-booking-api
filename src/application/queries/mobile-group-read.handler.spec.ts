@@ -442,3 +442,62 @@ describe('MobileGroupReadHandler: My Bookings shows a party as one GROUP row', (
     expect(await h.handler.decorateList({ nope: 1 })).toEqual({ nope: 1 });
   });
 });
+
+describe('MobileGroupReadHandler: who is looking (MOBILE_GROUP_SELF_CHECK_IN)', () => {
+  it('without a viewer, the party has exactly the keys it always had', async () => {
+    const v = await harness().handler.read(GROUP, customer(RANA));
+    expect(Object.keys(v)).toEqual([
+      'id',
+      'salon_id',
+      'booking_type',
+      'status',
+      'status_detail',
+      'payment_status',
+      'payment_status_detail',
+      'date',
+      'start_time',
+      'end_time',
+      'member_count',
+      'members',
+      'amount_without_tax',
+      'tax_amount',
+      'discount',
+      'promo_code',
+      'total',
+      'deposit_percent',
+      'deposit_amount',
+      'advance_paid_amount',
+      'due_amount',
+      'payment_method',
+      'pass_qr_code',
+      'expires_at',
+      'created_at',
+    ]);
+    for (const m of v.members) {
+      expect(Object.keys(m)).toEqual([
+        'ref',
+        'id',
+        'booking_code',
+        'user_id',
+        'name',
+        'kind',
+        'age_group',
+        'status',
+        'services',
+        'products',
+        'stylist',
+        'start_time',
+        'end_time',
+        'total',
+      ]);
+    }
+  });
+
+  it('a viewer reaches the read and, for now, changes nothing', async () => {
+    for (const id of [BOOKER, RANA]) {
+      const without = await harness().handler.read(GROUP, customer(id));
+      const seen = await harness().handler.read(GROUP, customer(id), id);
+      expect(seen).toStrictEqual(without);
+    }
+  });
+});
