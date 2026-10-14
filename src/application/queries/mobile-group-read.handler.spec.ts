@@ -493,11 +493,64 @@ describe('MobileGroupReadHandler: who is looking (MOBILE_GROUP_SELF_CHECK_IN)', 
     }
   });
 
-  it('a viewer reaches the read and, for now, changes nothing', async () => {
+  it('flag off, no viewer: no member row has an is_me key at all', async () => {
+    const h = harness();
+    const read = await h.handler.read(GROUP, customer(RANA));
+    const made = await h.handler.afterCreate(GROUP, new Map());
+    for (const m of [...read.members, ...made.members]) {
+      expect(m).not.toHaveProperty('is_me');
+    }
+  });
+
+  it("three members, exactly one true: the viewer's own row", async () => {
+    const booker = await harness().handler.read(
+      GROUP,
+      customer(BOOKER),
+      BOOKER,
+    );
+    expect(booker.members.map((m) => m.is_me)).toEqual([true, false, false]);
+
+    const rana = await harness().handler.read(GROUP, customer(RANA), RANA);
+    expect(rana.members.map((m) => m.is_me)).toEqual([false, true, false]);
+  });
+
+  it('a guest row is always false', async () => {
+    for (const id of [BOOKER, RANA]) {
+      const v = await harness().handler.read(GROUP, customer(id), id);
+      const guests = v.members.filter((m) => m.kind === 'guest');
+      expect(guests).toHaveLength(1);
+      expect(guests.map((m) => m.is_me)).toEqual([false]);
+    }
+  });
+
+  it("a staff viewer: every row false, even with an id equal to a member's", async () => {
+    const v = await harness().handler.read(
+      GROUP,
+      { actorId: BOOKER, actorKind: 'staff', actorBranchId: null },
+      BOOKER,
+    );
+    expect(v.members.map((m) => m.is_me)).toEqual([false, false, false]);
+  });
+
+  it('is_me goes last, after the keys the row always had', async () => {
+    const without = await harness().handler.read(GROUP, customer(RANA));
+    const seen = await harness().handler.read(GROUP, customer(RANA), RANA);
+    seen.members.forEach((m, i) => {
+      expect(Object.keys(m)).toEqual([
+        ...Object.keys(without.members[i]!),
+        'is_me',
+      ]);
+    });
+  });
+
+  it('a viewer changes nothing else: every other key and value is the same', async () => {
     for (const id of [BOOKER, RANA]) {
       const without = await harness().handler.read(GROUP, customer(id));
       const seen = await harness().handler.read(GROUP, customer(id), id);
-      expect(seen).toStrictEqual(without);
+      expect({
+        ...seen,
+        members: seen.members.map(({ is_me: _, ...m }) => m),
+      }).toStrictEqual(without);
     }
   });
 });

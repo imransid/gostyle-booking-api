@@ -80,7 +80,16 @@ export class MobileGroupReadHandler {
     if (group === null || !this.visible(group, who)) {
       throw MobileContractError.notFoundBooking();
     }
-    return this.present(group, new Map(), viewerId);
+    // A staff token is never "me": staff read the party for the salon, they
+    // are not in it. So for staff every row is false (null), even when the
+    // staff id happens to match a member's.
+    const me =
+      viewerId === undefined
+        ? undefined
+        : who.actorKind === 'customer'
+          ? toUuid(viewerId)
+          : null;
+    return this.present(group, new Map(), me);
   }
 
   /**
@@ -205,13 +214,20 @@ export class MobileGroupReadHandler {
   }
 
   /**
-   * `_viewerId`: who is looking, or nothing. Nothing reads it yet; the
-   * member rows will use it to say which one is the viewer's own.
+   * `me` is who is looking, for `is_me` on each member row
+   * (MOBILE_GROUP_SELF_CHECK_IN):
+   * - undefined: nobody asked. No row gets the key; the party is exactly
+   *   what it was.
+   * - null: staff. Every row is false.
+   * - a customer id: true on that customer's own row only. A guest row has
+   *   no customer, so it is always false. At most one row is true, because
+   *   the create refuses an account twice in one party
+   *   (mobile-group-contract.ts).
    */
   private async present(
     group: NonNullable<Awaited<ReturnType<MobileGroupReadHandler['load']>>>,
     names: ReadonlyMap<number, string>,
-    _viewerId?: string,
+    me?: string | null,
   ): Promise<MobileGroupView> {
     const day = group.tradingDay.toISOString().slice(0, 10);
     const { index, staff } = await this.namesFor(group, day);
@@ -255,6 +271,11 @@ export class MobileGroupReadHandler {
           start_time: at(lane.startMinute),
           end_time: at(lane.startMinute + lane.durationMin),
           total: filsToAed(total),
+          // Last, and only when someone asked: with no viewer the row keeps
+          // exactly the keys it always had.
+          ...(me === undefined
+            ? {}
+            : { is_me: me !== null && p.customerId === me }),
         },
         lane,
         kind,
@@ -416,6 +437,8 @@ export interface MobileGroupView {
     readonly start_time: string;
     readonly end_time: string;
     readonly total: number;
+    /** + MOBILE_GROUP_SELF_CHECK_IN: this row is the viewer's own. */
+    readonly is_me?: boolean;
   }[];
   readonly amount_without_tax: number;
   readonly tax_amount: number;
