@@ -223,6 +223,13 @@ export class MobileGroupReadHandler {
    *   no customer, so it is always false. At most one row is true, because
    *   the create refuses an account twice in one party
    *   (mobile-group-contract.ts).
+   *
+   * With `is_me` comes `booking_id`: the LANE's booking id (not the
+   * participant id), so the member can call the single check-in route
+   * for their own lane. Every row has the key, one shape for all; it holds
+   * the id only on the `is_me` row and is null on the rest. Another
+   * member's lane id is not this viewer's business, and the single
+   * check-in route would answer 404 for it anyway (booking-scope.ts).
    */
   private async present(
     group: NonNullable<Awaited<ReturnType<MobileGroupReadHandler['load']>>>,
@@ -248,6 +255,8 @@ export class MobileGroupReadHandler {
           : p.customerId === group.organiserId
             ? 'self'
             : 'registered';
+      const isMe =
+        me === undefined ? undefined : me !== null && p.customerId === me;
       return {
         view: {
           ref: p.clientRef,
@@ -273,9 +282,9 @@ export class MobileGroupReadHandler {
           total: filsToAed(total),
           // Last, and only when someone asked: with no viewer the row keeps
           // exactly the keys it always had.
-          ...(me === undefined
+          ...(isMe === undefined
             ? {}
-            : { is_me: me !== null && p.customerId === me }),
+            : { is_me: isMe, booking_id: isMe ? lane.id : null }),
         },
         lane,
         kind,
@@ -439,6 +448,8 @@ export interface MobileGroupView {
     readonly total: number;
     /** + MOBILE_GROUP_SELF_CHECK_IN: this row is the viewer's own. */
     readonly is_me?: boolean;
+    /** + MOBILE_GROUP_SELF_CHECK_IN: the lane's booking id, on the is_me row only. */
+    readonly booking_id?: string | null;
   }[];
   readonly amount_without_tax: number;
   readonly tax_amount: number;

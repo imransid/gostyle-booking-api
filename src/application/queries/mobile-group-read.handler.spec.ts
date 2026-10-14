@@ -493,12 +493,13 @@ describe('MobileGroupReadHandler: who is looking (MOBILE_GROUP_SELF_CHECK_IN)', 
     }
   });
 
-  it('flag off, no viewer: no member row has an is_me key at all', async () => {
+  it('flag off, no viewer: no member row has an is_me or booking_id key at all', async () => {
     const h = harness();
     const read = await h.handler.read(GROUP, customer(RANA));
     const made = await h.handler.afterCreate(GROUP, new Map());
     for (const m of [...read.members, ...made.members]) {
       expect(m).not.toHaveProperty('is_me');
+      expect(m).not.toHaveProperty('booking_id');
     }
   });
 
@@ -514,12 +515,41 @@ describe('MobileGroupReadHandler: who is looking (MOBILE_GROUP_SELF_CHECK_IN)', 
     expect(rana.members.map((m) => m.is_me)).toEqual([false, true, false]);
   });
 
-  it('a guest row is always false', async () => {
+  it("booking_id: the viewer's own lane id on their row, null on every other", async () => {
+    const booker = await harness().handler.read(
+      GROUP,
+      customer(BOOKER),
+      BOOKER,
+    );
+    expect(booker.members.map((m) => m.booking_id)).toEqual([
+      'booking-0',
+      null,
+      null,
+    ]);
+
+    const rana = await harness().handler.read(GROUP, customer(RANA), RANA);
+    expect(rana.members.map((m) => m.booking_id)).toEqual([
+      null,
+      'booking-1',
+      null,
+    ]);
+  });
+
+  it('booking_id is the LANE booking id, never the participant id', async () => {
+    const v = await harness().handler.read(GROUP, customer(RANA), RANA);
+    const mine = v.members.find((m) => m.is_me === true)!;
+    expect(mine.id).toBe('part-1');
+    expect(mine.booking_id).toBe('booking-1');
+    expect(mine.booking_id).not.toBe(mine.id);
+  });
+
+  it('a guest row is always false, and its booking_id null', async () => {
     for (const id of [BOOKER, RANA]) {
       const v = await harness().handler.read(GROUP, customer(id), id);
       const guests = v.members.filter((m) => m.kind === 'guest');
       expect(guests).toHaveLength(1);
       expect(guests.map((m) => m.is_me)).toEqual([false]);
+      expect(guests.map((m) => m.booking_id)).toEqual([null]);
     }
   });
 
@@ -530,15 +560,17 @@ describe('MobileGroupReadHandler: who is looking (MOBILE_GROUP_SELF_CHECK_IN)', 
       BOOKER,
     );
     expect(v.members.map((m) => m.is_me)).toEqual([false, false, false]);
+    expect(v.members.map((m) => m.booking_id)).toEqual([null, null, null]);
   });
 
-  it('is_me goes last, after the keys the row always had', async () => {
+  it('is_me then booking_id go last, after the keys the row always had', async () => {
     const without = await harness().handler.read(GROUP, customer(RANA));
     const seen = await harness().handler.read(GROUP, customer(RANA), RANA);
     seen.members.forEach((m, i) => {
       expect(Object.keys(m)).toEqual([
         ...Object.keys(without.members[i]!),
         'is_me',
+        'booking_id',
       ]);
     });
   });
@@ -549,7 +581,7 @@ describe('MobileGroupReadHandler: who is looking (MOBILE_GROUP_SELF_CHECK_IN)', 
       const seen = await harness().handler.read(GROUP, customer(id), id);
       expect({
         ...seen,
-        members: seen.members.map(({ is_me: _, ...m }) => m),
+        members: seen.members.map(({ is_me: _, booking_id: __, ...m }) => m),
       }).toStrictEqual(without);
     }
   });
