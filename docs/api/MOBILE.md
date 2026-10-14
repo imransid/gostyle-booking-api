@@ -2280,6 +2280,7 @@ Environment:
 | `MOBILE_GROUP_BOOKING` | off | `true` turns the routes on. |
 | `MOBILE_GROUP_DEPOSIT_PERCENT` | `20` | The deposit, as a percent of the party total. The app's `deposit_percent` must match it. |
 | `PRODUCTS_FROM_PLATFORM` | off | As for a single booking: off, a party with products is refused with `products_not_supported`. |
+| `MOBILE_GROUP_SELF_CHECK_IN` | off | `true` adds `is_me` and `booking_id` to each member row of the party read, so a member can check in on their own lane. Off, the read is exactly what it was. See the read, below. |
 
 #### `POST /v1/mobile-booking/group`
 
@@ -2413,6 +2414,106 @@ The same shape as the create's answer, built from what was stored.
 Who may read it: the booker, anyone in the party, and staff of the salon
 (`branchId` on the token, or none for an owner). Anyone else, a malformed id,
 or a party the desk made is `404 not_found`, never `403`.
+
+**The caller's own row: `is_me` and `booking_id`.** Behind
+`MOBILE_GROUP_SELF_CHECK_IN=true`. With it off, neither key is there and the
+read is exactly what it was. With it on, BOTH keys are on EVERY member row,
+last, in this order, so the app never has to check whether a key exists:
+
+| Field | Type | Means |
+| --- | --- | --- |
+| `is_me` | boolean | `true` on the caller's own row, `false` on every other. A guest's row is always `false`. A staff caller gets `false` on every row: a staff token is never a member. |
+| `booking_id` | string or `null` | The booking id of the caller's own lane. It is the lane's BOOKING id, not the member's `id` (that is their `group_participant` row). Set only on the `is_me` row, `null` on every other row, so also `null` everywhere for a staff caller. |
+
+Only the caller's own lane id is given. Another member's lane id is not the
+caller's business, and the check-in route below would answer `404` for it
+anyway.
+
+Only this read carries the two keys. The create's answer, the cancel's answer
+and My Bookings never do, flag on or off.
+
+Rana, a registered member, reads the party from the create example above. Only
+`members` is shown; every other key is as before:
+
+```json
+"members": [
+  {
+    "ref": 0,
+    "id": "3f6b2a91-8c4d-4e7a-b5f1-0d2c9e8a7b63",
+    "booking_code": "GS-1046",
+    "user_id": "6fda7abd-1c2e-4f4a-9b1d-2a7c3e5f8a10",
+    "name": null,
+    "kind": "self",
+    "age_group": "adult",
+    "status": "CONFIRMED_BY_SALON",
+    "services": [{ "id": "haircut-finish", "name": "Haircut and finish", "amount": 160 }],
+    "products": [],
+    "stylist": { "id": "maya", "name": "Maya E." },
+    "start_time": "2026-11-03T15:00:00+06:00",
+    "end_time": "2026-11-03T15:45:00+06:00",
+    "total": 168,
+    "is_me": false,
+    "booking_id": null
+  },
+  {
+    "ref": 1,
+    "id": "7a2e5c18-4b9f-4d3a-8e6c-1f0b7d2a9c45",
+    "booking_code": "GS-1047",
+    "user_id": "9c41e2b7-5d3a-4e8f-a6c2-7b1d0e9f3a24",
+    "name": null,
+    "kind": "registered",
+    "age_group": "adult",
+    "status": "CONFIRMED_BY_SALON",
+    "services": [{ "id": "blow-dry", "name": "Blow dry", "amount": 140 }],
+    "products": [],
+    "stylist": { "id": "anya", "name": "Anya" },
+    "start_time": "2026-11-03T15:00:00+06:00",
+    "end_time": "2026-11-03T15:45:00+06:00",
+    "total": 147,
+    "is_me": true,
+    "booking_id": "c2d7a4e9-1b6f-4e3c-9a8d-5f0e2b7c4a16"
+  },
+  {
+    "ref": 5,
+    "id": "1190b99c-69c3-42c2-a228-dff017aad6ca",
+    "booking_code": "GS-1048",
+    "user_id": null,
+    "name": "Liam (8 yrs)",
+    "kind": "guest",
+    "age_group": "child",
+    "status": "CONFIRMED_BY_SALON",
+    "services": [{ "id": "haircut-finish", "name": "Haircut and finish", "amount": 80 }],
+    "products": [],
+    "stylist": { "id": "reem", "name": "Reem S." },
+    "start_time": "2026-11-03T15:00:00+06:00",
+    "end_time": "2026-11-03T15:45:00+06:00",
+    "total": 84,
+    "is_me": false,
+    "booking_id": null
+  }
+]
+```
+
+Rana's row is the one with `is_me: true`, and its `booking_id` is her lane
+(`GS-1047`), not her member `id`.
+
+**A member checks in on their own lane.** There is no party route for this.
+The member uses the single booking's check-in route, which already exists:
+
+1. Read the party: `GET /v1/mobile-booking/group/:groupId`.
+2. Find the row where `is_me` is `true`.
+3. Send its `booking_id` to `POST /v1/bookings/{booking_id}/check-in-request`,
+   and follow the answer with `GET /v1/bookings/{booking_id}/check-in-request`.
+
+To that route a party lane is an ordinary booking. It is not refused for being
+in a party. Any lane that is not the caller's is `404 No such booking`, a
+guest's lane included, so a guest is never checked in this way.
+
+That route has its own switch (`SELF_CHECK_IN_V1`) and its own rules: when
+check-in opens, the answers, Cancel Request. They are not repeated here; see
+[SELF_CHECK_IN_HANDOVER.md, "The first morning"](../SELF_CHECK_IN_HANDOVER.md#the-first-morning),
+[the read's answer](../SELF_CHECK_IN_HANDOVER.md#the-welcome-screen-for-the-app-team),
+and, for a chair scan, [chair-check-in.md, "1. The route"](../chair-check-in.md#1-the-route).
 
 #### `POST /v1/mobile-booking/group/:groupId/cancel`
 
