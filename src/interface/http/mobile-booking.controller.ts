@@ -62,6 +62,7 @@ import { MobileContractError } from '@application/commands/mobile-booking.error'
 import { MobileGroupReadHandler } from '@application/queries/mobile-group-read.handler';
 import { MOBILE_GROUP_BOOKING } from './mobile-group.flag';
 import { MOBILE_GROUP_CHECK_IN } from './mobile-group-check-in.flag';
+import { MOBILE_GROUP_LIVE_STATUS } from './mobile-group-live-status.flag';
 import { SELF_CHECK_IN_V1 } from './self-check-in.flag';
 import {
   CheckInAttributionHandler,
@@ -404,10 +405,18 @@ export class MobileBookingController {
     // Behind MOBILE_GROUP_BOOKING: a member of a mobile party is shown as
     // one GROUP row for the party. Off, the page is exactly what it was.
     const decorated: unknown = MOBILE_GROUP_BOOKING()
-      ? MOBILE_GROUP_CHECK_IN()
-        ? // is_booker on each GROUP row (MOBILE_GROUP_CHECK_IN).
-          this.groups.decorateList(shelfPage, actor.id ?? 'anonymous')
-        : this.groups.decorateList(shelfPage)
+      ? MOBILE_GROUP_LIVE_STATUS()
+        ? // The GROUP row's status follows any lane still confirmed
+          // (MOBILE_GROUP_LIVE_STATUS), with is_booker as below.
+          this.groups.decorateList(
+            shelfPage,
+            MOBILE_GROUP_CHECK_IN() ? (actor.id ?? 'anonymous') : undefined,
+            { liveStatus: true },
+          )
+        : MOBILE_GROUP_CHECK_IN()
+          ? // is_booker on each GROUP row (MOBILE_GROUP_CHECK_IN).
+            this.groups.decorateList(shelfPage, actor.id ?? 'anonymous')
+          : this.groups.decorateList(shelfPage)
       : shelfPage;
 
     // Behind MOBILE_SERIES_BOOKING (step 5): the Recurring tab lists this

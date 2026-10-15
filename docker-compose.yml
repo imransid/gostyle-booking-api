@@ -59,6 +59,12 @@ services:
       # single routes: 409 BOOKING_PARTY_LANE. Off: both routes as today.
       # Staff, desk parties and the booker's party cancel are never touched.
       MOBILE_GROUP_LANE_GUARD: ${MOBILE_GROUP_LANE_GUARD:-false}
+      # Each member's chair on the party read, from the lane's latest
+      # check-in request. Off: the read exactly as today.
+      MOBILE_GROUP_CHAIRS: ${MOBILE_GROUP_CHAIRS:-false}
+      # A party's status follows any lane still confirmed, not only the
+      # booker's. Off: the booker's lane, exactly as today.
+      MOBILE_GROUP_LIVE_STATUS: ${MOBILE_GROUP_LIVE_STATUS:-false}
       # Customer reminders (24h, 3h, 15m) by push and email. Off: claimed by
       # the ladder, never sent -- exactly today's behaviour.
       REMINDER_DELIVERY: ${REMINDER_DELIVERY:-false}

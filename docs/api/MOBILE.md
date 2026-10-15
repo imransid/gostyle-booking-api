@@ -2288,6 +2288,8 @@ Environment:
 | `PRODUCTS_FROM_PLATFORM` | off | As for a single booking: off, a party with products is refused with `products_not_supported`. |
 | `MOBILE_GROUP_SELF_CHECK_IN` | off | `true` adds `is_me` and `booking_id` to each member row of the party read, so a member can check in on their own lane. Off, the read is exactly what it was. See the read, below. |
 | `MOBILE_GROUP_LANE_GUARD` | off | `true` refuses a customer's single cancel or reschedule (`POST /v1/bookings/:id/cancel`, `/reschedule`) on one lane of an app party, the booker's own lane included: `409 BOOKING_PARTY_LANE`. The party is cancelled together on `.../cancel` above, which is not affected. Staff, desk party lanes and ordinary bookings are not affected either. |
+| `MOBILE_GROUP_CHAIRS` | off | `true` adds `chair` to every member row of the party read: the chair that lane's latest check-in request claimed, or `null`. Off, the read is exactly what it was. See the read, below. |
+| `MOBILE_GROUP_LIVE_STATUS` | off | `true`: the party's `status` and `status_detail` (the party read and the `GROUP` row of My Bookings) say confirmed while ANY lane is still confirmed, not only while the booker's is. Off, both follow the booker's lane. Money, the pass and `payment_status` always stay the booker's. |
 
 #### `POST /v1/mobile-booking/group`
 
@@ -2438,6 +2440,24 @@ anyway.
 
 Only this read carries the two keys. The create's answer, the cancel's answer
 and My Bookings never do, flag on or off.
+
+**Each member's chair: `chair`.** Behind `MOBILE_GROUP_CHAIRS=true`. With it
+off, the key is not there and the read is exactly what it was. With it on,
+`chair` is on EVERY member row, last (after `is_me` and `booking_id` when
+those are on):
+
+| Field | Type | Means |
+| --- | --- | --- |
+| `chair` | `{ "number": string, "zone_name": string or null }` or `null` | The chair claimed by that lane's LATEST check-in request (newest `raised_at`, then id), whatever that request's state. `null` when that request claimed no chair (Wait for Staff), or the lane has never asked. |
+
+Everyone who may read the party sees every member's chair, staff included.
+One query for the whole party. Only this read carries the key.
+
+**The party's status: `MOBILE_GROUP_LIVE_STATUS`.** Off, `status` and
+`status_detail` are the booker's lane's, so once the booker is checked in the
+party reads `CHECKED_IN`. On, they say confirmed (`CONFIRMED_BY_SALON`,
+`CONFIRMED`) while any lane is still confirmed, here and on the `GROUP` row
+of My Bookings alike. Every member row keeps its own `status`.
 
 Rana, a registered member, reads the party from the create example above. Only
 `members` is shown; every other key is as before:
