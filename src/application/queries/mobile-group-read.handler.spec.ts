@@ -786,3 +786,95 @@ describe("MobileGroupReadHandler: each member's chair (MOBILE_GROUP_CHAIRS)", ()
     expect(h.prisma.checkInRequest.findMany).not.toHaveBeenCalled();
   });
 });
+
+describe("MobileGroupReadHandler: the party's status (MOBILE_GROUP_LIVE_STATUS)", () => {
+  // The booker is checked in; Rana and the guest are still confirmed.
+  const BOOKER_IN = [
+    { ...LANES[0]!, status: 'checked_in' },
+    LANES[1]!,
+    LANES[2]!,
+  ];
+  const LANE_ROW = { id: 'bbbbbbbb-0000-4bbb-8bbb-000000000000' };
+  const listed = async (lanes: unknown[], liveStatus?: boolean) => {
+    const h = harness({
+      lanes,
+      laneGroups: [{ id: LANE_ROW.id, groupId: GROUP }],
+    });
+    const out = (await h.handler.decorateList(
+      { results: [LANE_ROW] },
+      undefined,
+      liveStatus === undefined ? undefined : { liveStatus },
+    )) as { results: { status: string }[] };
+    return out.results[0]!;
+  };
+
+  it('off: the booker checked in, the party reads checked in, as before', async () => {
+    const v = await harness({ lanes: BOOKER_IN }).handler.read(
+      GROUP,
+      customer(BOOKER),
+    );
+    expect([v.status, v.status_detail]).toEqual(['CHECKED_IN', 'CHECKED_IN']);
+    expect((await listed(BOOKER_IN)).status).toBe('CHECKED_IN');
+    expect((await listed(BOOKER_IN, false)).status).toBe('CHECKED_IN');
+  });
+
+  it('on: while any lane is still confirmed, the party read and the GROUP row say confirmed', async () => {
+    const v = await harness({ lanes: BOOKER_IN }).handler.read(
+      GROUP,
+      customer(BOOKER),
+      undefined,
+      { liveStatus: true },
+    );
+    expect([v.status, v.status_detail]).toEqual([
+      'CONFIRMED_BY_SALON',
+      'CONFIRMED',
+    ]);
+    expect((await listed(BOOKER_IN, true)).status).toBe('CONFIRMED_BY_SALON');
+  });
+
+  it('on: once no lane is confirmed, it is the booker again', async () => {
+    const allIn = LANES.map((l) => ({ ...l, status: 'checked_in' }));
+    const v = await harness({ lanes: allIn }).handler.read(
+      GROUP,
+      customer(BOOKER),
+      undefined,
+      { liveStatus: true },
+    );
+    expect(v.status).toBe('CHECKED_IN');
+    expect((await listed(allIn, true)).status).toBe('CHECKED_IN');
+  });
+
+  it('on: only the status moves; every member, the money and the pass stay as they were', async () => {
+    const off = await harness({ lanes: BOOKER_IN }).handler.read(
+      GROUP,
+      customer(BOOKER),
+    );
+    const on = await harness({ lanes: BOOKER_IN }).handler.read(
+      GROUP,
+      customer(BOOKER),
+      undefined,
+      { liveStatus: true },
+    );
+    expect(on.members.map((m) => m.status)).toEqual([
+      'CHECKED_IN',
+      'CONFIRMED_BY_SALON',
+      'CONFIRMED_BY_SALON',
+    ]);
+    expect({
+      ...on,
+      status: off.status,
+      status_detail: off.status_detail,
+    }).toStrictEqual(off);
+  });
+
+  it('on, a party all confirmed: nothing changes', async () => {
+    const off = await harness().handler.read(GROUP, customer(BOOKER));
+    const on = await harness().handler.read(
+      GROUP,
+      customer(BOOKER),
+      undefined,
+      { liveStatus: true },
+    );
+    expect(on).toStrictEqual(off);
+  });
+});

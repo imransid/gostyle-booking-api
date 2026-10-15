@@ -35,6 +35,7 @@ afterEach(() => {
   delete process.env.MOBILE_GROUP_SELF_CHECK_IN;
   delete process.env.MOBILE_GROUP_CHECK_IN;
   delete process.env.MOBILE_GROUP_CHAIRS;
+  delete process.env.MOBILE_GROUP_LIVE_STATUS;
 });
 
 describe('The party read and who is looking', () => {
@@ -60,7 +61,7 @@ describe('The party read and who is looking', () => {
   });
 });
 
-describe('The party read and the chairs', () => {
+describe('The party read, the chairs and the live status', () => {
   it('both off: called exactly as before, with no extras', async () => {
     const { c, reads } = controller();
     await c.read(GROUP, actor);
@@ -73,6 +74,26 @@ describe('The party read and the chairs', () => {
     expect(await c.read(GROUP, actor)).toBe(PARTY);
     expect(reads.read.mock.calls).toEqual([
       [GROUP, WHO, undefined, { chairs: true }],
+    ]);
+  });
+
+  it('MOBILE_GROUP_LIVE_STATUS on: the live status is asked for, and nothing else', async () => {
+    process.env.MOBILE_GROUP_LIVE_STATUS = 'true';
+    const { c, reads } = controller();
+    await c.read(GROUP, actor);
+    expect(reads.read.mock.calls).toEqual([
+      [GROUP, WHO, undefined, { liveStatus: true }],
+    ]);
+  });
+
+  it('all three on: the viewer and both extras', async () => {
+    process.env.MOBILE_GROUP_SELF_CHECK_IN = 'true';
+    process.env.MOBILE_GROUP_CHAIRS = 'true';
+    process.env.MOBILE_GROUP_LIVE_STATUS = 'true';
+    const { c, reads } = controller();
+    await c.read(GROUP, actor);
+    expect(reads.read.mock.calls).toEqual([
+      [GROUP, WHO, 'cus_1', { chairs: true, liveStatus: true }],
     ]);
   });
 });

@@ -66,3 +66,38 @@ describe('My Bookings and mobile parties', () => {
     }
   });
 });
+
+describe('My Bookings, the GROUP row and MOBILE_GROUP_LIVE_STATUS', () => {
+  afterEach(() => {
+    delete process.env.MOBILE_GROUP_CHECK_IN;
+    delete process.env.MOBILE_GROUP_LIVE_STATUS;
+  });
+
+  it('on: the live status is asked for; no caller without MOBILE_GROUP_CHECK_IN', async () => {
+    process.env.MOBILE_GROUP_BOOKING = 'true';
+    process.env.MOBILE_GROUP_LIVE_STATUS = 'true';
+    const { c, groups } = controller();
+    expect(await c.list(actor, 'upcoming')).toBe(DECORATED);
+    expect(groups.decorateList.mock.calls).toEqual([
+      [PAGE, undefined, { liveStatus: true }],
+    ]);
+  });
+
+  it('on, with MOBILE_GROUP_CHECK_IN: the caller too, for is_booker', async () => {
+    process.env.MOBILE_GROUP_BOOKING = 'true';
+    process.env.MOBILE_GROUP_CHECK_IN = 'true';
+    process.env.MOBILE_GROUP_LIVE_STATUS = 'true';
+    const { c, groups } = controller();
+    await c.list(actor, 'upcoming');
+    expect(groups.decorateList.mock.calls).toEqual([
+      [PAGE, 'cus_1', { liveStatus: true }],
+    ]);
+  });
+
+  it('on without MOBILE_GROUP_BOOKING: the page is untouched, as before', async () => {
+    process.env.MOBILE_GROUP_LIVE_STATUS = 'true';
+    const { c, groups } = controller();
+    expect(await c.list(actor, 'upcoming')).toBe(PAGE);
+    expect(groups.decorateList).not.toHaveBeenCalled();
+  });
+});

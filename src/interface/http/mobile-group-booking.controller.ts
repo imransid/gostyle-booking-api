@@ -54,6 +54,7 @@ import {
 } from './mobile-group.flag';
 import { MOBILE_GROUP_SELF_CHECK_IN } from './mobile-group-self-check-in.flag';
 import { MOBILE_GROUP_CHAIRS } from './mobile-group-chairs.flag';
+import { MOBILE_GROUP_LIVE_STATUS } from './mobile-group-live-status.flag';
 
 export class MobileGroupMemberDto {
   @ApiProperty({ example: 0, description: "The app's own index. Echoed back." })
@@ -301,10 +302,12 @@ export class MobileGroupBookingController {
     const viewer = MOBILE_GROUP_SELF_CHECK_IN()
       ? (actor.id ?? 'anonymous')
       : undefined;
-    // The same for the chairs (MOBILE_GROUP_CHAIRS): asked for only when
-    // on, so with it off the read is called exactly as before.
+    // The same for the chairs (MOBILE_GROUP_CHAIRS) and the live status
+    // (MOBILE_GROUP_LIVE_STATUS): asked for only when on, so with both off
+    // the read is called exactly as before.
     const extras: PartyExtras = {
       ...(MOBILE_GROUP_CHAIRS() ? { chairs: true } : {}),
+      ...(MOBILE_GROUP_LIVE_STATUS() ? { liveStatus: true } : {}),
     };
     if (Object.keys(extras).length > 0) {
       return this.reads.read(groupId, who, viewer, extras);

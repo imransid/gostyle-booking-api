@@ -41,6 +41,8 @@ export interface GroupReader {
 export interface PartyExtras {
   /** MOBILE_GROUP_CHAIRS: `chair` on every member row. */
   readonly chairs?: boolean;
+  /** MOBILE_GROUP_LIVE_STATUS: the status follows any lane still confirmed. */
+  readonly liveStatus?: boolean;
 }
 
 /** The chair a lane's latest check-in request claimed, as the desk reads it. */
@@ -60,7 +62,9 @@ export interface MemberChair {
  * WHAT THE PARTY IS, when its lanes could disagree: the booker's own lane.
  * Paying and cancelling act on every lane together, so they only disagree
  * when the desk has changed one lane by hand; the booker's lane is then the
- * one the app's customer is actually holding.
+ * one the app's customer is actually holding. One exception, behind
+ * MOBILE_GROUP_LIVE_STATUS: the STATUS follows any lane still confirmed
+ * (`present`), because checking in moves one lane at a time.
  *
  * Names of accounts are not here. This service stores a guest's name and no
  * one else's; gostyle-customer-api owns the accounts and fills `name` in
@@ -85,7 +89,7 @@ export class MobileGroupReadHandler {
    *
    * `viewerId` only when the caller asked (MOBILE_GROUP_SELF_CHECK_IN):
    * without it, the party is exactly what it was. The same for `extras`
-   * (MOBILE_GROUP_CHAIRS).
+   * (MOBILE_GROUP_CHAIRS, MOBILE_GROUP_LIVE_STATUS).
    */
   async read(
     groupId: string,
@@ -110,12 +114,10 @@ export class MobileGroupReadHandler {
       extras.chairs === true
         ? await this.chairsOf(group.members.map((m) => m.lane.id))
         : undefined;
-    return this.present(
-      group,
-      new Map(),
-      me,
-      chairs !== undefined ? { chairs } : {},
-    );
+    return this.present(group, new Map(), me, {
+      ...(chairs !== undefined ? { chairs } : {}),
+      liveStatus: extras.liveStatus === true,
+    });
   }
 
   /**
@@ -142,9 +144,14 @@ export class MobileGroupReadHandler {
    *
    * The GROUP row has the same keys as any row, plus `member_count`: `id` is
    * the group's (what GET /v1/mobile-booking/group/:groupId takes), and the
-   * money is the party's.
+   * money is the party's. Its `status` is the party's, by the same rule as
+   * the party read (`extras.liveStatus`, MOBILE_GROUP_LIVE_STATUS).
    */
-  async decorateList(page: unknown, viewerId?: string): Promise<unknown> {
+  async decorateList(
+    page: unknown,
+    viewerId?: string,
+    extras: Pick<PartyExtras, 'liveStatus'> = {},
+  ): Promise<unknown> {
     if (typeof page !== 'object' || page === null) return page;
     const results = (page as { results?: unknown }).results;
     if (!Array.isArray(results)) return page;
@@ -165,7 +172,12 @@ export class MobileGroupReadHandler {
     for (const groupId of new Set(lanes.map((l) => l.groupId!))) {
       const group = await this.load(groupId);
       if (group !== null) {
-        views.set(groupId, await this.present(group, new Map()));
+        views.set(
+          groupId,
+          await this.present(group, new Map(), undefined, {
+            liveStatus: extras.liveStatus === true,
+          }),
+        );
         organisers.set(groupId, group.organiserId);
       }
     }
@@ -300,6 +312,8 @@ export class MobileGroupReadHandler {
    * `extras.chairs`, when given (MOBILE_GROUP_CHAIRS), puts `chair` on EVERY
    * row, last: that lane's chair, or null. Anyone who may read the party
    * sees every member's chair. Not given, no row has the key.
+   *
+   * `extras.liveStatus` (MOBILE_GROUP_LIVE_STATUS): see `face` below.
    */
   private async present(
     group: NonNullable<Awaited<ReturnType<MobileGroupReadHandler['load']>>>,
@@ -307,6 +321,7 @@ export class MobileGroupReadHandler {
     me?: string | null,
     extras: {
       readonly chairs?: ReadonlyMap<string, MemberChair | null>;
+      readonly liveStatus?: boolean;
     } = {},
   ): Promise<MobileGroupView> {
     const { chairs } = extras;
@@ -375,6 +390,18 @@ export class MobileGroupReadHandler {
       members.find((m) => m.kind === 'self')?.lane ?? members[0]?.lane;
     if (booker === undefined) throw MobileContractError.notFoundBooking();
 
+    // THE PARTY'S STATUS. The booker's lane, as the class comment says, so
+    // once the booker is checked in the party reads checked in, and the app
+    // takes We are here away from everyone still waiting. With
+    // MOBILE_GROUP_LIVE_STATUS the party is still confirmed while ANY lane
+    // is: the first confirmed lane, in member order, gives the status and
+    // its detail word. Nothing else moves: money, pass and payment status
+    // stay the booker's.
+    const face =
+      extras.liveStatus === true && booker.status !== 'confirmed'
+        ? (members.find((m) => m.lane.status === 'confirmed')?.lane ?? booker)
+        : booker;
+
     const sum = (xs: readonly number[]): number =>
       xs.reduce((a, b) => a + b, 0);
     const captures = members.flatMap((m) =>
@@ -391,8 +418,8 @@ export class MobileGroupReadHandler {
       id: group.id,
       salon_id: index.toSlug(group.branchId),
       booking_type: 'GROUP',
-      status: toMobileStatus(booker.status),
-      status_detail: booker.status.toUpperCase(),
+      status: toMobileStatus(face.status),
+      status_detail: face.status.toUpperCase(),
       payment_status: toMobilePaymentStatus(booker.paymentStatus),
       payment_status_detail: booker.paymentStatus.toUpperCase(),
       date: day,
