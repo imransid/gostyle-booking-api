@@ -119,9 +119,46 @@ function harness(
     rosterFails?: boolean;
     /** The My Bookings lookup: which page rows are party lanes. */
     laneGroups?: { id: string; groupId: string }[];
+    /** check_in_request rows, in the order they were written. */
+    requests?: Req[];
   } = {},
 ) {
   const prisma = {
+    // Honours only what was asked: the lane filter, the order (raised_at
+    // then id, both descending) and the columns. Without an orderBy the rows
+    // come back oldest first, as written, so a read that forgot to ask for
+    // the latest gets the wrong one.
+    checkInRequest: {
+      findMany: vi.fn(
+        (args: {
+          where: { bookingId: { in: string[] } };
+          orderBy?: unknown;
+          select: Record<string, boolean>;
+        }) => {
+          const rows = (over.requests ?? []).filter((r) =>
+            args.where.bookingId.in.includes(r.bookingId),
+          );
+          const ordered =
+            args.orderBy === undefined
+              ? rows
+              : [...rows].sort(
+                  (a, b) =>
+                    b.raisedAt.getTime() - a.raisedAt.getTime() ||
+                    b.id.localeCompare(a.id),
+                );
+          return Promise.resolve(
+            ordered.map((r) =>
+              Object.fromEntries(
+                Object.keys(args.select).map((k) => [
+                  k,
+                  (r as unknown as Record<string, unknown>)[k],
+                ]),
+              ),
+            ),
+          );
+        },
+      ),
+    },
     bookingGroup: {
       findUnique: vi.fn(() =>
         Promise.resolve(over.group === undefined ? group() : over.group),
@@ -163,6 +200,30 @@ const customer = (id: string): GroupReader => ({
   actorId: id,
   actorKind: 'customer',
   actorBranchId: null,
+});
+
+/** One check_in_request row, as Prisma names its columns. */
+interface Req {
+  readonly id: string;
+  readonly bookingId: string;
+  readonly raisedAt: Date;
+  readonly chairId: string | null;
+  readonly chairNumber: string | null;
+  readonly chairZoneName: string | null;
+}
+
+const req = (
+  id: string,
+  bookingId: string,
+  minute: number,
+  chair: { id: string; number: string | null; zone: string | null } | null,
+): Req => ({
+  id,
+  bookingId,
+  raisedAt: new Date(Date.UTC(2026, 9, 11, 8, minute)),
+  chairId: chair?.id ?? null,
+  chairNumber: chair?.number ?? null,
+  chairZoneName: chair?.zone ?? null,
 });
 
 async function notFound(p: Promise<unknown>): Promise<void> {
@@ -584,5 +645,144 @@ describe('MobileGroupReadHandler: who is looking (MOBILE_GROUP_SELF_CHECK_IN)', 
         members: seen.members.map(({ is_me: _, booking_id: __, ...m }) => m),
       }).toStrictEqual(without);
     }
+  });
+});
+
+describe("MobileGroupReadHandler: each member's chair (MOBILE_GROUP_CHAIRS)", () => {
+  const CHAIR_8 = { id: 'chair-8', number: '8', zone: 'Window section' };
+  const CHAIR_5 = { id: 'chair-5', number: '5', zone: null };
+  const CHAIR_3 = { id: 'chair-3', number: '3', zone: 'Back' };
+  // The booker scanned chair 5, then chair 8 (the latest). Rana scanned
+  // chair 3, then asked again with no chair (Wait for Staff). The guest's
+  // lane never raised. Written oldest first.
+  const REQUESTS = [
+    req('req-1', 'booking-0', 1, CHAIR_5),
+    req('req-2', 'booking-1', 2, CHAIR_3),
+    req('req-3', 'booking-0', 3, CHAIR_8),
+    req('req-4', 'booking-1', 4, null),
+  ];
+  const MEMBER_KEYS = [
+    'ref',
+    'id',
+    'booking_code',
+    'user_id',
+    'name',
+    'kind',
+    'age_group',
+    'status',
+    'services',
+    'products',
+    'stylist',
+    'start_time',
+    'end_time',
+    'total',
+  ];
+
+  it('off: every member row is exactly what it was, key for key, and no request is read', async () => {
+    const h = harness({ requests: REQUESTS });
+    for (const v of [
+      await h.handler.read(GROUP, customer(RANA)),
+      await h.handler.read(GROUP, customer(RANA), undefined, {}),
+      await h.handler.read(GROUP, customer(RANA), undefined, {
+        chairs: false,
+      }),
+    ]) {
+      for (const m of v.members) expect(Object.keys(m)).toEqual(MEMBER_KEYS);
+    }
+    expect(h.prisma.checkInRequest.findMany).not.toHaveBeenCalled();
+  });
+
+  it("on: every row carries its lane's chair from the LATEST request, null when that request had none or there is none", async () => {
+    const h = harness({ requests: REQUESTS });
+    const v = await h.handler.read(GROUP, customer(RANA), undefined, {
+      chairs: true,
+    });
+    expect(v.members.map((m) => m.chair)).toEqual([
+      { number: '8', zone_name: 'Window section' },
+      null,
+      null,
+    ]);
+  });
+
+  it('one query for the whole party, every lane at once, newest first', async () => {
+    const h = harness({ requests: REQUESTS });
+    await h.handler.read(GROUP, customer(RANA), undefined, { chairs: true });
+    expect(h.prisma.checkInRequest.findMany).toHaveBeenCalledTimes(1);
+    expect(h.prisma.checkInRequest.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { bookingId: { in: ['booking-0', 'booking-1', 'booking-2'] } },
+        orderBy: [{ raisedAt: 'desc' }, { id: 'desc' }],
+      }),
+    );
+  });
+
+  it('a chair with no id is no chair, as the single check-in read has it', async () => {
+    const h = harness({
+      requests: [
+        req('req-9', 'booking-1', 9, { id: '', number: '4', zone: null }),
+      ].map((r) => ({ ...r, chairId: null })),
+    });
+    const v = await h.handler.read(GROUP, customer(RANA), undefined, {
+      chairs: true,
+    });
+    expect(v.members.map((m) => m.chair)).toEqual([null, null, null]);
+  });
+
+  it('anyone who may read the party sees every chair: the booker, a member, staff', async () => {
+    const seen = [];
+    for (const who of [
+      customer(BOOKER),
+      customer(RANA),
+      { actorId: STRANGER, actorKind: 'staff', actorBranchId: null },
+    ]) {
+      const v = await harness({ requests: REQUESTS }).handler.read(
+        GROUP,
+        who,
+        undefined,
+        { chairs: true },
+      );
+      seen.push(v.members.map((m) => m.chair));
+    }
+    expect(seen[1]).toEqual(seen[0]);
+    expect(seen[2]).toEqual(seen[0]);
+  });
+
+  it('chair goes last, after is_me and booking_id, and changes nothing else', async () => {
+    const without = await harness({ requests: REQUESTS }).handler.read(
+      GROUP,
+      customer(RANA),
+      RANA,
+    );
+    const seen = await harness({ requests: REQUESTS }).handler.read(
+      GROUP,
+      customer(RANA),
+      RANA,
+      { chairs: true },
+    );
+    seen.members.forEach((m, i) => {
+      expect(Object.keys(m)).toEqual([
+        ...Object.keys(without.members[i]!),
+        'chair',
+      ]);
+    });
+    expect({
+      ...seen,
+      members: seen.members.map(({ chair: _, ...m }) => m),
+    }).toStrictEqual(without);
+  });
+
+  it('the create and My Bookings never read a chair (the cancel reads with no extras, as the off test)', async () => {
+    const h = harness({
+      requests: REQUESTS,
+      laneGroups: [
+        { id: 'bbbbbbbb-0000-4bbb-8bbb-000000000000', groupId: GROUP },
+      ],
+    });
+    const made = await h.handler.afterCreate(GROUP, new Map());
+    for (const m of made.members) expect(m).not.toHaveProperty('chair');
+    await h.handler.decorateList({
+      results: [{ id: 'bbbbbbbb-0000-4bbb-8bbb-000000000000' }],
+    });
+    expect(h.prisma.checkInRequest.findMany).not.toHaveBeenCalled();
   });
 });

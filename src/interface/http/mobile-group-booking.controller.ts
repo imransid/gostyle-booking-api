@@ -38,6 +38,7 @@ import { MobileGroupCancelHandler } from '@application/commands/mobile-group-can
 import {
   MobileGroupReadHandler,
   type MobileGroupView,
+  type PartyExtras,
 } from '@application/queries/mobile-group-read.handler';
 import { CurrentActor } from '../../auth/actor.decorator';
 import type { Actor } from '../../auth/actor';
@@ -52,6 +53,7 @@ import {
   groupDepositPercent,
 } from './mobile-group.flag';
 import { MOBILE_GROUP_SELF_CHECK_IN } from './mobile-group-self-check-in.flag';
+import { MOBILE_GROUP_CHAIRS } from './mobile-group-chairs.flag';
 
 export class MobileGroupMemberDto {
   @ApiProperty({ example: 0, description: "The app's own index. Echoed back." })
@@ -296,9 +298,20 @@ export class MobileGroupBookingController {
     };
     // The caller is passed only when MOBILE_GROUP_SELF_CHECK_IN is on: off,
     // the party is exactly what it was.
-    return MOBILE_GROUP_SELF_CHECK_IN()
-      ? this.reads.read(groupId, who, actor.id ?? 'anonymous')
-      : this.reads.read(groupId, who);
+    const viewer = MOBILE_GROUP_SELF_CHECK_IN()
+      ? (actor.id ?? 'anonymous')
+      : undefined;
+    // The same for the chairs (MOBILE_GROUP_CHAIRS): asked for only when
+    // on, so with it off the read is called exactly as before.
+    const extras: PartyExtras = {
+      ...(MOBILE_GROUP_CHAIRS() ? { chairs: true } : {}),
+    };
+    if (Object.keys(extras).length > 0) {
+      return this.reads.read(groupId, who, viewer, extras);
+    }
+    return viewer === undefined
+      ? this.reads.read(groupId, who)
+      : this.reads.read(groupId, who, viewer);
   }
 
   @Post(':groupId/cancel')

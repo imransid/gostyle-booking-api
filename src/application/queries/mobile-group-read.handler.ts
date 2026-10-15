@@ -35,6 +35,21 @@ export interface GroupReader {
 }
 
 /**
+ * What the route's switches add to a party, asked for by the controller
+ * (which reads them); absent or false, the party is exactly what it was.
+ */
+export interface PartyExtras {
+  /** MOBILE_GROUP_CHAIRS: `chair` on every member row. */
+  readonly chairs?: boolean;
+}
+
+/** The chair a lane's latest check-in request claimed, as the desk reads it. */
+export interface MemberChair {
+  readonly number: string;
+  readonly zone_name: string | null;
+}
+
+/**
  * A mobile party, read back as ONE booking (docs/APP_GROUP_BOOKING_SPEC.md §6).
  *
  * Built only from what was stored: the lanes' own rows, their items, their
@@ -69,12 +84,14 @@ export class MobileGroupReadHandler {
    * the parties the app made and no others.
    *
    * `viewerId` only when the caller asked (MOBILE_GROUP_SELF_CHECK_IN):
-   * without it, the party is exactly what it was.
+   * without it, the party is exactly what it was. The same for `extras`
+   * (MOBILE_GROUP_CHAIRS).
    */
   async read(
     groupId: string,
     who: GroupReader,
     viewerId?: string,
+    extras: PartyExtras = {},
   ): Promise<MobileGroupView> {
     const group = await this.load(groupId);
     if (group === null || !this.visible(group, who)) {
@@ -89,7 +106,16 @@ export class MobileGroupReadHandler {
         : who.actorKind === 'customer'
           ? toUuid(viewerId)
           : null;
-    return this.present(group, new Map(), me);
+    const chairs =
+      extras.chairs === true
+        ? await this.chairsOf(group.members.map((m) => m.lane.id))
+        : undefined;
+    return this.present(
+      group,
+      new Map(),
+      me,
+      chairs !== undefined ? { chairs } : {},
+    );
   }
 
   /**
@@ -192,6 +218,46 @@ export class MobileGroupReadHandler {
     };
   }
 
+  /**
+   * Each lane's chair (MOBILE_GROUP_CHAIRS): the one its LATEST check-in
+   * request claimed, latest as everywhere else (raised_at, then id, both
+   * descending: CheckInRequestRepository.latestFor). Null when that request
+   * claimed no chair; a lane with no request at all is simply absent.
+   *
+   * ONE QUERY FOR THE WHOLE PARTY, on check_in_request_booking_idx: every
+   * request of every lane, newest first, and the first seen per lane wins.
+   * A party is a handful of lanes with a handful of requests each.
+   *
+   * A chair needs its id and its number, as viewOf (the single check-in
+   * read) has it, so the two reads can never show one request two ways.
+   */
+  private async chairsOf(
+    laneIds: readonly string[],
+  ): Promise<ReadonlyMap<string, MemberChair | null>> {
+    const chairs = new Map<string, MemberChair | null>();
+    if (laneIds.length === 0) return chairs;
+    const requests = await this.prisma.checkInRequest.findMany({
+      where: { bookingId: { in: [...laneIds] } },
+      orderBy: [{ raisedAt: 'desc' }, { id: 'desc' }],
+      select: {
+        bookingId: true,
+        chairId: true,
+        chairNumber: true,
+        chairZoneName: true,
+      },
+    });
+    for (const r of requests) {
+      if (chairs.has(r.bookingId)) continue;
+      chairs.set(
+        r.bookingId,
+        r.chairId === null || r.chairNumber === null
+          ? null
+          : { number: r.chairNumber, zone_name: r.chairZoneName },
+      );
+    }
+    return chairs;
+  }
+
   /** The organiser, anyone in the party, or staff of the salon (D3). */
   private visible(
     group: {
@@ -230,12 +296,20 @@ export class MobileGroupReadHandler {
    * the id only on the `is_me` row and is null on the rest. Another
    * member's lane id is not this viewer's business, and the single
    * check-in route would answer 404 for it anyway (booking-scope.ts).
+   *
+   * `extras.chairs`, when given (MOBILE_GROUP_CHAIRS), puts `chair` on EVERY
+   * row, last: that lane's chair, or null. Anyone who may read the party
+   * sees every member's chair. Not given, no row has the key.
    */
   private async present(
     group: NonNullable<Awaited<ReturnType<MobileGroupReadHandler['load']>>>,
     names: ReadonlyMap<number, string>,
     me?: string | null,
+    extras: {
+      readonly chairs?: ReadonlyMap<string, MemberChair | null>;
+    } = {},
   ): Promise<MobileGroupView> {
+    const { chairs } = extras;
     const day = group.tradingDay.toISOString().slice(0, 10);
     const { index, staff } = await this.namesFor(group, day);
 
@@ -285,6 +359,9 @@ export class MobileGroupReadHandler {
           ...(isMe === undefined
             ? {}
             : { is_me: isMe, booking_id: isMe ? lane.id : null }),
+          ...(chairs === undefined
+            ? {}
+            : { chair: chairs.get(lane.id) ?? null }),
         },
         lane,
         kind,
@@ -450,6 +527,8 @@ export interface MobileGroupView {
     readonly is_me?: boolean;
     /** + MOBILE_GROUP_SELF_CHECK_IN: the lane's booking id, on the is_me row only. */
     readonly booking_id?: string | null;
+    /** + MOBILE_GROUP_CHAIRS: the lane's chair, from its latest request; null when none. */
+    readonly chair?: MemberChair | null;
   }[];
   readonly amount_without_tax: number;
   readonly tax_amount: number;

@@ -34,6 +34,7 @@ function controller() {
 afterEach(() => {
   delete process.env.MOBILE_GROUP_SELF_CHECK_IN;
   delete process.env.MOBILE_GROUP_CHECK_IN;
+  delete process.env.MOBILE_GROUP_CHAIRS;
 });
 
 describe('The party read and who is looking', () => {
@@ -56,5 +57,22 @@ describe('The party read and who is looking', () => {
     const { c, reads } = controller();
     await c.read(GROUP, actor);
     expect(reads.read.mock.calls[0]).toHaveLength(2);
+  });
+});
+
+describe('The party read and the chairs', () => {
+  it('both off: called exactly as before, with no extras', async () => {
+    const { c, reads } = controller();
+    await c.read(GROUP, actor);
+    expect(reads.read.mock.calls).toEqual([[GROUP, WHO]]);
+  });
+
+  it('MOBILE_GROUP_CHAIRS on: the chairs are asked for, and nothing else', async () => {
+    process.env.MOBILE_GROUP_CHAIRS = 'true';
+    const { c, reads } = controller();
+    expect(await c.read(GROUP, actor)).toBe(PARTY);
+    expect(reads.read.mock.calls).toEqual([
+      [GROUP, WHO, undefined, { chairs: true }],
+    ]);
   });
 });
