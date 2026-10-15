@@ -41,6 +41,11 @@ import { LifecycleRepository } from '@infrastructure/persistence/lifecycle.repos
 import { toUuid } from '@infrastructure/persistence/hold.repository';
 import { clockFor, mayActOn } from '@domain/booking/customer-ownership';
 import type { CheckInVia } from '@domain/booking/check-in-attribution';
+import { bookingError } from '@application/contract/errors';
+import { MOBILE_GROUP_LANE_GUARD } from './mobile-group-lane-guard.flag';
+
+/** What refuseIfNotTheirs read: null for staff, who are never looked up. */
+type Looked = Awaited<ReturnType<LifecycleRepository['timingFor']>>;
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -195,9 +200,11 @@ export class LifecycleController {
    * 404, NEVER 403, and the same sentence the handler gives for a booking
    * that does not exist: "not yours" must not confirm that the id is real.
    * See domain/booking/customer-ownership.ts.
+   *
+   * Hands back what it read, so refuseIfPartyLane needs no second query.
    */
-  private async refuseIfNotTheirs(id: string, actor: Actor): Promise<void> {
-    if (actor.kind !== 'customer') return;
+  private async refuseIfNotTheirs(id: string, actor: Actor): Promise<Looked> {
+    if (actor.kind !== 'customer') return null;
     const owner = UUID_RE.test(id) ? await this.bookings.timingFor(id) : null;
     if (
       !mayActOn({
@@ -207,6 +214,40 @@ export class LifecycleController {
       })
     ) {
       throw new NotFoundException('No such booking');
+    }
+    return owner;
+  }
+
+  /**
+   * A customer does not cancel or move one lane of an APP party on its own
+   * (MOBILE_GROUP_LANE_GUARD, off by default). A party is cancelled together,
+   * by the booker, on POST /v1/mobile-booking/group/:id/cancel. The booker's
+   * own lane is refused here too.
+   *
+   * HERE, NOT IN LifecycleHandler. The party cancel calls the handler once
+   * per lane, as a customer, and never comes through this controller, so
+   * this check cannot stop it. In the handler it would.
+   *
+   * AFTER refuseIfNotTheirs, never before: a stranger gets that 404 and
+   * never learns the id is a party lane.
+   *
+   * ONLY AN APP PARTY (source 'mobile'). A desk party's lane is an ordinary
+   * booking in the customer's list, with no party route to fall back on, and
+   * they have always cancelled it from the app.
+   */
+  private refuseIfPartyLane(booking: Looked, actor: Actor): void {
+    if (actor.kind !== 'customer' || !MOBILE_GROUP_LANE_GUARD()) return;
+    if (
+      booking !== null &&
+      booking.groupId !== null &&
+      booking.groupSource === 'mobile'
+    ) {
+      throw bookingError(
+        'BOOKING_PARTY_LANE',
+        'This booking is part of a party. A party is cancelled together, ' +
+          'by the person who booked it, and cannot be moved one member at ' +
+          'a time.',
+      );
     }
   }
 
@@ -223,13 +264,18 @@ export class LifecycleController {
   @ApiGoneResponse({
     description: 'The new slot went while they were deciding.',
   })
-  @ApiConflictResponse({ description: 'This booking cannot be moved.' })
+  @ApiConflictResponse({
+    description:
+      'This booking cannot be moved. BOOKING_PARTY_LANE: a customer may not ' +
+      'move one lane of an app party (MOBILE_GROUP_LANE_GUARD).',
+  })
   async reschedule(
     @Param('id') id: string,
     @Body() dto: RescheduleDto,
     @CurrentActor() actor: Actor,
   ): Promise<RescheduleView> {
-    await this.refuseIfNotTheirs(id, actor);
+    const booking = await this.refuseIfNotTheirs(id, actor);
+    this.refuseIfPartyLane(booking, actor);
     const nowMs = clockFor(actor.kind, dto.nowMs);
     return this.reschedules.execute({
       bookingId: id,
@@ -298,6 +344,11 @@ export class LifecycleController {
       'in the same transaction.',
   })
   @ApiForbiddenResponse({ description: 'This actor may not cancel.' })
+  @ApiConflictResponse({
+    description:
+      'BOOKING_PARTY_LANE: a customer may not cancel one lane of an app ' +
+      'party; the booker cancels the party (MOBILE_GROUP_LANE_GUARD).',
+  })
   cancel(
     @Param('id') id: string,
     @Body() dto: LifecycleDto,
@@ -329,7 +380,9 @@ export class LifecycleController {
     /** On check-in only: how. Never read from the body. */
     checkInVia?: CheckInVia,
   ): Promise<LifecycleView> {
-    await this.refuseIfNotTheirs(id, actor);
+    const booking = await this.refuseIfNotTheirs(id, actor);
+    // Cancel only: start, complete, settle, no-show and check-in never ask.
+    if (to === 'cancelled') this.refuseIfPartyLane(booking, actor);
     const nowMs = clockFor(actor.kind, dto.nowMs);
     return this.handler.execute({
       bookingId: id,

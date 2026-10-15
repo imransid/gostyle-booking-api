@@ -1905,6 +1905,8 @@ Call the visit off. Legal from PENDING_PAYMENT, CONFIRMED and CHECKED_IN. The mo
 
 **Auth** — authenticated, with a role rule that depends on the CURRENT status: customer, staff and manager may all cancel from PENDING_PAYMENT or CONFIRMED; only staff and manager may cancel from CHECKED_IN.
 
+**Party lanes** (`MOBILE_GROUP_LANE_GUARD`, off by default): with it on, a customer cannot cancel one lane of an app party (`booking_group.source = 'mobile'`), the booker's own lane included: `409 BOOKING_PARTY_LANE`. The booker cancels the whole party with [`POST /v1/mobile-booking/group/:groupId/cancel`](#post-v1mobile-bookinggroupgroupidcancel). A desk party's lane is not affected: the customer cancels it as an ordinary booking. Staff and manager are never refused. Checked after ownership, so a booking that is not the caller's is still `404`.
+
 **Request (body)**
 
 | Field | Type | Required | Rules |
@@ -1944,6 +1946,7 @@ LifecycleView WITH the money block, never the receipt. { code: string; bookingId
 | `403` | A customer may not cancel. | A customer token on a CHECKED_IN booking -- checked_in->cancelled allows staff and manager only. From pending_payment or confirmed a customer IS allowed, so there is no 403 there. |
 | `404` | No such booking | Malformed :id (fails UUID_RE at lifecycle.handler.ts:106) or no booking row under FOR UPDATE. |
 | `409` | A ${from} booking cannot become cancelled. | Legal froms are pending_payment, confirmed and checked_in ONLY. All eleven verbatim strings: "A draft booking cannot become cancelled.", "A held booking cannot become cancelled.", "A pending... |
+| `409` | This booking is part of a party. A party is cancelled together, by the person who booked it, and cannot be moved one member at a time. | Code `BOOKING_PARTY_LANE`, only with `MOBILE_GROUP_LANE_GUARD=true`: a customer token on a lane of an app party. Body `{ "statusCode": 409, "code": "BOOKING_PARTY_LANE", "message": "...", "error": "Conflict" }`. Never for staff, never for a desk party's lane. |
 | `422` | Choose a reason | reason is absent, null, empty, or whitespace only. All three cancel transitions have requiresReason: true and checkTransition() tests `(input.reason ?? '').trim() === ''`. |
 | `500` | Internal server error | Non-system actor with a null actor id -> CHECK bsh_system_has_no_actor rejects the deposit_ledger / booking_status_history inserts and the whole transaction rolls back. |
 | `500` | Internal server error | Any other unmapped DB failure inside the transaction. Logged at ERROR by LifecycleRepository.transition() before rethrow. |
@@ -2012,6 +2015,8 @@ Move the booking to a slot that is already held. The booking MOVES (same row, sa
 
 **Auth** — authenticated (any actor kind). CONFIRMED AGAIN BY READING RescheduleRepository.move(): unlike the six lifecycle routes, this one performs NO actor check at all -- checkTransition() is never called on this path and `input.actor` is only ever written into the a...
 
+**Party lanes** (`MOBILE_GROUP_LANE_GUARD`, off by default): with it on, a customer cannot move one lane of an app party (`booking_group.source = 'mobile'`), the booker's own lane included: `409 BOOKING_PARTY_LANE`, refused before the hold is looked at. A party is never moved one member at a time, and there is no route to move a whole party. A desk party's lane is not affected: the customer moves it as an ordinary booking. Staff and manager are never refused. Checked after ownership, so a booking that is not the caller's is still `404`.
+
 **Request (body)**
 
 | Field | Type | Required | Rules |
@@ -2044,6 +2049,7 @@ RescheduleView (src/application/commands/reschedule.handler.ts:27). Exactly nine
 | `401` | Staff authentication unavailable | Server-side misconfiguration: JWT_ACCESS_SECRET is unset or empty. Also logged at ERROR ('JWT_ACCESS_SECRET is not set'). |
 | `404` | No such booking | Three distinct causes, one message. (a) :id does not match UUID_RE at reschedule.handler.ts:50 -- a malformed id is deliberately a 404, not the Postgres 22P02 500 it would otherwise be. |
 | `409` | A ${status} booking cannot be moved. | The booking's CURRENT status (read under FOR UPDATE) is not in MOVABLE = { confirmed, pending_payment, pending_confirmation } (reschedule.repository.ts:75). |
+| `409` | This booking is part of a party. A party is cancelled together, by the person who booked it, and cannot be moved one member at a time. | Code `BOOKING_PARTY_LANE`, only with `MOBILE_GROUP_LANE_GUARD=true`: a customer token on a lane of an app party. Same body as on cancel. Never for staff, never for a desk party's lane. |
 | `410` | That slot went while you were deciding. The original booking is untouched, and offers have refreshed. | No live staff_reservation joined to that hold_id with h.expires_at > now(). Covers all of: the hold's TTL lapsed, the holdId is a well-formed UUID that never existed, the hold has no staff r... |
 | `500` | Internal server error | `day` is a well-formed string but not a parseable YYYY-MM-DD. branchInstant() (hold.repository.ts:43) does `tradingDay.split('-').map(Number)` -> NaN -> Date.UTC(NaN,...) -> Invalid Date, an... |
 | `500` | Internal server error | A non-system actor whose token carries no `sub` claim: actor.id is undefined -> actorId null -> the CHECK bsh_system_has_no_actor `((actor_kind = 'system') = (actor_id IS NULL))` fails on th. |
@@ -2281,6 +2287,7 @@ Environment:
 | `MOBILE_GROUP_DEPOSIT_PERCENT` | `20` | The deposit, as a percent of the party total. The app's `deposit_percent` must match it. |
 | `PRODUCTS_FROM_PLATFORM` | off | As for a single booking: off, a party with products is refused with `products_not_supported`. |
 | `MOBILE_GROUP_SELF_CHECK_IN` | off | `true` adds `is_me` and `booking_id` to each member row of the party read, so a member can check in on their own lane. Off, the read is exactly what it was. See the read, below. |
+| `MOBILE_GROUP_LANE_GUARD` | off | `true` refuses a customer's single cancel or reschedule (`POST /v1/bookings/:id/cancel`, `/reschedule`) on one lane of an app party, the booker's own lane included: `409 BOOKING_PARTY_LANE`. The party is cancelled together on `.../cancel` above, which is not affected. Staff, desk party lanes and ordinary bookings are not affected either. |
 
 #### `POST /v1/mobile-booking/group`
 

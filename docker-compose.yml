@@ -55,6 +55,10 @@ services:
       # Changing it re-reads stored bookings at a new offset: the boot log
       # says so loudly (BranchClockCheck) if they disagree.
       BRANCH_TIMEZONE: ${BRANCH_TIMEZONE:-Asia/Dhaka}
+      # A customer may not cancel or move one lane of an app party on the
+      # single routes: 409 BOOKING_PARTY_LANE. Off: both routes as today.
+      # Staff, desk parties and the booker's party cancel are never touched.
+      MOBILE_GROUP_LANE_GUARD: ${MOBILE_GROUP_LANE_GUARD:-false}
       # Customer reminders (24h, 3h, 15m) by push and email. Off: claimed by
       # the ladder, never sent -- exactly today's behaviour.
       REMINDER_DELIVERY: ${REMINDER_DELIVERY:-false}

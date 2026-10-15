@@ -191,21 +191,40 @@ export class LifecycleRepository {
    * because both gates compare against NOW, and a minute-of-day cannot tell
    * today's 16:45 from Sunday's -- which is exactly how a booking two days
    * out was checked in and a no-show was taken six hours early.
+   *
+   * Also the party this booking is a lane of, and where that party was made
+   * (`booking_group.source`, 'mobile' for the app), for the lifecycle
+   * controller's party check (MOBILE_GROUP_LANE_GUARD). The same query: a
+   * LEFT JOIN on the group's primary key, so a booking with no group, or a
+   * group_id with no row behind it, comes back as before with both null.
    */
   async timingFor(bookingId: string): Promise<{
     startAtMs: number;
     customerId: string;
+    groupId: string | null;
+    groupSource: string | null;
   } | null> {
     const rows = await this.prisma.$queryRaw<
-      { start_at: Date; customer_id: string }[]
+      {
+        start_at: Date;
+        customer_id: string;
+        group_id: string | null;
+        group_source: string | null;
+      }[]
     >`
-      SELECT b.start_at, b.customer_id
+      SELECT b.start_at, b.customer_id, b.group_id, g.source AS group_source
         FROM booking b
+        LEFT JOIN booking_group g ON g.id = b.group_id
        WHERE b.id = ${bookingId}::uuid`;
     const row = rows[0];
     return row === undefined
       ? null
-      : { startAtMs: row.start_at.getTime(), customerId: row.customer_id };
+      : {
+          startAtMs: row.start_at.getTime(),
+          customerId: row.customer_id,
+          groupId: row.group_id,
+          groupSource: row.group_source,
+        };
   }
 
   async transition(input: TransitionInput): Promise<TransitionOutcome> {
