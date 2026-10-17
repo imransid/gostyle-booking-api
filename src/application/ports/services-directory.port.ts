@@ -26,7 +26,18 @@ export interface ServicesDirectoryReader {
     branchId: string,
     categoryId?: string,
   ): Promise<CatalogueService[]>;
+
+  listPackages(tenantId: string, branchId: string): Promise<CataloguePackage[]>;
 }
 
 /** Nest injection token. An interface has no runtime identity, so this does. */
 export const SERVICES_DIRECTORY = Symbol('SERVICES_DIRECTORY');
+
+export interface CataloguePackage {
+  readonly id: string;
+  readonly name: string;
+  readonly priceMinor: number;
+  readonly currency: string;
+  /** One entry per service in the package. quantity can be more than 1. */
+  readonly items: readonly { serviceId: string; quantity: number }[];
+}
