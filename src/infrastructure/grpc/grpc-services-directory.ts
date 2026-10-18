@@ -15,6 +15,7 @@ import { platformGrpcAddress } from './staff-grpc.constants';
 import type {
   ServicesDirectoryReader,
   CatalogueService,
+  CataloguePackage,
 } from '@application/ports/services-directory.port';
 import { SERVICES_DIRECTORY_CLIENT } from './services-grpc.constants';
 
@@ -41,6 +42,14 @@ interface ServiceWire {
   included_steps?: string[];
 }
 
+interface PackageWire {
+  package_id?: string;
+  name?: string;
+  price_minor?: number;
+  currency?: string;
+  items?: { service_id?: string; quantity?: number }[];
+}
+
 /** The generated client surface. Nest lowercases the first letter of each rpc. */
 interface ServicesDirectoryGrpc {
   listServices(
@@ -52,6 +61,12 @@ interface ServicesDirectoryGrpc {
     metadata?: Metadata,
     options?: GrpcCallOptions,
   ): Observable<{ services?: ServiceWire[] }>;
+
+  listPackages(
+    data: { tenant_id: string; branch_id: string },
+    metadata?: Metadata,
+    options?: GrpcCallOptions,
+  ): Observable<{ packages?: PackageWire[] }>;
 }
 
 /** Milliseconds. gRPC sets NO default deadline, so an unanswered call
@@ -129,6 +144,52 @@ export class GrpcServicesDirectory
         throw bookingError(
           'DEPENDENCY_UNAVAILABLE',
           'The service catalogue is unavailable, so this booking cannot be ' +
+            'priced. Nothing was charged. Try again shortly.',
+          {
+            dependency: 'platform-api ServicesDirectory',
+            address: platformGrpcAddress(),
+            grpcStatus: grpcStatusName(err),
+          },
+        );
+      }
+      throw err;
+    }
+  }
+
+  async listPackages(
+    tenantId: string,
+    branchId: string,
+  ): Promise<CataloguePackage[]> {
+    try {
+      const res = await callWithRetry(
+        this.logger,
+        `listPackages tenant=${tenantId} branch=${branchId}`,
+        CALL_TIMEOUT_MS,
+        (md, opts) =>
+          this.svc.listPackages(
+            { tenant_id: tenantId, branch_id: branchId },
+            md,
+            opts,
+          ),
+      );
+      return (res.packages ?? []).map((p) => ({
+        id: p.package_id ?? '',
+        name: p.name ?? '',
+        priceMinor: p.price_minor ?? 0,
+        currency: p.currency ?? '',
+        items: (p.items ?? []).map((i) => ({
+          serviceId: i.service_id ?? '',
+          quantity: i.quantity ?? 1,
+        })),
+      }));
+    } catch (err) {
+      this.logger.error(
+        `listPackages failed for tenant ${tenantId}: ${describeGrpcFailure(err)}`,
+      );
+      if (isTransportFailure(err)) {
+        throw bookingError(
+          'DEPENDENCY_UNAVAILABLE',
+          'The package catalogue is unavailable, so this booking cannot be ' +
             'priced. Nothing was charged. Try again shortly.',
           {
             dependency: 'platform-api ServicesDirectory',

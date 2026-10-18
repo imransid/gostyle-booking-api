@@ -8,6 +8,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
 import { createHash } from 'node:crypto';
 import {
   BOOKING_CONTEXT,
@@ -47,7 +48,6 @@ import { Money } from '@domain/shared/money';
 import { priceOfService, sourceOf } from '@domain/booking/service-resolution';
 import { formatMinute } from '@domain/availability/grid';
 import { resolveSelection } from '@domain/booking/package';
-import { PACKAGES } from '@infrastructure/fixtures/fixture-booking-context';
 
 export interface ConfirmBookingCommand {
   readonly holdId: string;
@@ -108,6 +108,7 @@ export class ConfirmBookingHandler {
     private readonly prisma: PrismaService,
     @Inject(CUSTOMER_CONTEXT)
     private readonly customers: CustomerContextReader,
+    private readonly packageCatalogue: PlatformPackageCatalogue,
   ) {}
 
   async execute(cmd: ConfirmBookingCommand): Promise<BookingView> {
@@ -141,7 +142,8 @@ export class ConfirmBookingHandler {
     // already sells, and everything below this line sees a plain selection:
     // same chain, same skills, same buffers, same chair demand. What survives
     // is one line in the quote.
-    const selection = resolveSelection(cmd.serviceIds, PACKAGES, priceOf);
+    const packages = await this.packageCatalogue.forBranch(cmd.branchId);
+    const selection = resolveSelection(cmd.serviceIds, packages, priceOf);
 
     const services = await this.context.loadServices(
       cmd.branchId,

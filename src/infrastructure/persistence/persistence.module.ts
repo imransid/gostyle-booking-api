@@ -66,6 +66,8 @@ import { BranchClockCheck } from '../tenancy/branch-clock.check';
 import { PUSH_SENDER } from '@application/ports/push-sender.port';
 import { EMAIL_SENDER } from '@application/ports/email-sender.port';
 
+import { PlatformPackageCatalogue } from './platform-package-catalogue';
+
 /**
  * Global on purpose. One connection pool per process, shared by every module
  * that needs it. Importing PersistenceModule in five places would still give
@@ -212,6 +214,7 @@ import { EMAIL_SENDER } from '@application/ports/email-sender.port';
     FixtureBookingContext,
     StylistRepository,
     PlatformProductCatalogue,
+    PlatformPackageCatalogue,
   ],
   exports: [
     TenantContext,
@@ -258,6 +261,7 @@ import { EMAIL_SENDER } from '@application/ports/email-sender.port';
     PUSH_SENDER,
     EMAIL_SENDER,
     ConsumerDirectoryGrpcModule,
+    PlatformPackageCatalogue,
   ],
 })
 export class PersistenceModule {}

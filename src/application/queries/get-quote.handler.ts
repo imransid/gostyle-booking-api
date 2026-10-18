@@ -18,7 +18,7 @@ import { linkWindow } from '@domain/booking/payment-link';
 import { branchInstant } from '@infrastructure/persistence/hold.repository';
 import { Money } from '@domain/shared/money';
 import { resolveSelection } from '@domain/booking/package';
-import { PACKAGES } from '@infrastructure/fixtures/fixture-booking-context';
+import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
 import { priceOf } from '@application/commands/confirm-booking.handler';
 import { priceOfService } from '@domain/booking/service-resolution';
 import {
@@ -140,13 +140,15 @@ export class GetQuoteHandler {
     @Inject(BOOKING_CONTEXT) private readonly context: BookingContextReader,
     @Inject(CUSTOMER_CONTEXT)
     private readonly customers: CustomerContextReader,
+    private readonly packageCatalogue: PlatformPackageCatalogue,
   ) {}
 
   async execute(q: QuoteQuery): Promise<QuoteView> {
     // Packages expand into real services here, exactly as they do at hold and
     // confirm: §15.4's "never a special case in the engine" holds for the
     // quote too, or the figure quoted would not be the figure charged.
-    const selection = resolveSelection(q.serviceIds, PACKAGES, priceOf);
+    const packages = await this.packageCatalogue.forBranch(q.branchId);
+    const selection = resolveSelection(q.serviceIds, packages, priceOf);
 
     const services = await this.context.loadServices(
       q.branchId,

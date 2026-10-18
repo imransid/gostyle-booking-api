@@ -8,6 +8,8 @@ import type {
 import type { Service } from '@domain/availability/feasible';
 import type { CustomerContext } from '@application/ports/customer-context.port';
 
+import { PACKAGES } from '@infrastructure/fixtures/fixture-booking-context';
+
 /**
  * HANDLER SPEC — the PRODUCTS PASS-THROUGH, and nothing else it touches.
  *
@@ -112,6 +114,7 @@ function handlerWith(
     bookings as never,
     prisma as never,
     customers,
+    { forBranch: () => Promise.resolve(PACKAGES) } as never,
   );
 
   /** What persistence was asked to write. */
