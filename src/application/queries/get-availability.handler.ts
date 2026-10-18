@@ -25,7 +25,7 @@ import {
 import type { ChairOccupation } from '@domain/availability/capacity';
 import type { StaffBooking } from '@domain/availability/staff-mask';
 import { resolveSelection } from '@domain/booking/package';
-import { priceOf } from '@application/commands/confirm-booking.handler';
+import { priceLookupFor } from '@application/commands/confirm-booking.handler';
 import {
   branchNowMinute,
   branchToday,
@@ -156,7 +156,13 @@ export class GetAvailabilityHandler {
     // availability for a package is availability for its parts. There is no
     // package branch in the engine and there never should be.
     const packages = await this.packageCatalogue.forBranch(query.branchId);
-    const selection = resolveSelection(query.serviceIds, packages, priceOf);
+    const priceFor = await priceLookupFor(
+      this.context,
+      query.branchId,
+      query.serviceIds,
+      packages,
+    );
+    const selection = resolveSelection(query.serviceIds, packages, priceFor);
 
     const services = await this.context.loadServices(
       query.branchId,

@@ -23,7 +23,7 @@ import {
 import { toWireNearestOption } from '@application/contract/wire';
 import { resolveSelection } from '@domain/booking/package';
 import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
-import { priceOf } from './confirm-booking.handler';
+import { priceLookupFor } from './confirm-booking.handler';
 import {
   feasibleSet,
   staffAvailableAt,
@@ -119,7 +119,13 @@ export class WalkInHandler {
     // Packages expand HERE, once, so the queue stores what will actually be
     // performed and every later quote sees plain services.
     const packages = await this.packageCatalogue.forBranch(cmd.branchId);
-    const selection = resolveSelection(cmd.serviceIds, packages, priceOf);
+    const priceFor = await priceLookupFor(
+      this.context,
+      cmd.branchId,
+      cmd.serviceIds,
+      packages,
+    );
+    const selection = resolveSelection(cmd.serviceIds, packages, priceFor);
 
     const services = await this.context.loadServices(
       cmd.branchId,
