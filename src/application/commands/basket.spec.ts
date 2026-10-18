@@ -155,6 +155,67 @@ describe('a basket holding a package', () => {
 });
 
 describe('a package in another currency', () => {
+  /** A catalogue that answers each id with its own currency, as platform does. */
+  const priced = (
+    rows: Record<string, { currency: string; priceFils: number }>,
+  ): BookingContextReader => ({
+    ...contextSpy(),
+    loadServices: (b, ids) =>
+      fixture
+        .loadServices(b, ids)
+        .then((found) => found.map((s) => ({ ...s, ...rows[s.id] }))),
+  });
+
+  it('beside a hand-picked service in another currency, is refused', async () => {
+    // The two loads (what was asked for, then the parts) each pass a
+    // one-currency check on their own; the basket is what must not mix.
+    const groom: ServicePackage = {
+      id: 'aed-pack',
+      name: 'AED pack',
+      serviceIds: ['blow-dry'],
+      priceFils: 10_000,
+      currency: 'AED',
+    };
+    const context = priced({
+      'blow-dry': { currency: 'AED', priceFils: 14_000 },
+      keratin: { currency: 'BDT', priceFils: 500_000 },
+    });
+    for (const ids of [
+      ['aed-pack', 'keratin'],
+      ['keratin', 'aed-pack'],
+    ]) {
+      await expect(
+        resolveBasket(
+          context,
+          packagesFrom([groom]).source,
+          'marina-walk',
+          ids,
+        ),
+      ).rejects.toMatchObject({ code: 'BOOKING_CURRENCY_MIXED' });
+    }
+  });
+
+  it('beside a service in its own currency, is sold', async () => {
+    const pack: ServicePackage = {
+      id: 'aed-pack',
+      name: 'AED pack',
+      serviceIds: ['blow-dry'],
+      priceFils: 10_000,
+      currency: 'AED',
+    };
+    const context = priced({
+      'blow-dry': { currency: 'AED', priceFils: 14_000 },
+      'fringe-trim': { currency: 'AED', priceFils: 6_000 },
+    });
+    const b = await resolveBasket(
+      context,
+      packagesFrom([pack]).source,
+      'marina-walk',
+      ['aed-pack', 'fringe-trim'],
+    );
+    expect(b.totalFils).toBe(16_000);
+  });
+
   it('is refused, as a basket mixing two currencies is', async () => {
     const taka: ServicePackage = {
       id: 'taka-pack',
