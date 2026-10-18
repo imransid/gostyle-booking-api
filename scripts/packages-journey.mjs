@@ -245,7 +245,14 @@ const stored = walkInId
   : '';
 check('stored: the queue keeps the package itself', stored === 'colour-and-finish', `service_ids = {${stored}}`);
 
-const queue = await call(DEMO_API, DEMO_DESK, 'GET', `/walk-ins?tradingDay=${DAY}`);
+// As if it were 10:00: the queue is for today, and late in the evening a
+// 170-minute package has no start left before closing.
+const queue = await call(
+  DEMO_API,
+  DEMO_DESK,
+  'GET',
+  `/walk-ins?tradingDay=${DAY}&nowMin=600`,
+);
 const qrow = queue.body?.rows?.find((r) => r.id === walkInId);
 const option = qrow?.options?.find((o) => o.startMin >= 720) ?? qrow?.options?.[0];
 check(
@@ -331,10 +338,18 @@ const gconfirm = ghold.body?.holdId
 const lanePrice = ghold.body?.groupId
   ? sql(`SELECT string_agg(price_fils::text, ',' ORDER BY start_minute, price_fils DESC) FROM booking WHERE group_id = '${ghold.body.groupId}'`)
   : '';
+const laneLines = ghold.body?.groupId
+  ? sql(`SELECT b.price_fils, count(i.id), sum(i.price_fils), count(i.package_id), min(i.package_name), min(i.package_seq)
+       FROM booking b JOIN booking_item i ON i.booking_id = b.id
+      WHERE b.group_id = '${ghold.body.groupId}' AND b.price_fils = 56000
+      GROUP BY b.id, b.price_fils`)
+  : '';
 check(
-  "group confirm: the member's lane is the package's price",
-  gconfirm.status === 201 && lanePrice.split(',').includes('56000'),
-  `status ${gconfirm.status}, lane prices ${lanePrice}`,
+  "group confirm: the member's lane is the package's price, one line per part, each carrying it",
+  gconfirm.status === 201 &&
+    lanePrice.split(',').includes('56000') &&
+    laneLines === '56000|2|56000|2|Colour and finish|0',
+  `status ${gconfirm.status}, lane prices ${lanePrice}; price|lines|sum|with package|name|sale = ${laneLines}`,
 );
 
 const ghold2 = await call(DEMO_API, DEMO_DESK, 'POST', '/groups/holds', {
@@ -458,7 +473,56 @@ check(
 );
 
 // ------------------------------------------------------------------ the app
-section("F. The app's price check (a desk token stands in for a customer's)");
+section("F. The app: price check, create, and the deposit payment (a desk token stands in for a customer's)");
+
+// The real branch, so the deposit ladder runs on a platform-priced package.
+const appDay = '2026-11-24';
+const appStart = `${appDay}T11:00:00+06:00`;
+const aq = await call(REAL_API, REAL_DESK, 'POST', '/mobile-booking/quote', {
+  salon_id: REAL_BRANCH,
+  date: appDay,
+  start_time: appStart,
+  services: [{ id: GROOM }],
+});
+const acreate =
+  aq.status === 200
+    ? await call(REAL_API, REAL_DESK, 'POST', '/mobile-booking', {
+        salon_id: REAL_BRANCH,
+        services: aq.body.services,
+        stylists: ['maya'],
+        date: appDay,
+        start_time: appStart,
+        end_time: aq.body.end_time,
+        amount_without_tax: aq.body.amount_without_tax,
+        tax_amount: aq.body.tax_amount,
+        discount: aq.body.discount,
+        total: aq.body.total,
+        advance_paid_amount: 0,
+        due_amount: aq.body.due_amount,
+        payment_status: 'DRAFT',
+        status: 'BOOKED',
+        booking_type: 'SINGLE',
+      })
+    : { status: 0, body: {} };
+check(
+  'app create from the quote: accepted, the package named on the 201',
+  acreate.status === 201 && acreate.body.packages?.[0]?.name === 'Groom and Go',
+  `quote ${aq.status} (deposit ${aq.body?.deposit_amount}), create ${acreate.status}${acreate.status !== 201 ? ` ${JSON.stringify(acreate.body).slice(0, 240)}` : ''}`,
+);
+const apatch = acreate.body?.id
+  ? await call(REAL_API, REAL_DESK, 'PATCH', `/mobile-booking/${acreate.body.id}`, {
+      payment_status: 'PARTIALLY',
+      payment_method: 'CARD',
+      advance_paid_amount: aq.body.deposit_amount,
+      payment_reference: `journey-${Date.now()}`,
+    })
+  : { status: 0, body: {} };
+check(
+  "the app pays the deposit the quote asked for, and it is accepted (it was refused as below the parts' deposit)",
+  apatch.status === 200,
+  `PATCH PARTIALLY ${aq.body?.deposit_amount}: status ${apatch.status}${apatch.status !== 200 ? ` ${JSON.stringify(apatch.body).slice(0, 240)}` : ''}`,
+);
+
 
 const mq = await call(DEMO_API, DEMO_DESK, 'POST', '/mobile-booking/quote', {
   salon_id: 'marina-walk',
@@ -482,7 +546,10 @@ if (mq.status === 401 || mq.status === 403) {
 // ----------------------------------------------------------------- the till
 // Optional (TILL=1): check-in opens 30 minutes before the start, so this one
 // books TODAY at the demo salon's next free start and takes it to the till.
+// A short package (TILL_PACKAGE, default hands-and-feet) so it still fits
+// late in the day.
 if (process.env.TILL === '1') {
+  const TILL_PACKAGE = process.env.TILL_PACKAGE ?? 'hands-and-feet';
   section('G. The till: what the register actually charges for the package');
   const zone = { timeZone: 'Asia/Dhaka' };
   const today = new Date().toLocaleDateString('en-CA', zone);
@@ -497,7 +564,7 @@ if (process.env.TILL === '1') {
     const r = await call(DEMO_API, DEMO_DESK, 'POST', '/holds', {
       branch: 'marina-walk',
       day: today,
-      services: ['colour-and-finish'],
+      services: [TILL_PACKAGE],
       startMin: at,
       customerId: 'dana',
     });
@@ -506,7 +573,7 @@ if (process.env.TILL === '1') {
   const tq = held
     ? await call(DEMO_API, DEMO_DESK, 'POST', '/bookings/quote', {
         day: today,
-        serviceIds: ['colour-and-finish'],
+        serviceIds: [TILL_PACKAGE],
         customerId: 'dana',
         channel: 'DESK',
         startMin: held.at,
@@ -517,7 +584,7 @@ if (process.env.TILL === '1') {
         holdId: held.holdId,
         branch: 'marina-walk',
         day: today,
-        services: ['colour-and-finish'],
+        services: [TILL_PACKAGE],
         customerId: 'dana',
         channel: 'desk',
         ...((tq.body.depositMinor ?? 0) > 0
@@ -533,15 +600,15 @@ if (process.env.TILL === '1') {
     settled = await call(DEMO_API, DEMO_DESK, 'POST', `/bookings/${tc.body.bookingId}/settle`, {});
   }
   const r = settled.body?.receipt;
+  const aed = (minor) => `AED ${((minor ?? -1) / 100).toFixed(2)}`;
   check(
     "settle: the receipt is the package's price, and the balance is what confirm said was due",
-    r?.base === 'AED 560.00' &&
-      r?.vat === 'AED 28.00' &&
+    r?.base === aed(tq.body.subtotalMinor) &&
+      r?.vat === aed(tq.body.vatMinor) &&
       settled.body?.to === 'SETTLED' &&
-      r?.due ===
-        `AED ${((tc.body.dueAtCheckoutMinor ?? -1) / 100).toFixed(2)}`,
+      r?.due === aed(tc.body.dueAtCheckoutMinor),
     r
-      ? `base ${r.base}, VAT ${r.vat}, deposit applied ${r.depositApplied}, due ${r.due} (confirm said ${tc.body.dueAtCheckoutMinor})`
+      ? `${TILL_PACKAGE}: base ${r.base} (quoted ${tq.body.subtotalMinor}), VAT ${r.vat}, deposit applied ${r.depositApplied}, due ${r.due} (confirm said ${tc.body.dueAtCheckoutMinor})`
       : `no receipt: hold ${held ? 'ok' : 'none free'}, confirm ${tc.status}`,
   );
 }
