@@ -104,6 +104,9 @@ import { FloorGrpcModule } from './infrastructure/grpc/floor-grpc.module';
 import { ServicesDirectoryController } from '@interface/http/services-directory.controller';
 import { ListServicesHandler } from '@application/queries/list-services.handler';
 
+import { MobilePackagesController } from '@interface/http/mobile-packages.controller';
+import { MobilePackagesHandler } from '@application/queries/mobile-packages.handler';
+
 @Module({
   // For the health endpoint's customer auth rail. AuthModule exports the
   // service; nothing here verifies a token -- the guard is global.
@@ -130,6 +133,7 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     // The /v1/bookings literals come first: BookingsController carries
     // @Get(':id'), which swallows every literal at that depth. Asserted by
     // route-order.spec.ts, not left to memory.
+    MobilePackagesController,
     ServicesDirectoryController,
     SettingsController,
     ReadModelsController,
@@ -166,6 +170,7 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     ReceptionCheckInController,
   ],
   providers: [
+    MobilePackagesHandler,
     BookingScope,
     CheckInRequestHandler,
     CheckInAttributionHandler,
