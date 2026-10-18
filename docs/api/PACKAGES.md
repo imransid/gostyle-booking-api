@@ -49,6 +49,16 @@ are platform services), `SKILLS_UNVERIFIED=true`, `PLATFORM_GRPC_ADDR` (prod:
 token's). A slug branch such as `marina-walk` is the fixture's demo salon and
 always sells the three demo packages; a real (uuid) branch never does.
 
+**Deploy order: the platform first.** booking-api sells a package only when
+the platform marks it `from_published_snapshot` (ListPackages from the
+published snapshot, with each item's `variant_id` — platform branch
+`feat/list-packages-snapshot`). An older platform either has no ListPackages
+(every branch then sells no packages, logged at ERROR) or serves the draft
+row without the marker (every package is skipped, logged at ERROR). Neither
+can sell a draft price or a variant package short, so deploying in the wrong
+order sells nothing rather than the wrong thing — but nothing is sold until
+the platform is released.
+
 A package is left out of every list, and refused if asked for, when it: is
 not published, has online booking off, is not sold at that branch, has a part
 the branch does not offer, is priced at 0, is priced in a different currency
@@ -57,7 +67,11 @@ from its parts (`BOOKING_CURRENCY_MIXED`), or **pins a service variant**
 
 Only a basket that actually holds an id the catalogue does not know as a
 service asks the platform for packages, so a platform outage stops package
-bookings and nothing else. Lists are cached per branch for a minute.
+bookings and nothing else. Lists are cached per branch for a minute (at most
+500 branches). A package with a part priced at nothing, or priced in another
+currency from its parts, is left out of the lists and refused if asked for;
+a basket mixing currencies is refused (`BOOKING_CURRENCY_MIXED`), package or
+not. The same package twice is two sales, each read back at its own price.
 
 ## The desk (web)
 
