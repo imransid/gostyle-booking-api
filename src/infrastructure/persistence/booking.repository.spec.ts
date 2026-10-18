@@ -170,6 +170,7 @@ const ITEM = {
   durationMin: 45,
   staffId: 'maya',
   source: 'platform' as const,
+  package: null,
 };
 
 const OIL = 'cccccccc-3333-4ccc-8ccc-cccccccccccc';
@@ -332,6 +333,55 @@ describe('confirm() with products', () => {
     await repository.confirm(input({ products }));
 
     for (const row of productRows(of)) expect(row.bookingId).toBe('booking-1');
+  });
+});
+
+describe('confirm() records the package a line was sold in', () => {
+  const itemData = (of: (m: string) => Call[], n: number) =>
+    (
+      of('bookingItem.create')[n]!.args[0] as {
+        data: { packageId: string | null; packageName: string | null };
+      }
+    ).data;
+
+  it('writes neither for a hand-picked service', async () => {
+    const { repository, of } = repositoryWith();
+    await repository.confirm(input());
+    expect(itemData(of, 0)).toMatchObject({
+      packageId: null,
+      packageName: null,
+    });
+  });
+
+  it('writes the id and the name as sold on every part', async () => {
+    const PKG = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1';
+    const pkg = { id: PKG, name: 'Groom and Go' };
+    const { repository, of } = repositoryWith();
+    await repository.confirm(
+      input({
+        items: [
+          { ...ITEM, package: pkg },
+          { ...ITEM, serviceId: 'blow-dry', package: pkg },
+        ],
+      }),
+    );
+    expect(itemData(of, 0)).toMatchObject({
+      packageId: PKG,
+      packageName: 'Groom and Go',
+    });
+    expect(itemData(of, 1)).toMatchObject({ packageId: PKG });
+  });
+
+  it('folds a fixture package slug like a service slug (CLAUDE.md 8)', async () => {
+    const { repository, of } = repositoryWith();
+    await repository.confirm(
+      input({
+        items: [
+          { ...ITEM, package: { id: 'colour-and-finish', name: 'Colour' } },
+        ],
+      }),
+    );
+    expect(itemData(of, 0).packageId).toBe(toUuid('colour-and-finish'));
   });
 });
 

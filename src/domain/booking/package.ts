@@ -183,3 +183,54 @@ export function resolveSelection(
     savingFils: saving.fils,
   };
 }
+
+/** A package as a booking holds it: read back from the lines it was sold in. */
+export interface SoldPackage {
+  readonly packageId: string;
+  readonly name: string;
+  /** Its parts' prices added up: what the package was sold for, net of VAT. */
+  readonly priceFils: number;
+  /** The parts, in the order they are performed. */
+  readonly serviceIds: readonly string[];
+}
+
+/**
+ * Which packages a booking holds, from its lines.
+ *
+ * DERIVED, NEVER STORED TWICE. Each line records the package it was sold in
+ * and carries its share of the package price, so the package's price is the
+ * sum of its lines and cannot disagree with what was charged. In the order
+ * the packages first appear; a hand-picked line belongs to none.
+ */
+export function packagesSold(
+  items: readonly {
+    readonly serviceId: string;
+    readonly priceFils: number;
+    /** Absent or null: a hand-picked line, or one written before the column. */
+    readonly packageId?: string | null;
+    readonly packageName?: string | null;
+  }[],
+): readonly SoldPackage[] {
+  const byId = new Map<
+    string,
+    { name: string; fils: Money[]; serviceIds: string[] }
+  >();
+  for (const i of items) {
+    if (i.packageId === null || i.packageId === undefined) continue;
+    const key = i.packageId.toLowerCase();
+    const seen = byId.get(key) ?? {
+      name: i.packageName ?? '',
+      fils: [],
+      serviceIds: [],
+    };
+    seen.fils.push(Money.fils(i.priceFils));
+    seen.serviceIds.push(i.serviceId);
+    byId.set(key, seen);
+  }
+  return [...byId].map(([packageId, p]) => ({
+    packageId,
+    name: p.name,
+    priceFils: Money.sum(p.fils).fils,
+    serviceIds: p.serviceIds,
+  }));
+}

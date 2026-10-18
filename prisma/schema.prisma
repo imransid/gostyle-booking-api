@@ -281,6 +281,21 @@ model BookingItem {
   /// that admits which rows it covers.
   source CatalogueSource?
 
+  /// THE PACKAGE THIS LINE WAS SOLD IN, or null for a hand-picked service.
+  ///
+  /// A package expands into its services before the engine sees it, and
+  /// until this the expansion was all that survived: the booking could not
+  /// say it was "Groom and Go", only list a cut and a beard trim at prices
+  /// that added up to an unexplained figure. Each part now records which
+  /// package it came from and that package's name as sold, frozen beside
+  /// the price for the same reason the service name is.
+  ///
+  /// The package's own price is NOT stored again: its parts' price_fils add
+  /// up to it (domain/booking/package.ts), so a second copy could only
+  /// disagree. Both or neither, by CHECK booking_item_package_named.
+  packageId   String? @map("package_id") @db.Uuid
+  packageName String? @map("package_name")
+
   /// STAYS NOT NULL, and this is the one place the FE doc cannot be met by a
   /// schema change.
   ///

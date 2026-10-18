@@ -42,6 +42,8 @@ export interface ConfirmItem {
    * answer than the one that produced this price.
    */
   readonly source: ItemSource;
+  /** The package this line was sold in, or null for a hand-picked service. */
+  readonly package: { readonly id: string; readonly name: string } | null;
 }
 
 /**
@@ -258,6 +260,10 @@ export class BookingRepository {
                 position,
                 staffId: toUuid(item.staffId),
                 source: item.source,
+                // Folded like the service id: a fixture package is a slug.
+                packageId:
+                  item.package === null ? null : toUuid(item.package.id),
+                packageName: item.package?.name ?? null,
               },
               select: { id: true },
             }),

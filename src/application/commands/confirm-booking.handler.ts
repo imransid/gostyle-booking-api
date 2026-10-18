@@ -48,6 +48,7 @@ import { Money } from '@domain/shared/money';
 import { sourceOf } from '@domain/booking/service-resolution';
 import { formatMinute } from '@domain/availability/grid';
 import { resolveBasket } from './basket';
+import type { PackageOrigin } from '@domain/booking/package';
 
 // The fixture price table moved beside resolveBasket; the paths that import
 // it from here keep doing so.
@@ -186,6 +187,8 @@ export class ConfirmBookingHandler {
       staffId: reservation.staffId,
       // Recorded beside the price it explains, from the same object.
       source: sourceOf(s),
+      // The package this part was sold in, so the booking can say so.
+      package: packageOf(basket.origins[i] ?? null),
     }));
 
     const total = Money.sum(items.map((i) => Money.fils(i.priceFils)));
@@ -399,6 +402,12 @@ export class ConfirmBookingHandler {
     const stored = row.responseBody as unknown as BookingView;
     return { ...stored, replayed: true };
   }
+}
+
+function packageOf(
+  origin: PackageOrigin | null,
+): { readonly id: string; readonly name: string } | null {
+  return origin === null ? null : { id: origin.packageId, name: origin.name };
 }
 
 /**

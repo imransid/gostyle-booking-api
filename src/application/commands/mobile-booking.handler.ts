@@ -1,7 +1,8 @@
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PlaceHoldHandler } from './place-hold.handler';
 import { ConfirmBookingHandler } from './confirm-booking.handler';
-import { resolveBasket } from './basket';
+import { PACKAGE_SPELLINGS, resolveBasket } from './basket';
+import { packagesSold } from '@domain/booking/package';
 import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
 import { PaymentLinkHandler } from './payment-link.handler';
 import { LifecycleRepository } from '@infrastructure/persistence/lifecycle.repository';
@@ -809,6 +810,15 @@ export class MobileBookingHandler {
             id: names.index.toSlug(i.serviceId),
             name: i.serviceName,
           })),
+          /**
+           * The packages this booking holds, `{ id, name }` like services:
+           * the row can say "Groom and Go" instead of only its parts. Empty
+           * for a booking of hand-picked services.
+           */
+          packages: packagesSold(b.items).map((p) => ({
+            id: PACKAGE_SPELLINGS.toSlug(p.packageId),
+            name: p.name,
+          })),
           stylists: stylistIds.map((id) => ({
             id,
             name: names.staff.get(id)?.name ?? null,
@@ -1363,6 +1373,18 @@ export class MobileBookingHandler {
         id: index.toSlug(i.serviceId),
         name: i.serviceName,
         amount: filsToAed(i.priceFils),
+      })),
+      /**
+       * The packages this booking holds. `amount` is the package's price,
+       * net of VAT: the sum of its parts' `services[].amount` above, which
+       * carry it between them (package.ts). `service_ids` are those parts.
+       * Empty for a booking of hand-picked services.
+       */
+      packages: packagesSold(b.items).map((p) => ({
+        id: PACKAGE_SPELLINGS.toSlug(p.packageId),
+        name: p.name,
+        amount: filsToAed(p.priceFils),
+        service_ids: p.serviceIds.map((id) => index.toSlug(id)),
       })),
       // The rows as sold, in the order picked. Variant uuids, never folded
       // through toUuid, so there is no slug to turn them back into.

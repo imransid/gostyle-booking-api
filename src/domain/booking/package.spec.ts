@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   expandPackage,
   findPackage,
+  packagesSold,
   resolveSelection,
   type ServicePackage,
 } from './package';
@@ -210,5 +211,66 @@ describe('resolving a selection', () => {
     );
     expect(r.serviceIds).toEqual(['gel-manicure', 'full-colour', 'blow-dry']);
     expect(r.pricesFils).toEqual([12_000, 43_355, 12_645]);
+  });
+});
+
+describe('reading the packages back off a booking', () => {
+  const line = (
+    serviceId: string,
+    priceFils: number,
+    pkg: [string, string] | null,
+  ) => ({
+    serviceId,
+    priceFils,
+    packageId: pkg?.[0] ?? null,
+    packageName: pkg?.[1] ?? null,
+  });
+  const GROOM: [string, string] = [
+    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1',
+    'Groom and Go',
+  ];
+
+  it('adds a package up from its lines', () => {
+    expect(
+      packagesSold([line('cut', 18_500, GROOM), line('beard', 18_500, GROOM)]),
+    ).toEqual([
+      {
+        packageId: GROOM[0],
+        name: 'Groom and Go',
+        priceFils: 37_000,
+        serviceIds: ['cut', 'beard'],
+      },
+    ]);
+  });
+
+  it('leaves hand-picked lines out', () => {
+    expect(packagesSold([line('fringe', 6_000, null)])).toEqual([]);
+  });
+
+  it('keeps the order packages first appear in', () => {
+    const PAMPER: [string, string] = ['pamper', 'Pamper'];
+    const sold = packagesSold([
+      line('facial', 30_000, PAMPER),
+      line('fringe', 6_000, null),
+      line('cut', 18_500, GROOM),
+      line('nails', 10_000, PAMPER),
+    ]);
+    expect(sold.map((p) => p.name)).toEqual(['Pamper', 'Groom and Go']);
+    expect(sold[0]!.priceFils).toBe(40_000);
+  });
+
+  it('reads back exactly what resolveSelection charged', () => {
+    const r = resolveSelection(
+      ['colour-and-finish'],
+      [COLOUR_AND_FINISH],
+      priceOf,
+    );
+    const lines = r.serviceIds.map((id, i) => ({
+      serviceId: id,
+      priceFils: r.pricesFils[i]!,
+      packageId: r.origins[i]?.packageId ?? null,
+      packageName: r.origins[i]?.name ?? null,
+    }));
+    expect(packagesSold(lines)[0]!.priceFils).toBe(56_000);
   });
 });

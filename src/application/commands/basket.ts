@@ -13,7 +13,10 @@ import {
 } from '@domain/booking/service-resolution';
 import { bookingError } from '@application/contract/errors';
 import { Money } from '@domain/shared/money';
-import { SERVICE_SLUGS } from '@infrastructure/fixtures/fixture-booking-context';
+import {
+  PACKAGES,
+  SERVICE_SLUGS,
+} from '@infrastructure/fixtures/fixture-booking-context';
 import { SlugIndex } from '@infrastructure/persistence/slug-uuid';
 
 /**
@@ -26,6 +29,14 @@ import { SlugIndex } from '@infrastructure/persistence/slug-uuid';
  */
 const SPELLINGS = new SlugIndex(SERVICE_SLUGS);
 const keyOf = (id: string): string => SPELLINGS.toSlug(id).toLowerCase();
+
+/**
+ * A stored package id back to the id it was sold under. A fixture package's
+ * slug is folded through toUuid on the way into booking_item.package_id, so
+ * the read hands back "colour-and-finish", not its hash (CLAUDE.md 8). A
+ * platform uuid passes through unchanged.
+ */
+export const PACKAGE_SPELLINGS = new SlugIndex(PACKAGES.map((p) => p.id));
 
 /**
  * The catalogue, until a catalogue service answers over gRPC.
