@@ -47,7 +47,11 @@ import { branchInstant } from '@infrastructure/persistence/hold.repository';
 import { Money } from '@domain/shared/money';
 import { priceOfService, sourceOf } from '@domain/booking/service-resolution';
 import { formatMinute } from '@domain/availability/grid';
-import { resolveSelection } from '@domain/booking/package';
+import {
+  findPackage,
+  resolveSelection,
+  type ServicePackage,
+} from '@domain/booking/package';
 
 export interface ConfirmBookingCommand {
   readonly holdId: string;
@@ -143,7 +147,13 @@ export class ConfirmBookingHandler {
     // same chain, same skills, same buffers, same chair demand. What survives
     // is one line in the quote.
     const packages = await this.packageCatalogue.forBranch(cmd.branchId);
-    const selection = resolveSelection(cmd.serviceIds, packages, priceOf);
+    const priceFor = await priceLookupFor(
+      this.context,
+      cmd.branchId,
+      cmd.serviceIds,
+      packages,
+    );
+    const selection = resolveSelection(cmd.serviceIds, packages, priceFor);
 
     const services = await this.context.loadServices(
       cmd.branchId,
@@ -428,6 +438,20 @@ export const PRICE_FILS: Record<string, number> = {
 
 export function priceOf(serviceId: string): number {
   return PRICE_FILS[serviceId] ?? 0;
+}
+
+export async function priceLookupFor(
+  context: BookingContextReader,
+  branchId: string,
+  ids: readonly string[],
+  packages: readonly ServicePackage[],
+): Promise<(serviceId: string) => number> {
+  const wanted = new Set(
+    ids.flatMap((id) => findPackage(packages, id)?.serviceIds ?? [id]),
+  );
+  const loaded = await context.loadServices(branchId, [...wanted]);
+  const prices = new Map(loaded.map((s) => [s.id, priceOfService(s, priceOf)]));
+  return (serviceId) => prices.get(serviceId) ?? priceOf(serviceId);
 }
 
 /**

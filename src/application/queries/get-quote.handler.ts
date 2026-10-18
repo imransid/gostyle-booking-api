@@ -19,7 +19,6 @@ import { branchInstant } from '@infrastructure/persistence/hold.repository';
 import { Money } from '@domain/shared/money';
 import { resolveSelection } from '@domain/booking/package';
 import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
-import { priceOf } from '@application/commands/confirm-booking.handler';
 import { priceOfService } from '@domain/booking/service-resolution';
 import {
   shout,
@@ -27,6 +26,11 @@ import {
   type Shouted,
   type WireQuoteLine,
 } from '@application/contract/wire';
+
+import {
+  priceOf,
+  priceLookupFor,
+} from '@application/commands/confirm-booking.handler';
 
 export interface QuoteQuery {
   readonly branchId: string;
@@ -148,7 +152,13 @@ export class GetQuoteHandler {
     // confirm: §15.4's "never a special case in the engine" holds for the
     // quote too, or the figure quoted would not be the figure charged.
     const packages = await this.packageCatalogue.forBranch(q.branchId);
-    const selection = resolveSelection(q.serviceIds, packages, priceOf);
+    const priceFor = await priceLookupFor(
+      this.context,
+      q.branchId,
+      q.serviceIds,
+      packages,
+    );
+    const selection = resolveSelection(q.serviceIds, packages, priceFor);
 
     const services = await this.context.loadServices(
       q.branchId,
