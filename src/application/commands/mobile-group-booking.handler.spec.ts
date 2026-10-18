@@ -12,6 +12,7 @@ import {
 import type { Service } from '@domain/availability/feasible';
 import type { MobileGroupConfirmInput } from '@infrastructure/persistence/mobile-group-confirm.repository';
 import type { CatalogueProduct } from '@application/ports/products-directory.port';
+import type { ServicePackage } from '@domain/booking/package';
 
 const BOOKER = '11111111-1111-4111-8111-111111111111';
 const RANA = '22222222-2222-4222-8222-222222222222';
@@ -147,6 +148,7 @@ function harness(
     readonly hold?: () => Promise<unknown>;
     readonly confirm?: () => Promise<unknown>;
     readonly afterCreate?: () => Promise<unknown>;
+    readonly packages?: readonly ServicePackage[];
   } = {},
 ) {
   const holds = {
@@ -186,6 +188,7 @@ function harness(
     lifecycle as never,
     context as never,
     productCatalogue as never,
+    { forBranch: () => Promise.resolve(over.packages ?? []) } as never,
   );
   const confirmInput = (): MobileGroupConfirmInput =>
     (confirms.confirm.mock.calls[0] as unknown as [MobileGroupConfirmInput])[0];
@@ -566,5 +569,101 @@ describe('MobileGroupBookingHandler: after the hold', () => {
         }),
       ),
     );
+  });
+});
+
+describe('a member who picks a package', () => {
+  // Cut and dry, AED 160 + AED 90 = AED 250 apart, sold together at AED 200.
+  const CUT_AND_DRY: ServicePackage = {
+    id: 'cut-and-dry',
+    name: 'Cut and dry',
+    serviceIds: ['haircut-finish', 'blow-dry'],
+    priceFils: 20_000,
+  };
+  const withPackage = (
+    m: MobileGroupMemberCommand,
+  ): MobileGroupMemberCommand => ({
+    ...m,
+    services: [
+      { id: 'cut-and-dry', amount: m.ageGroup === 'child' ? 100 : 200 },
+    ],
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it('is charged the package price, and the lane stores the parts carrying it', async () => {
+    const { handler, confirmInput } = harness({ packages: [CUT_AND_DRY] });
+    // Sarah's package 200 + Rana's cut 160 + Liam's half cut 80 = 440;
+    // VAT 22, total 462.
+    await handler.execute(
+      command({
+        members: [withPackage(self), rana, liam],
+        amountWithoutTax: 440,
+        taxAmount: 22,
+        total: 462,
+        dueAmount: 462,
+      }),
+    );
+
+    const lane = confirmInput().lanes[0]!;
+    expect(lane.items.map((i) => i.serviceId)).toEqual([
+      'haircut-finish',
+      'blow-dry',
+    ]);
+    expect(lane.items.reduce((n, i) => n + i.priceFils, 0)).toBe(20_000);
+    expect(lane.items.every((i) => i.package?.name === 'Cut and dry')).toBe(
+      true,
+    );
+    expect(lane.servicesNetFils).toBe(20_000);
+    // The hand-picked lanes beside it are untouched.
+    expect(confirmInput().lanes[1]!.items[0]!.package).toBeNull();
+  });
+
+  it('a child pays half the package, rounded once', async () => {
+    const { handler, confirmInput } = harness({ packages: [CUT_AND_DRY] });
+    // Sarah 160 + Rana 160 + Liam half of 200 = 100: 420, VAT 21, 441.
+    await handler.execute(
+      command({
+        members: [self, rana, withPackage(liam)],
+        amountWithoutTax: 420,
+        taxAmount: 21,
+        total: 441,
+        dueAmount: 441,
+      }),
+    );
+    const lane = confirmInput().lanes[2]!;
+    expect(lane.items.reduce((n, i) => n + i.priceFils, 0)).toBe(10_000);
+  });
+
+  it('times the lane by the parts end to end', async () => {
+    const { handler, confirmInput } = harness({ packages: [CUT_AND_DRY] });
+    await handler.execute(
+      command({
+        members: [withPackage(self), rana, liam],
+        amountWithoutTax: 440,
+        taxAmount: 22,
+        total: 462,
+        dueAmount: 462,
+      }),
+    );
+    const lane = confirmInput().lanes[0]!;
+    // Haircut 45 + blow-dry 30.
+    expect(lane.endMin - lane.startMin).toBe(75);
+  });
+
+  it('is refused by name when the package is not sold here', async () => {
+    const { handler } = harness({ packages: [] });
+    const e = await handler
+      .execute(command({ members: [withPackage(self), rana, liam] }))
+      .catch((x: unknown) => x);
+    expect(isMobileContractError(e)).toBe(true);
+    expect((e as MobileContractError).errors[0]).toMatchObject({
+      field: 'members[0].services',
+      code: 'unknown_service',
+    });
   });
 });

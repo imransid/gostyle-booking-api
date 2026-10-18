@@ -4,6 +4,7 @@ import {
   findPackage,
   packagesSold,
   resolveSelection,
+  spreadOverParts,
   type ServicePackage,
 } from './package';
 
@@ -272,5 +273,23 @@ describe('reading the packages back off a booking', () => {
       packageName: r.origins[i]?.name ?? null,
     }));
     expect(packagesSold(lines)[0]!.priceFils).toBe(56_000);
+  });
+});
+
+describe('spreading a line back over its parts', () => {
+  it('a child pays half the package, carried by the parts', () => {
+    // Colour and finish: 43,355 + 12,645 at full price. Half the package,
+    // rounded once, is 28,000; the parts add back to exactly that.
+    const parts = spreadOverParts(28_000, [43_355, 12_645]);
+    expect(sum(parts)).toBe(28_000);
+    expect(parts).toEqual([21_678, 6_322]);
+  });
+
+  it('a single part takes the whole line', () => {
+    expect(spreadOverParts(7_000, [14_000])).toEqual([7_000]);
+  });
+
+  it('shares equally when no part carries anything', () => {
+    expect(spreadOverParts(100, [0, 0])).toEqual([50, 50]);
   });
 });

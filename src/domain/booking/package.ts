@@ -234,3 +234,25 @@ export function packagesSold(
     serviceIds: p.serviceIds,
   }));
 }
+
+/**
+ * A line's charge spread back over the parts that make it up.
+ *
+ * For a party, the child rule halves each LINE -- a package is one line, at
+ * its price -- and rounds once, as the app does. The parts then carry that
+ * charge between them in proportion to what they carry at full price, by
+ * the same largest-remainder split, so they add back to the line exactly.
+ * Rounding each part instead could miss the line by a fil per part.
+ */
+export function spreadOverParts(
+  chargedFils: number,
+  partFils: readonly number[],
+): number[] {
+  if (partFils.length === 0) throw new Error('a line needs a part');
+  const weights = partFils.every((f) => f === 0)
+    ? partFils.map(() => 1)
+    : partFils;
+  return Money.fils(chargedFils)
+    .allocate(weights)
+    .map((m) => m.fils);
+}

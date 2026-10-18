@@ -22,6 +22,8 @@ import {
 } from '@domain/booking/mobile-contract';
 import { productMoney, productsOut } from '@domain/booking/mobile-products';
 import { storedTotalFils } from '@domain/booking/stored-money';
+import { packagesSold } from '@domain/booking/package';
+import { PACKAGE_SPELLINGS, packagesKey } from '@application/commands/basket';
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -361,6 +363,17 @@ export class MobileGroupReadHandler {
             name: i.serviceName,
             amount: filsToAed(i.priceFils),
           })),
+          // The member's packages, read back off the lane's lines exactly as
+          // a single booking's are: the price is its parts' sum. Absent for
+          // a member of hand-picked services, so that row is unchanged.
+          ...packagesKey(
+            packagesSold(lane.items).map((pk) => ({
+              id: PACKAGE_SPELLINGS.toSlug(pk.packageId),
+              name: pk.name,
+              amount: filsToAed(pk.priceFils),
+              service_ids: pk.serviceIds.map((id) => index.toSlug(id)),
+            })),
+          ),
           products: productsOut(lane.products),
           stylist:
             staffId === null
@@ -513,6 +526,13 @@ function groupRow(v: MobileGroupView): Record<string, unknown> {
     services: v.members.flatMap((m) =>
       m.services.map((s) => ({ id: s.id, name: s.name })),
     ),
+    // As a single row's: { id, name } of every member's packages, and only
+    // when there are any.
+    ...packagesKey(
+      v.members.flatMap((m) =>
+        (m.packages ?? []).map((pk) => ({ id: pk.id, name: pk.name })),
+      ),
+    ),
     stylists: [...stylists.values()],
     total: v.total,
     due_amount: v.due_amount,
@@ -545,6 +565,17 @@ export interface MobileGroupView {
     readonly age_group: string | null;
     readonly status: string;
     readonly services: readonly { id: string; name: string; amount: number }[];
+    /**
+     * The member's packages, as on a single booking's read. PRESENT ONLY
+     * when the member's lane holds one: a party of hand-picked services
+     * keeps exactly the keys it always had.
+     */
+    readonly packages?: readonly {
+      id: string;
+      name: string;
+      amount: number;
+      service_ids: readonly string[];
+    }[];
     readonly products: ReturnType<typeof productsOut>;
     readonly stylist: { id: string; name: string | null } | null;
     readonly start_time: string;

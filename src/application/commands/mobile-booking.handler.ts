@@ -1,7 +1,13 @@
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PlaceHoldHandler } from './place-hold.handler';
 import { ConfirmBookingHandler } from './confirm-booking.handler';
-import { PACKAGE_SPELLINGS, resolveBasket, type Basket } from './basket';
+import {
+  basketLines,
+  PACKAGE_SPELLINGS,
+  packagesKey,
+  resolveBasket,
+  type Basket,
+} from './basket';
 import { packagesSold } from '@domain/booking/package';
 import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
 import { PaymentLinkHandler } from './payment-link.handler';
@@ -586,7 +592,7 @@ export class MobileBookingHandler {
        * The lines to send on create, as asked for, each with its amount: a
        * package's line at the package's price, a service at its own.
        */
-      services: linesAsAsked(cmd.serviceIds, basket).map((l) => ({
+      services: basketLines(cmd.serviceIds, basket).map((l) => ({
         id: l.id,
         amount: filsToAed(l.fils),
       })),
@@ -978,13 +984,16 @@ export class MobileBookingHandler {
           })),
           /**
            * The packages this booking holds, `{ id, name }` like services:
-           * the row can say "Groom and Go" instead of only its parts. Empty
-           * for a booking of hand-picked services.
+           * the row can say "Groom and Go" instead of only its parts.
+           * ABSENT for a booking of hand-picked services, whose row keeps
+           * exactly the keys it always had.
            */
-          packages: packagesSold(b.items).map((p) => ({
-            id: PACKAGE_SPELLINGS.toSlug(p.packageId),
-            name: p.name,
-          })),
+          ...packagesKey(
+            packagesSold(b.items).map((p) => ({
+              id: PACKAGE_SPELLINGS.toSlug(p.packageId),
+              name: p.name,
+            })),
+          ),
           stylists: stylistIds.map((id) => ({
             id,
             name: names.staff.get(id)?.name ?? null,
@@ -1544,14 +1553,17 @@ export class MobileBookingHandler {
        * The packages this booking holds. `amount` is the package's price,
        * net of VAT: the sum of its parts' `services[].amount` above, which
        * carry it between them (package.ts). `service_ids` are those parts.
-       * Empty for a booking of hand-picked services.
+       * ABSENT for a booking of hand-picked services, which keeps exactly
+       * the keys it always had.
        */
-      packages: packagesSold(b.items).map((p) => ({
-        id: PACKAGE_SPELLINGS.toSlug(p.packageId),
-        name: p.name,
-        amount: filsToAed(p.priceFils),
-        service_ids: p.serviceIds.map((id) => index.toSlug(id)),
-      })),
+      ...packagesKey(
+        packagesSold(b.items).map((p) => ({
+          id: PACKAGE_SPELLINGS.toSlug(p.packageId),
+          name: p.name,
+          amount: filsToAed(p.priceFils),
+          service_ids: p.serviceIds.map((id) => index.toSlug(id)),
+        })),
+      ),
       // The rows as sold, in the order picked. Variant uuids, never folded
       // through toUuid, so there is no slug to turn them back into.
       products: productsOut(b.products),
@@ -1605,34 +1617,6 @@ export class MobileBookingHandler {
  * should surface as itself rather than as a plausible-looking
  * `validation_error` that sends the app down the wrong branch.
  */
-/**
- * The basket's lines as the app asked for them, each with what it costs:
- * a package's line is its parts' prices added up, which is the package's
- * price. Walks the expansion in order, so the same package twice is two
- * lines, and a package and its parts can never be mistaken for each other.
- */
-function linesAsAsked(
-  ids: readonly string[],
-  basket: Basket,
-): readonly { readonly id: string; readonly fils: number }[] {
-  const out: { id: string; fils: number }[] = [];
-  let at = 0;
-  let pkgAt = 0;
-  for (const id of ids) {
-    const e = basket.packages[pkgAt];
-    const isPackage =
-      e !== undefined && e.packageId.toLowerCase() === id.toLowerCase();
-    const width = isPackage ? e.serviceIds.length : 1;
-    if (isPackage) pkgAt += 1;
-    const fils = basket.pricesFils
-      .slice(at, at + width)
-      .reduce((n, f) => n + f, 0);
-    out.push({ id, fils });
-    at += width;
-  }
-  return out;
-}
-
 function translate(e: unknown): unknown {
   if (isMobileContractError(e)) return e;
 

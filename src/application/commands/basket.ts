@@ -39,6 +39,18 @@ const keyOf = (id: string): string => SPELLINGS.toSlug(id).toLowerCase();
 export const PACKAGE_SPELLINGS = new SlugIndex(PACKAGES.map((p) => p.id));
 
 /**
+ * `{ packages }` when there are any, else nothing, for the app's reads: a
+ * booking or party of hand-picked services keeps exactly the keys it always
+ * had (the key-for-key read specs), and only one that holds a package
+ * gains the key.
+ */
+export function packagesKey<T>(packages: readonly T[]): {
+  readonly packages?: readonly T[];
+} {
+  return packages.length === 0 ? {} : { packages };
+}
+
+/**
  * The catalogue, until a catalogue service answers over gRPC.
  *
  * Exported rather than copied. A second table would have been two
@@ -214,4 +226,47 @@ export async function resolveBasket(
     missing,
     totalFils: Money.sum(pricesFils.map((f) => Money.fils(f))).fils,
   };
+}
+
+/** One line of a basket as it was asked for: a service, or a whole package. */
+export interface BasketLine {
+  /** The id as asked for: a service id, or a package id. */
+  readonly id: string;
+  /** What the line costs, net of VAT: a package at its price. */
+  readonly fils: number;
+  /** Its parts: `services`/`pricesFils` from `from` up to, not including, `to`. */
+  readonly from: number;
+  readonly to: number;
+}
+
+/**
+ * The basket's lines as they were asked for, each with what it costs and
+ * the parts that make it up.
+ *
+ * A package's line is its parts' prices added up, which is the package's
+ * price. Walks the expansion in order, so the same package twice is two
+ * lines, and a package and its parts can never be mistaken for each other.
+ * Only meaningful for a basket with nothing missing, which every caller has
+ * already refused.
+ */
+export function basketLines(
+  ids: readonly string[],
+  basket: Basket,
+): readonly BasketLine[] {
+  const out: BasketLine[] = [];
+  let at = 0;
+  let pkgAt = 0;
+  for (const id of ids) {
+    const e = basket.packages[pkgAt];
+    const isPackage =
+      e !== undefined && e.packageId.toLowerCase() === id.toLowerCase();
+    const width = isPackage ? e.serviceIds.length : 1;
+    if (isPackage) pkgAt += 1;
+    const fils = Money.sum(
+      basket.pricesFils.slice(at, at + width).map((f) => Money.fils(f)),
+    ).fils;
+    out.push({ id, fils, from: at, to: at + width });
+    at += width;
+  }
+  return out;
 }

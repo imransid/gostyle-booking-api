@@ -10,7 +10,10 @@ import {
   type BookingContextReader,
 } from '@application/ports/booking-context.port';
 import { GroupHoldHandler, type GroupHoldView } from './group-hold.handler';
-import { priceOf } from './confirm-booking.handler';
+import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
+import { basketLines } from './basket';
+import { planMember, type PlannedMember } from './party-member';
+import { spreadOverParts } from '@domain/booking/package';
 import { MobileContractError } from './mobile-booking.error';
 import {
   MobileGroupReadHandler,
@@ -23,7 +26,6 @@ import {
   branchUtcOffsetMin,
   branchInstant,
 } from '@infrastructure/persistence/hold.repository';
-import type { Service } from '@domain/availability/feasible';
 import { DAY_END_MIN, DAY_START_MIN } from '@domain/availability/grid';
 import { toBranchMoment } from '@domain/booking/mobile-contract';
 import {
@@ -39,11 +41,7 @@ import {
   checkGroupMoney,
   checkParty,
 } from '@domain/booking/mobile-group-contract';
-import {
-  oneCurrency,
-  priceOfService,
-  sourceOf,
-} from '@domain/booking/service-resolution';
+import { oneCurrency, sourceOf } from '@domain/booking/service-resolution';
 
 export interface MobileGroupMemberCommand {
   readonly ref: number;
@@ -118,6 +116,7 @@ export class MobileGroupBookingHandler {
     private readonly lifecycle: LifecycleRepository,
     @Inject(BOOKING_CONTEXT) private readonly context: BookingContextReader,
     private readonly productCatalogue: PlatformProductCatalogue,
+    private readonly packageCatalogue: PlatformPackageCatalogue,
   ) {}
 
   async execute(cmd: MobileGroupBookingCommand): Promise<MobileGroupView> {
@@ -166,9 +165,19 @@ export class MobileGroupBookingHandler {
       );
     }
 
-    // ---- 2. Services -------------------------------------------------------
-    const services = await Promise.all(
-      cmd.members.map((m, i) => this.servicesOf(cmd.salonId, m, i)),
+    // ---- 2. Services, a member's packages expanded -------------------------
+    const planned = await Promise.all(
+      cmd.members.map((m, i) => this.memberOf(cmd.salonId, m, i)),
+    );
+    const services = planned.map((p) => p.basket.services);
+    // Each member's lines as asked for: a hand-picked service, or a whole
+    // package at its price. The money is worked out on these, as the app
+    // works it out, and spread back over the parts when the lane is stored.
+    const lines = cmd.members.map((m, i) =>
+      basketLines(
+        m.services.map((s) => s.id),
+        planned[i]!.basket,
+      ),
     );
     const basket = oneCurrency(services.flat());
     if (basket.kind === 'mixed') {
@@ -179,9 +188,7 @@ export class MobileGroupBookingHandler {
       );
     }
 
-    const durations = services.map((list) =>
-      list.reduce((n, s) => n + s.durationMin, 0),
-    );
+    const durations = planned.map((p) => p.durationMin);
     const longest = Math.max(...durations);
     if (
       start.minuteOfDay < DAY_START_MIN ||
@@ -201,7 +208,9 @@ export class MobileGroupBookingHandler {
     const money = groupMoney(
       cmd.members.map((m, i) => ({
         ageGroup: m.ageGroup as AgeGroup,
-        serviceFils: services[i]!.map((s) => priceOfService(s, priceOf)),
+        // A package is ONE line at its price, so the child rule halves the
+        // package once, as the app does, not each part with its own rounding.
+        serviceFils: lines[i]!.map((l) => l.fils),
         products: products[i]!,
       })),
       cmd.heldDepositPercent,
@@ -270,8 +279,17 @@ export class MobileGroupBookingHandler {
           if (lane === undefined) {
             throw new Error(`the hold returned no lane for member ${i}`);
           }
-          const list = services[i]!;
+          const member = planned[i]!;
+          const list = member.basket.services;
           const share = money.members[i]!;
+          // Each line as charged, spread back over the parts that make it
+          // up: they add up to the line exactly (package.ts).
+          const partFils = lines[i]!.flatMap((l, j) =>
+            spreadOverParts(
+              share.serviceFils[j]!,
+              member.basket.pricesFils.slice(l.from, l.to),
+            ),
+          );
           return {
             position: i,
             clientRef: m.ref,
@@ -281,16 +299,23 @@ export class MobileGroupBookingHandler {
             startMin: start.minuteOfDay,
             endMin: start.minuteOfDay + durations[i]!,
             // The same chair the hold reserved: the last service's.
-            resourceType: list[list.length - 1]!.resourceType,
-            items: list.map((s, k) => ({
-              serviceId: s.id,
-              serviceName: s.name,
-              resourceType: s.resourceType,
-              requiredSkill: s.skill,
-              priceFils: share.serviceFils[k]!,
-              durationMin: s.durationMin,
-              source: sourceOf(s),
-            })),
+            resourceType: member.resourceType,
+            items: list.map((s, k) => {
+              const origin = member.basket.origins[k] ?? null;
+              return {
+                serviceId: s.id,
+                serviceName: s.name,
+                resourceType: s.resourceType,
+                requiredSkill: s.skill,
+                priceFils: partFils[k]!,
+                durationMin: s.durationMin,
+                source: sourceOf(s),
+                package:
+                  origin === null
+                    ? null
+                    : { id: origin.packageId, name: origin.name },
+              };
+            }),
             products: products[i]!,
             servicesNetFils: share.servicesNetFils,
             servicesVatFils: servicesVatFils(share, products[i]!),
@@ -346,23 +371,30 @@ export class MobileGroupBookingHandler {
   }
 
   /** One member's services, in the order picked, or `unknown_service`. */
-  private async servicesOf(
+  /**
+   * One member's basket, packages expanded, through the step every party
+   * path runs (party-member.ts) -- the hold runs it again on the same ids,
+   * and gets the same answer.
+   */
+  private async memberOf(
     salonId: string,
     member: MobileGroupMemberCommand,
     index: number,
-  ): Promise<Service[]> {
-    const ids = member.services.map((s) => s.id);
-    const known = await this.context.loadServices(salonId, ids);
-    const byId = new Map(known.map((s) => [s.id, s]));
-    const missing = ids.filter((id) => !byId.has(id));
-    if (missing.length > 0) {
+  ): Promise<PlannedMember> {
+    const planned = await planMember(
+      this.context,
+      this.packageCatalogue,
+      salonId,
+      member.services.map((s) => s.id),
+    );
+    if (planned.basket.missing.length > 0) {
       throw MobileContractError.of(
         `members[${index}].services`,
         'unknown_service',
-        `Not sold at this salon: ${missing.join(', ')}.`,
+        `Not sold at this salon: ${planned.basket.missing.join(', ')}.`,
       );
     }
-    return ids.map((id) => byId.get(id)!);
+    return planned;
   }
 
   /**
