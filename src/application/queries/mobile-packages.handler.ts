@@ -7,6 +7,8 @@ import {
 import { expandPackage } from '@domain/booking/package';
 import { filsToAed } from '@domain/booking/mobile-contract';
 import { LoadedServices } from '@application/commands/basket';
+import { isBookingError } from '@application/contract/errors';
+import { oneCurrency } from '@domain/booking/service-resolution';
 
 /** One package on sale at a branch, priced exactly as a booking of it is. */
 export interface PackageOffer {
@@ -56,15 +58,53 @@ export class MobilePackagesHandler {
     const sold = await this.packages.forBranch(branchId);
     if (sold.length === 0) return [];
 
-    // Every part of every package in ONE lookup, not one per package.
+    // Every part of every package in ONE lookup, not one per package...
     const partIds = [...new Set(sold.flatMap((p) => p.serviceIds))];
-    const loaded = new LoadedServices().add(
-      await this.context.loadServices(branchId, partIds),
-    );
+    let all: LoadedServices | null = null;
+    try {
+      all = new LoadedServices().add(
+        await this.context.loadServices(branchId, partIds),
+      );
+    } catch (e) {
+      /**
+       * ...UNLESS ONE PACKAGE SPOILS IT. The catalogue refuses a whole
+       * load for one part priced at nothing, or for parts in two currencies
+       * -- which two packages sold in their own currencies are, together --
+       * and the list answered 422 for the branch. Then each package is
+       * looked up on its own, and only the ones that cannot be sold are left
+       * out. An outage is not a refusal: it is the platform's answer for the
+       * whole list, and stays one.
+       */
+      if (!isBookingError(e) || e.code === 'DEPENDENCY_UNAVAILABLE') throw e;
+      MobilePackagesHandler.log.warn(
+        `packages at ${branchId}: one lookup refused (${e.message}); ` +
+          'looking each package up on its own.',
+      );
+    }
 
     const out: PackageOffer[] = [];
     for (const pkg of sold) {
-      const missing = pkg.serviceIds.filter((id) => !loaded.has(id));
+      let loaded = all;
+      if (loaded === null) {
+        try {
+          loaded = new LoadedServices().add(
+            await this.context.loadServices(branchId, [
+              ...new Set(pkg.serviceIds),
+            ]),
+          );
+        } catch (e) {
+          if (!isBookingError(e) || e.code === 'DEPENDENCY_UNAVAILABLE') {
+            throw e;
+          }
+          MobilePackagesHandler.log.warn(
+            `package ${pkg.id} left out of the list: ${e.message}`,
+          );
+          continue;
+        }
+      }
+      const found = loaded;
+
+      const missing = pkg.serviceIds.filter((id) => !found.has(id));
       if (missing.length > 0) {
         MobilePackagesHandler.log.warn(
           `package ${pkg.id} left out of the list: parts not found: ` +
@@ -73,14 +113,28 @@ export class MobilePackagesHandler {
         continue;
       }
 
-      const e = expandPackage(pkg, (id) => loaded.listPrice(id));
+      // The rule every sale applies (basket.ts): a package and its parts in
+      // one currency. Listed otherwise, it was offered and then refused.
+      const verdict = oneCurrency([
+        { currency: pkg.currency },
+        ...pkg.serviceIds.map((id) => found.get(id)!),
+      ]);
+      if (verdict.kind === 'mixed') {
+        MobilePackagesHandler.log.warn(
+          `package ${pkg.id} left out of the list: priced in a different ` +
+            `currency from its parts (${verdict.currencies.join(' and ')}).`,
+        );
+        continue;
+      }
+
+      const e = expandPackage(pkg, (id) => found.listPrice(id));
       const parts = pkg.serviceIds.map((id, i) => {
-        const s = loaded.get(id)!;
+        const sv = found.get(id)!;
         return {
-          id: s.id,
-          name: s.name,
+          id: sv.id,
+          name: sv.name,
           priceFils: e.partPricesFils[i] ?? 0,
-          durationMin: s.durationMin,
+          durationMin: sv.durationMin,
         };
       });
       out.push({

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Logger } from '@nestjs/common';
 import { MobilePackagesHandler } from './mobile-packages.handler';
+import { bookingError } from '@application/contract/errors';
 
 const svc = (id: string, name: string, durationMin: number) => ({
   id,
@@ -153,5 +154,133 @@ describe('the packages list', () => {
     ]);
     expect((await h.list('salon')).count).toBe(0);
     warn.mockRestore();
+  });
+});
+
+describe('one bad package among good ones', () => {
+  const svcIn = (id: string, currency: string, priceFils = 10_000) => ({
+    ...svc(id, id, 30),
+    currency,
+    priceFils,
+  });
+  /**
+   * The catalogue's own refusals, as the platform catalogue makes them: one
+   * currency per lookup, and no part priced at nothing.
+   */
+  const strict = (rows: ReturnType<typeof svcIn>[]) => ({
+    loadServices: (_b: string, ids: readonly string[]) => {
+      const found = rows.filter((r) => ids.includes(r.id));
+      if (found.some((r) => r.priceFils <= 0)) {
+        return Promise.reject(
+          bookingError('BOOKING_STATE_INVALID', 'no usable price'),
+        );
+      }
+      if (new Set(found.map((r) => r.currency)).size > 1) {
+        return Promise.reject(
+          bookingError('BOOKING_CURRENCY_MIXED', 'mixes AED and BDT'),
+        );
+      }
+      return Promise.resolve(found);
+    },
+  });
+  const listing = (
+    packages: {
+      id: string;
+      name: string;
+      serviceIds: string[];
+      priceFils: number;
+      currency?: string;
+    }[],
+    rows: ReturnType<typeof svcIn>[],
+  ) =>
+    new MobilePackagesHandler(
+      { forBranch: () => Promise.resolve(packages) } as never,
+      strict(rows) as never,
+    );
+  const quiet = () =>
+    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+  it('two packages in their own currencies are both listed', async () => {
+    // Together their parts span two currencies, which one lookup refuses.
+    const warn = quiet();
+    const h = listing(
+      [
+        {
+          id: 'aed',
+          name: 'A',
+          serviceIds: ['cut'],
+          priceFils: 9_000,
+          currency: 'AED',
+        },
+        {
+          id: 'bdt',
+          name: 'B',
+          serviceIds: ['keratin'],
+          priceFils: 9_000,
+          currency: 'BDT',
+        },
+      ],
+      [svcIn('cut', 'AED'), svcIn('keratin', 'BDT')],
+    );
+    expect((await h.offers('salon')).map((o) => o.id)).toEqual(['aed', 'bdt']);
+    warn.mockRestore();
+  });
+
+  it('a package with a part priced at nothing is left out, the rest listed', async () => {
+    const warn = quiet();
+    const h = listing(
+      [
+        { id: 'good', name: 'Good', serviceIds: ['cut'], priceFils: 9_000 },
+        { id: 'free', name: 'Free', serviceIds: ['massage'], priceFils: 9_000 },
+      ],
+      [svcIn('cut', 'AED'), svcIn('massage', 'AED', 0)],
+    );
+    expect((await h.offers('salon')).map((o) => o.id)).toEqual(['good']);
+    warn.mockRestore();
+  });
+
+  it('a package priced in another currency from its parts is left out', async () => {
+    const warn = quiet();
+    const h = listing(
+      [
+        {
+          id: 'taka',
+          name: 'Taka',
+          serviceIds: ['cut'],
+          priceFils: 9_000,
+          currency: 'BDT',
+        },
+        {
+          id: 'aed',
+          name: 'A',
+          serviceIds: ['cut'],
+          priceFils: 9_000,
+          currency: 'AED',
+        },
+      ],
+      [svcIn('cut', 'AED')],
+    );
+    expect((await h.offers('salon')).map((o) => o.id)).toEqual(['aed']);
+    warn.mockRestore();
+  });
+
+  it('an outage is the answer for the whole list, not an empty one', async () => {
+    const h = new MobilePackagesHandler(
+      {
+        forBranch: () =>
+          Promise.resolve([
+            { id: 'p', name: 'P', serviceIds: ['cut'], priceFils: 9_000 },
+          ]),
+      } as never,
+      {
+        loadServices: () =>
+          Promise.reject(
+            bookingError('DEPENDENCY_UNAVAILABLE', 'platform down'),
+          ),
+      } as never,
+    );
+    await expect(h.offers('salon')).rejects.toMatchObject({
+      code: 'DEPENDENCY_UNAVAILABLE',
+    });
   });
 });
