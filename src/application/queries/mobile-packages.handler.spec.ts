@@ -58,17 +58,90 @@ describe('the packages list', () => {
     });
   });
 
-  it('skips a package dearer than its parts, and keeps the rest', async () => {
-    const warn = vi
-      .spyOn(Logger.prototype, 'warn')
-      .mockImplementation(() => undefined);
+  it('lists a package dearer than its parts at its own price, saving nothing', async () => {
+    // It is what the salon's menu sells it for, so it is what a booking of
+    // it charges. Leaving it out hid a package the app's own tab was showing.
     const h = handlerWith([
-      { id: 'bad', name: 'Bad', serviceIds: ['bala'], priceFils: 99_000 },
-      { id: 'ok', name: 'Ok', serviceIds: ['bala'], priceFils: 29_750 },
+      { id: 'dear', name: 'Dear', serviceIds: ['bala'], priceFils: 40_000 },
     ]);
     const page = await h.list('salon');
-    expect(page.results.map((r) => r.id)).toStrictEqual(['ok']);
-    warn.mockRestore();
+    expect(page.results[0]).toMatchObject({
+      id: 'dear',
+      amount_without_tax: 400,
+      parts_total: 350,
+      savings: 0,
+    });
+  });
+
+  it('shares the package price over the parts, as a booking stores them', async () => {
+    const h = handlerWith(
+      [
+        {
+          id: 'pair',
+          name: 'Pair',
+          serviceIds: ['cut', 'dry'],
+          priceFils: 30_000,
+        },
+      ],
+      [
+        { ...svc('cut', 'Cut', 30), priceFils: 20_000 },
+        { ...svc('dry', 'Dry', 20), priceFils: 20_000 },
+      ],
+    );
+    const page = await h.list('salon');
+    expect(page.results[0]).toMatchObject({
+      amount_without_tax: 300,
+      parts_total: 400,
+      savings: 100,
+      duration_min: 50,
+      services: [
+        { id: 'cut', name: 'Cut', amount: 150 },
+        { id: 'dry', name: 'Dry', amount: 150 },
+      ],
+    });
+  });
+
+  it('gives the desk the same figures in its own units', async () => {
+    const h = handlerWith([
+      {
+        id: 'pkg-1',
+        name: 'Balayage deal',
+        serviceIds: ['bala'],
+        priceFils: 29_750,
+      },
+    ]);
+    const [offer] = await h.offers('salon');
+    expect(offer).toMatchObject({
+      id: 'pkg-1',
+      priceFils: 29_750,
+      partsTotalFils: 35_000,
+      savingFils: 5_250,
+      durationMin: 30,
+      parts: [{ id: 'bala', name: 'Balayage', priceFils: 29_750 }],
+    });
+  });
+
+  it('asks the catalogue for every part in one call', async () => {
+    const loadServices = vi.fn((_b: string, ids: readonly string[]) =>
+      Promise.resolve(
+        [svc('cut', 'Cut', 30), svc('dry', 'Dry', 20)].filter((s) =>
+          ids.includes(s.id),
+        ),
+      ),
+    );
+    const catalogue = {
+      forBranch: () =>
+        Promise.resolve([
+          { id: 'a', name: 'A', serviceIds: ['cut'], priceFils: 100 },
+          { id: 'b', name: 'B', serviceIds: ['cut', 'dry'], priceFils: 100 },
+        ]),
+    };
+    const h = new MobilePackagesHandler(
+      catalogue as never,
+      { loadServices } as never,
+    );
+    expect((await h.list('salon')).count).toBe(2);
+    expect(loadServices).toHaveBeenCalledTimes(1);
   });
 
   it('skips a package whose part the catalogue cannot find', async () => {

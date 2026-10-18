@@ -21,9 +21,8 @@ import {
   type WalkInCandidate,
 } from '@domain/booking/walk-in';
 import { toWireNearestOption } from '@application/contract/wire';
-import { resolveSelection } from '@domain/booking/package';
 import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
-import { priceLookupFor } from './confirm-booking.handler';
+import { resolveBasket } from './basket';
 import {
   feasibleSet,
   staffAvailableAt,
@@ -118,38 +117,31 @@ export class WalkInHandler {
 
     // Packages expand HERE, once, so the queue stores what will actually be
     // performed and every later quote sees plain services.
-    const packages = await this.packageCatalogue.forBranch(cmd.branchId);
-    const priceFor = await priceLookupFor(
+    const basket = await resolveBasket(
       this.context,
+      this.packageCatalogue,
       cmd.branchId,
       cmd.serviceIds,
-      packages,
     );
-    const selection = resolveSelection(cmd.serviceIds, packages, priceFor);
-
-    const services = await this.context.loadServices(
-      cmd.branchId,
-      selection.serviceIds,
-    );
-    if (services.length !== selection.serviceIds.length) {
+    if (basket.missing.length > 0) {
       throw new UnprocessableEntityException(
         'One or more services do not exist.',
       );
     }
 
-    const durationMin = services.reduce((n, s) => n + s.durationMin, 0);
+    const durationMin = basket.services.reduce((n, s) => n + s.durationMin, 0);
 
     const joined = await this.repo.join({
       branchId: cmd.branchId,
       tradingDay: cmd.tradingDay,
       customerId: cmd.customerId,
       guestName: cmd.guestName,
-      serviceIds: selection.serviceIds,
+      serviceIds: basket.serviceIds,
       durationMin,
       joinedMin: cmd.joinedMin,
     });
 
-    return { ...joined, serviceIds: selection.serviceIds };
+    return { ...joined, serviceIds: basket.serviceIds };
   }
 
   /**

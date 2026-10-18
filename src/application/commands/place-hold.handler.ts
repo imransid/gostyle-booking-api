@@ -44,8 +44,7 @@ import {
 } from '@infrastructure/persistence/hold.repository';
 
 import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
-import { resolveSelection } from '@domain/booking/package';
-import { priceLookupFor } from '@application/commands/confirm-booking.handler';
+import { resolveBasket } from '@application/commands/basket';
 
 export interface PlaceHoldCommand {
   readonly branchId: string;
@@ -84,22 +83,16 @@ export class PlaceHoldHandler {
   ) {}
 
   async execute(cmd: PlaceHoldCommand): Promise<HoldView> {
-    const packages = await this.packageCatalogue.forBranch(cmd.branchId);
-    const priceFor = await priceLookupFor(
+    const basket = await resolveBasket(
       this.context,
+      this.packageCatalogue,
       cmd.branchId,
       cmd.serviceIds,
-      packages,
     );
-    const selection = resolveSelection(cmd.serviceIds, packages, priceFor);
-
-    const services = await this.context.loadServices(
-      cmd.branchId,
-      selection.serviceIds,
-    );
-    if (services.length !== selection.serviceIds.length) {
+    if (basket.missing.length > 0) {
       throw new NotFoundException('One or more services do not exist');
     }
+    const services = basket.services;
 
     const day = await this.context.loadDay(cmd.branchId, cmd.tradingDay);
     if (day.closureReason !== undefined) {

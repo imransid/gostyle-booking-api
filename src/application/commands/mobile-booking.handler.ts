@@ -1,11 +1,8 @@
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PlaceHoldHandler } from './place-hold.handler';
-import {
-  ConfirmBookingHandler,
-  priceLookupFor,
-} from './confirm-booking.handler';
+import { ConfirmBookingHandler } from './confirm-booking.handler';
+import { resolveBasket } from './basket';
 import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
-import { resolveSelection } from '@domain/booking/package';
 import { PaymentLinkHandler } from './payment-link.handler';
 import { LifecycleRepository } from '@infrastructure/persistence/lifecycle.repository';
 import { GetQuoteHandler } from '@application/queries/get-quote.handler';
@@ -291,22 +288,15 @@ export class MobileBookingHandler {
     }
 
     // ---- 3. The services must exist at this salon ------------------------
-    const packages = await this.packageCatalogue.forBranch(cmd.salonId);
-    const priceFor = await priceLookupFor(
+    const basket = await resolveBasket(
       this.context,
+      this.packageCatalogue,
       cmd.salonId,
       serviceIds,
-      packages,
     );
-    const selection = resolveSelection(serviceIds, packages, priceFor);
-
-    const known = await this.context.loadServices(
-      cmd.salonId,
-      selection.serviceIds,
-    );
-    if (known.length !== selection.serviceIds.length) {
-      const found = new Set(known.map((s) => s.id));
-      const missing = selection.serviceIds.filter((i) => !found.has(i));
+    const known = basket.services;
+    if (basket.missing.length > 0) {
+      const missing = basket.missing;
 
       /**
        * SAY WHICH CATALOGUE SAID NO.
@@ -389,7 +379,7 @@ export class MobileBookingHandler {
       {
         subtotalFils: quote.subtotalMinor,
         vatFils: quote.vatMinor,
-        discountFils: quote.tierDiscountMinor + quote.bundleDiscountMinor,
+        discountFils: quote.tierDiscountMinor,
         totalFils: quote.totalMinor,
       },
       productFigures,
@@ -1184,7 +1174,7 @@ export class MobileBookingHandler {
       return {
         subtotalFils: quote.subtotalMinor,
         vatFils: quote.vatMinor,
-        discountFils: quote.tierDiscountMinor + quote.bundleDiscountMinor,
+        discountFils: quote.tierDiscountMinor,
         totalFils: quote.totalMinor,
         depositFils: quote.depositMinor,
         priced: true,

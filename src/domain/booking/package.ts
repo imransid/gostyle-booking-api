@@ -8,9 +8,20 @@
  * processing bands all behave exactly as they would for a hand-picked
  * selection.
  *
- * What survives the expansion is one line in the quote. The parts are worth
- * more separately than the package costs, and the difference is the bundle
- * discount the customer is being given.
+ * THE PACKAGE PRICE IS CARRIED BY ITS PARTS. Each part is charged a share of
+ * the package price, in proportion to what it costs on its own, and the
+ * shares always add back to the package price exactly. So every reader that
+ * sums a booking's lines -- the till, desk capture, the payment link, the
+ * paid-in-full decision, the agenda and the revenue figures -- charges the
+ * package price without knowing a package was sold.
+ *
+ * THIS WAS A DISCOUNT LINE, and that was the bug. The parts were stored at
+ * their full price and the saving lived only in the quote, so the app agreed
+ * AED 588 for a package while the till, reading the parts, billed AED 651.
+ * One figure in one place cannot disagree with itself.
+ *
+ * What the customer saves is still worked out, for display only: the parts'
+ * usual total minus the package price. It is never subtracted again.
  */
 
 import { Money } from '../shared/money';
@@ -28,20 +39,40 @@ export interface PackageExpansion {
   readonly packageId: string;
   readonly name: string;
   readonly serviceIds: readonly string[];
-  /** What the same services would cost bought separately. */
+  /** What the same services would cost bought separately. Display only. */
   readonly partsTotalFils: number;
+  /** What the package sells for, net of VAT. THIS is what is charged. */
   readonly packagePriceFils: number;
-  /** Parts minus package price. Never negative. */
-  readonly bundleDiscountFils: number;
+  /**
+   * The package price spread over the parts, one per entry of `serviceIds`.
+   * Adds back to `packagePriceFils` exactly.
+   */
+  readonly partPricesFils: readonly number[];
+  /** Parts minus package price, never below zero. Display only. */
+  readonly savingFils: number;
   readonly explanation: string;
 }
 
+/** Where a line of an expanded selection came from. */
+export interface PackageOrigin {
+  readonly packageId: string;
+  readonly name: string;
+}
+
 /**
- * The package as a list of services and one discount line.
+ * Spread a package's price over its parts.
  *
- * Prices come from the SAME source a hand-picked selection uses, passed in
- * rather than looked up here, so a package can never quote a price the
- * catalogue has since moved away from.
+ * Largest-remainder (`Money.allocate`), weighted by each part's own price, so
+ * the shares add back to the package price and the one rounding happens here.
+ * Parts the catalogue has no price for are weighted equally rather than
+ * charged nothing, because a share of zero would make that part free.
+ *
+ * A PACKAGE DEARER THAN ITS PARTS IS SOLD AT ITS PRICE. That used to throw,
+ * which the HTTP layer reported as a 500, for a package the salon's own menu
+ * was selling at that price. Branch price overrides make it happen without
+ * anyone doing anything wrong: the package keeps the tenant's price while a
+ * part is cheaper at this branch. There is no discount line left to show a
+ * surcharge on, so the saving is simply zero.
  */
 export function expandPackage(
   pkg: ServicePackage,
@@ -51,21 +82,17 @@ export function expandPackage(
     throw new Error(`Package ${pkg.id} contains no services`);
   }
 
-  const parts = Money.sum(pkg.serviceIds.map((id) => Money.fils(priceOf(id))));
+  const listPrices = pkg.serviceIds.map((id) => Money.fils(priceOf(id)));
+  const parts = Money.sum(listPrices);
   const price = Money.fils(pkg.priceFils);
 
-  // A package that costs MORE than its parts is a pricing mistake, not a
-  // negative discount. Clamping at zero would hide it; the quote would show
-  // a surcharge dressed as a bundle and nobody would notice until a customer
-  // did the arithmetic at the desk.
-  if (price.greaterThan(parts)) {
-    throw new Error(
-      `Package ${pkg.id} costs ${price.toString()} but its parts total ` +
-        `${parts.toString()}. A package cannot cost more than its parts.`,
-    );
-  }
+  const weights = parts.isZero()
+    ? pkg.serviceIds.map(() => 1)
+    : listPrices.map((m) => m.fils);
+  const shares = price.allocate(weights);
 
-  const discount = parts.minus(price);
+  const saving = price.greaterThan(parts) ? Money.ZERO : parts.minus(price);
+  const count = pkg.serviceIds.length;
 
   return {
     packageId: pkg.id,
@@ -73,58 +100,84 @@ export function expandPackage(
     serviceIds: [...pkg.serviceIds],
     partsTotalFils: parts.fils,
     packagePriceFils: price.fils,
-    bundleDiscountFils: discount.fils,
-    explanation: discount.isZero()
-      ? `${pkg.name}: ${pkg.serviceIds.length} services at the usual price.`
-      : `${pkg.name}: ${pkg.serviceIds.length} services, ${discount.toString()} less than booking them separately.`,
+    partPricesFils: shares.map((m) => m.fils),
+    savingFils: saving.fils,
+    explanation: !saving.isZero()
+      ? `${pkg.name}: ${count} services, ${saving.toString()} less than booking them separately.`
+      : price.equals(parts)
+        ? `${pkg.name}: ${count} services at the usual price.`
+        : `${pkg.name}: ${count} services for ${price.toString()}.`,
   };
 }
 
-/** Is this id a package rather than a service? */
+/**
+ * Is this id a package rather than a service?
+ *
+ * Case-insensitive, as service ids are: a uuid typed in capitals is the same
+ * package, and missing it would send the id on as an unknown service.
+ */
 export function findPackage(
   packages: readonly ServicePackage[],
   id: string,
 ): ServicePackage | undefined {
-  return packages.find((p) => p.id === id);
+  const wanted = id.toLowerCase();
+  return packages.find((p) => p.id.toLowerCase() === wanted);
+}
+
+export interface ResolvedSelection {
+  /** Every package expanded, in the order chosen. */
+  readonly serviceIds: readonly string[];
+  /** What each entry of `serviceIds` is charged, net of VAT. Same order. */
+  readonly pricesFils: readonly number[];
+  /** The package each entry came from, or null for a hand-picked service. */
+  readonly origins: readonly (PackageOrigin | null)[];
+  readonly expansions: readonly PackageExpansion[];
+  /** What the packages save against their parts. Display only. */
+  readonly savingFils: number;
 }
 
 /**
- * Turn a mixed list of service and package ids into plain service ids.
+ * Turn a mixed list of service and package ids into plain service ids, each
+ * with the price it is charged.
  *
  * THE ONE PLACE A PACKAGE STOPS EXISTING. Everything after this call sees a
- * list of services, which is the whole point: no downstream branch on "is
- * this a package", and therefore no downstream bug that only packages hit.
+ * list of priced services, which is the whole point: no downstream branch on
+ * "is this a package", and therefore no downstream bug that only packages
+ * hit.
  */
 export function resolveSelection(
   ids: readonly string[],
   packages: readonly ServicePackage[],
   priceOf: (serviceId: string) => number,
-): {
-  readonly serviceIds: readonly string[];
-  readonly expansions: readonly PackageExpansion[];
-  readonly bundleDiscountFils: number;
-} {
+): ResolvedSelection {
   const serviceIds: string[] = [];
+  const pricesFils: number[] = [];
+  const origins: (PackageOrigin | null)[] = [];
   const expansions: PackageExpansion[] = [];
 
   for (const id of ids) {
     const pkg = findPackage(packages, id);
     if (pkg === undefined) {
       serviceIds.push(id);
+      pricesFils.push(Money.fils(priceOf(id)).fils);
+      origins.push(null);
       continue;
     }
     const expansion = expandPackage(pkg, priceOf);
     expansions.push(expansion);
     serviceIds.push(...expansion.serviceIds);
+    pricesFils.push(...expansion.partPricesFils);
+    const origin = { packageId: pkg.id, name: pkg.name };
+    origins.push(...expansion.serviceIds.map(() => origin));
   }
 
-  const discount = Money.sum(
-    expansions.map((e) => Money.fils(e.bundleDiscountFils)),
-  );
+  const saving = Money.sum(expansions.map((e) => Money.fils(e.savingFils)));
 
   return {
     serviceIds,
+    pricesFils,
+    origins,
     expansions,
-    bundleDiscountFils: discount.fils,
+    savingFils: saving.fils,
   };
 }

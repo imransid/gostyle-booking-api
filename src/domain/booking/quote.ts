@@ -17,12 +17,16 @@ export const VAT_PERCENT = 5;
 // ---------------------------------------------------------------- the quote
 
 export interface QuoteInput {
-  /** Services at their snapshot prices. Net, exclusive of VAT. */
+  /**
+   * Services at their snapshot prices. Net, exclusive of VAT.
+   *
+   * A package arrives here as its parts, already charged the package price
+   * between them (package.ts), so there is no bundle line: the saving is in
+   * the prices, and taking it off again would give it twice.
+   */
   readonly serviceFils: number;
   /** Booking-time extras, priced and duration-extending. */
   readonly addOnFils: number;
-  /** The sum of the package parts minus the package price. */
-  readonly bundleDiscountFils: number;
   readonly tier: Tier;
   /**
    * From the precedence engine, computed on the PRE-DISCOUNT total.
@@ -45,7 +49,6 @@ export interface QuoteLine {
 export interface Quote {
   readonly subtotalNetFils: number;
   readonly addOnFils: number;
-  readonly bundleDiscountFils: number;
   readonly tierDiscountFils: number;
   readonly discountedSubtotalFils: number;
   readonly vatFils: number;
@@ -60,18 +63,15 @@ export interface Quote {
 export function quote(input: QuoteInput): Quote {
   const services = Money.fils(input.serviceFils);
   const addOns = Money.fils(input.addOnFils);
-  const bundle = Money.fils(input.bundleDiscountFils);
 
   // Add-ons are service extras, so they share the service's discount base.
   // Retail never does, but retail does not exist at quote time.
   const serviceSubtotal = services.plus(addOns);
-  const tierDiscount = serviceSubtotal
-    .minus(bundle)
-    .percent(tierDiscountPercent(input.tier));
+  const tierDiscount = serviceSubtotal.percent(tierDiscountPercent(input.tier));
 
-  const discounted = serviceSubtotal.minus(bundle).minus(tierDiscount);
+  const discounted = serviceSubtotal.minus(tierDiscount);
 
-  // VAT sits on the DISCOUNTED subtotal, after add-ons and both discounts.
+  // VAT sits on the DISCOUNTED subtotal, after add-ons and the discount.
   // Charging it on the gross would tax money nobody paid.
   const vat = discounted.percent(VAT_PERCENT);
   const total = discounted.plus(vat);
@@ -84,13 +84,6 @@ export function quote(input: QuoteInput): Quote {
   ];
   if (!addOns.isZero()) {
     lines.push({ label: 'Add-ons', amountFils: addOns.fils, negative: false });
-  }
-  if (!bundle.isZero()) {
-    lines.push({
-      label: 'Bundle discount',
-      amountFils: bundle.fils,
-      negative: true,
-    });
   }
   if (!tierDiscount.isZero()) {
     lines.push({
@@ -116,7 +109,6 @@ export function quote(input: QuoteInput): Quote {
   return {
     subtotalNetFils: services.fils,
     addOnFils: addOns.fils,
-    bundleDiscountFils: bundle.fils,
     tierDiscountFils: tierDiscount.fils,
     discountedSubtotalFils: discounted.fils,
     vatFils: vat.fils,
