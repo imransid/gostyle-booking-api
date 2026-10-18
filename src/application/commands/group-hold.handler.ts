@@ -16,7 +16,8 @@ import {
 import { DAILY_BOOKING_CAP, formatMinute } from '@domain/availability/grid';
 import { HOLD_TTL_MS } from '@domain/booking/hold';
 import type { GroupMode } from '@domain/availability/party';
-import { skillsRequired } from '@domain/booking/service-resolution';
+import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
+import { planMember } from './party-member';
 
 export interface GroupHoldCommand {
   readonly branchId: string;
@@ -62,6 +63,7 @@ export class GroupHoldHandler {
     private readonly repo: GroupHoldRepository,
     @Inject(BOOKING_CONTEXT)
     private readonly context: BookingContextReader,
+    private readonly packageCatalogue: PlatformPackageCatalogue,
   ) {}
 
   async execute(cmd: GroupHoldCommand): Promise<GroupHoldView> {
@@ -91,30 +93,28 @@ export class GroupHoldHandler {
       resourceCounts[r.id] = Math.max(0, r.units - r.outOfService);
     }
 
-    // Each participant's services, priced and measured.
+    // Each participant's services, packages expanded, priced and measured.
     const specs: GroupHoldInput['participants'] = await Promise.all(
       cmd.participants.map(async (p, i) => {
-        const services = await this.context.loadServices(
+        const m = await planMember(
+          this.context,
+          this.packageCatalogue,
           cmd.branchId,
           p.serviceIds,
         );
-        if (services.length !== p.serviceIds.length) {
+        if (m.basket.missing.length > 0 || m.basket.services.length === 0) {
           throw new UnprocessableEntityException(
             `${p.label}: one or more services do not exist.`,
           );
         }
-        const durationMin = services.reduce((n, s) => n + s.durationMin, 0);
-        const skills = skillsRequired(services);
 
         return {
           participant: {
             id: `p${i}`,
             label: p.label,
-            skills,
-            durationMin,
-            // The chair the LAST service needs. A chain that ends at a basin
-            // is holding a basin at the end, not a styling chair.
-            resourceType: services[services.length - 1]!.resourceType,
+            skills: [...m.skills],
+            durationMin: m.durationMin,
+            resourceType: m.resourceType,
             preferredStaffId: p.preferredStaffId,
           },
           customerId: p.customerId,

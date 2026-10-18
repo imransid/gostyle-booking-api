@@ -1,9 +1,21 @@
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PlaceHoldHandler } from './place-hold.handler';
 import { ConfirmBookingHandler } from './confirm-booking.handler';
+import {
+  basketLines,
+  PACKAGE_SPELLINGS,
+  packagesKey,
+  resolveBasket,
+  type Basket,
+} from './basket';
+import { askedFor, packagesSold } from '@domain/booking/package';
+import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
 import { PaymentLinkHandler } from './payment-link.handler';
 import { LifecycleRepository } from '@infrastructure/persistence/lifecycle.repository';
-import { GetQuoteHandler } from '@application/queries/get-quote.handler';
+import {
+  GetQuoteHandler,
+  type QuoteView,
+} from '@application/queries/get-quote.handler';
 import {
   BOOKING_CONTEXT,
   type BookingContextReader,
@@ -100,7 +112,11 @@ interface QuotableBooking {
   readonly tradingDay: Date;
   readonly customerId: string;
   readonly startMinute: number;
-  readonly items: readonly { readonly serviceId: string }[];
+  readonly items: readonly {
+    readonly serviceId: string;
+    readonly packageId?: string | null;
+    readonly packageSeq?: number | null;
+  }[];
 }
 
 /**
@@ -157,6 +173,18 @@ const EMPTY_BRANCH: BranchNames = {
   staff: new Map(),
 };
 
+/** POST /v1/mobile-booking/quote: a basket and a start, nothing else. */
+export interface MobileQuoteCommand {
+  readonly salonId: string;
+  /** Service or package ids, as create's `services[].id`. */
+  readonly serviceIds: readonly string[];
+  readonly products: MobileBookingCommand['products'];
+  readonly date: string;
+  readonly startTime: string;
+  /** From the verified token: the tier discount is the customer's own. */
+  readonly customerId: string;
+}
+
 export interface MobileBookingCommand {
   readonly salonId: string;
   readonly services: readonly {
@@ -208,6 +236,7 @@ export class MobileBookingHandler {
     // Behind PRODUCTS_FROM_PLATFORM. Resolved HERE and handed down; the
     // repository never asks the catalogue anything (CLAUDE.md 7).
     private readonly productCatalogue: PlatformProductCatalogue,
+    private readonly packageCatalogue: PlatformPackageCatalogue,
   ) {}
 
   async execute(cmd: MobileBookingCommand): Promise<unknown> {
@@ -284,98 +313,14 @@ export class MobileBookingHandler {
       );
     }
 
-    // ---- 3. The services must exist at this salon ------------------------
-    const known = await this.context.loadServices(cmd.salonId, serviceIds);
-    if (known.length !== serviceIds.length) {
-      const found = new Set(known.map((s) => s.id));
-      const missing = serviceIds.filter((i) => !found.has(i));
-
-      /**
-       * SAY WHICH CATALOGUE SAID NO.
-       *
-       * This was reported as "ListServices returns that service, so why is
-       * the booking API refusing it" -- and the answer is that this path
-       * never calls ListServices. BOOKING_CONTEXT resolves services from the
-       * FIXTURE (DbBookingContext.loadServices delegates straight to it),
-       * while the gRPC services directory is wired only to
-       * GET /v1/services-directory/services. Two catalogues, and the one
-       * that refuses is invisible from outside.
-       *
-       * Logging what was asked for against what the resolver actually holds
-       * turns a day of comparing grpcurl output into one line.
-       */
-      const catalogue = await this.context
-        .loadCatalogue(cmd.salonId)
-        .catch(() => [] as { id: string }[]);
-      MobileBookingHandler.log.warn(
-        `unknown_service at salon ${cmd.salonId}: asked for ` +
-          `[${serviceIds.join(', ')}]; BOOKING_CONTEXT knows ` +
-          `${catalogue.length} service(s) [${catalogue
-            .map((c) => c.id)
-            .join(', ')}]. This resolver is NOT the gRPC services ` +
-          'directory -- ListServices is not consulted on this path.',
-      );
-
-      throw MobileContractError.of(
-        'services',
-        'unknown_service',
-        `Not sold at this salon: ${missing.join(', ')}.`,
-      );
-    }
-
-    // ---- 4. Money is VERIFIED, never trusted (§3) ------------------------
-
-    // ---- 3b. Products, priced from platform and checked line by line ----
-    //
-    // BEFORE THE HOLD, on purpose. A refused line or a platform outage then
-    // costs nobody a chair, and the 503's "Nothing was charged" stays true.
-    // Only reachable with PRODUCTS_FROM_PLATFORM on: step 1 refused products
-    // otherwise, and resolve() throws if that ever stops being true.
-    let productLines: readonly PricedProduct[] = [];
-    let productFigures: ProductMoney = NO_PRODUCTS;
-    if (cmd.products !== undefined && cmd.products.length > 0) {
-      const offers = await this.productCatalogue.resolve(
-        cmd.salonId,
-        cmd.products.map((p) => p.id),
-      );
-      // A mixed basket was already refused by the service catalogue. If one
-      // ever gets here, '' makes every product fail the currency check.
-      const basket = oneCurrency(known);
-      const checked = checkProducts({
-        lines: cmd.products,
-        offers,
-        currency: basket.kind === 'ok' ? basket.currency : '',
-      });
-      if (checked.kind === 'refused') {
-        throw new MobileContractError(checked.errors);
-      }
-      productLines = checked.lines;
-      productFigures = checked.money;
-    }
-
-    //
-    // Recomputed by the same handler the desk quote uses, so the figure the
-    // app is checked against is the figure the booking will actually charge.
-    const quote = await this.quotes.execute({
-      branchId: cmd.salonId,
-      tradingDay: start.tradingDay,
+    // ---- 3-4. What the basket costs, as the quote route reports it ------
+    const { quote, expected, productLines } = await this.priceFor({
+      salonId: cmd.salonId,
       serviceIds,
+      products: cmd.products,
       customerId: cmd.customerId,
-      channel: 'online',
-      startMin: start.minuteOfDay,
+      start,
     });
-
-    // The services' figures from the quote, plus the products'. The app's
-    // amount_without_tax, tax_amount and total must include its products.
-    const expected = addProducts(
-      {
-        subtotalFils: quote.subtotalMinor,
-        vatFils: quote.vatMinor,
-        discountFils: quote.tierDiscountMinor + quote.bundleDiscountMinor,
-        totalFils: quote.totalMinor,
-      },
-      productFigures,
-    );
     this.verifyMoney(cmd, expected);
 
     const declaredEnd = start.minuteOfDay + quote.durationMin;
@@ -573,6 +518,251 @@ export class MobileBookingHandler {
    * job on a mismatch is to show the customer what changed -- "prices moved"
    * with no new price is a dead end.
    */
+  /**
+   * POST /v1/mobile-booking/quote: what a basket will cost, before create.
+   *
+   * THE APP NO LONGER WORKS THE MONEY OUT. It had to compute
+   * amount_without_tax, discount, tax and total itself and find out from a
+   * 422 which one create disagreed with, one field per round trip -- and a
+   * package's figures were the easiest to get wrong. This answers with the
+   * figures create will check (the same priceFor), and with the `services`
+   * lines and `end_time` to send back, so a create built from this answer
+   * is accepted unless prices move in between.
+   *
+   * Holds nothing and writes nothing. A stylist is not asked for: who does
+   * the visit does not change what it costs.
+   */
+  async quote(cmd: MobileQuoteCommand): Promise<unknown> {
+    // Only the products rule applies to a quote; the stylist rules are
+    // about who does the visit, which does not change its price.
+    const unsupported = refuseUnsupported({
+      products: cmd.products,
+      bookingType: 'SINGLE',
+      stylists: ['(not needed to price)'],
+      productsAccepted: this.productCatalogue.enabled(),
+    });
+    if (unsupported !== null) {
+      throw MobileContractError.of(
+        unsupported.field,
+        unsupported.code,
+        unsupported.message,
+      );
+    }
+    if (cmd.serviceIds.length === 0) {
+      throw MobileContractError.of(
+        'services',
+        'no_services',
+        'Pick at least one service.',
+      );
+    }
+
+    const start = toBranchMoment(cmd.startTime, branchUtcOffsetMin());
+    if (start === null) {
+      throw MobileContractError.of(
+        'start_time',
+        'invalid_window',
+        'start_time must be an ISO 8601 instant.',
+      );
+    }
+    if (!dateAgreesWithStart(cmd.date, start)) {
+      throw MobileContractError.of(
+        'date',
+        'date_mismatch',
+        `date says ${cmd.date} and start_time is ${start.tradingDay} in salon time.`,
+      );
+    }
+
+    const { basket, quote, expected, productLines } = await this.priceFor({
+      salonId: cmd.salonId,
+      serviceIds: cmd.serviceIds,
+      products: cmd.products,
+      customerId: cmd.customerId,
+      start,
+    });
+
+    const endMin = start.minuteOfDay + quote.durationMin;
+    const offset = branchUtcOffsetMin();
+
+    return {
+      salon_id: cmd.salonId,
+      date: cmd.date,
+      start_time: toOffsetIso(
+        branchInstant(start.tradingDay, start.minuteOfDay),
+        offset,
+      ),
+      end_time: toOffsetIso(branchInstant(start.tradingDay, endMin), offset),
+      duration_min: quote.durationMin,
+      /**
+       * The lines to send on create, as asked for, each with its amount: a
+       * package's line at the package's price, a service at its own.
+       */
+      services: basketLines(cmd.serviceIds, basket).map((l) => ({
+        id: l.id,
+        amount: filsToAed(l.fils),
+      })),
+      /** What will be performed, each part at its share of any package. */
+      parts: basket.services.map((sv, i) => ({
+        id: sv.id,
+        name: sv.name,
+        amount: filsToAed(basket.pricesFils[i] ?? 0),
+        duration_min: sv.durationMin,
+        package_id: basket.origins[i]?.packageId ?? null,
+      })),
+      packages: basket.packages.map((e) => ({
+        id: e.packageId,
+        name: e.name,
+        amount: filsToAed(e.packagePriceFils),
+        parts_total: filsToAed(e.partsTotalFils),
+        savings: filsToAed(e.savingFils),
+        service_ids: e.serviceIds,
+      })),
+      products: productsOut(productLines),
+      amount_without_tax: filsToAed(expected.subtotalFils),
+      discount: filsToAed(expected.discountFils),
+      tax_amount: filsToAed(expected.vatFils),
+      total: filsToAed(expected.totalFils),
+      // As create expects them: nothing is paid on create.
+      advance_paid_amount: 0,
+      due_amount: filsToAed(expected.totalFils),
+      /** The deposit the salon asks for this visit, for the pay screen. */
+      deposit_amount: filsToAed(quote.depositMinor),
+    };
+  }
+
+  /**
+   * What a basket costs, exactly as create checks it.
+   *
+   * ONE COMPUTATION FOR TWO ROUTES. Create verifies the app's figures
+   * against this; the quote route (POST /v1/mobile-booking/quote) hands
+   * the same figures to the app before it asks. So the price the app is
+   * shown is the price create accepts, and the app never has to work a
+   * package's money out for itself.
+   *
+   * Refuses an unknown service, a refused product line, or a basket that
+   * cannot be priced, in the contract's envelope, before anything is held.
+   */
+  private async priceFor(input: {
+    readonly salonId: string;
+    readonly serviceIds: readonly string[];
+    readonly products: MobileBookingCommand['products'];
+    readonly customerId: string;
+    readonly start: {
+      readonly tradingDay: string;
+      readonly minuteOfDay: number;
+    };
+  }): Promise<{
+    readonly basket: Basket;
+    readonly quote: QuoteView;
+    readonly expected: MoneyFigures;
+    readonly productLines: readonly PricedProduct[];
+  }> {
+    const { serviceIds, start } = input;
+    // ---- 3. The services must exist at this salon ------------------------
+    let basket: Basket;
+    try {
+      basket = await resolveBasket(
+        this.context,
+        this.packageCatalogue,
+        input.salonId,
+        serviceIds,
+      );
+    } catch (e) {
+      throw translateBasketRefusal(e, 'services');
+    }
+    const known = basket.services;
+    if (basket.missing.length > 0) {
+      const missing = basket.missing;
+
+      /**
+       * SAY WHICH CATALOGUE SAID NO.
+       *
+       * This was reported as "ListServices returns that service, so why is
+       * the booking API refusing it" -- and the answer is that this path
+       * never calls ListServices. BOOKING_CONTEXT resolves services from the
+       * FIXTURE (DbBookingContext.loadServices delegates straight to it),
+       * while the gRPC services directory is wired only to
+       * GET /v1/services-directory/services. Two catalogues, and the one
+       * that refuses is invisible from outside.
+       *
+       * Logging what was asked for against what the resolver actually holds
+       * turns a day of comparing grpcurl output into one line.
+       */
+      const catalogue = await this.context
+        .loadCatalogue(input.salonId)
+        .catch(() => [] as { id: string }[]);
+      MobileBookingHandler.log.warn(
+        `unknown_service at salon ${input.salonId}: asked for ` +
+          `[${serviceIds.join(', ')}]; BOOKING_CONTEXT knows ` +
+          `${catalogue.length} service(s) [${catalogue
+            .map((c) => c.id)
+            .join(', ')}]. This resolver is NOT the gRPC services ` +
+          'directory -- ListServices is not consulted on this path.',
+      );
+
+      throw MobileContractError.of(
+        'services',
+        'unknown_service',
+        `Not sold at this salon: ${missing.join(', ')}.`,
+      );
+    }
+
+    // ---- 4. Money is VERIFIED, never trusted (§3) ------------------------
+
+    // ---- 3b. Products, priced from platform and checked line by line ----
+    //
+    // BEFORE THE HOLD, on purpose. A refused line or a platform outage then
+    // costs nobody a chair, and the 503's "Nothing was charged" stays true.
+    // Only reachable with PRODUCTS_FROM_PLATFORM on: step 1 refused products
+    // otherwise, and resolve() throws if that ever stops being true.
+    let productLines: readonly PricedProduct[] = [];
+    let productFigures: ProductMoney = NO_PRODUCTS;
+    if (input.products !== undefined && input.products.length > 0) {
+      const offers = await this.productCatalogue.resolve(
+        input.salonId,
+        input.products.map((p) => p.id),
+      );
+      // A mixed basket was already refused by the service catalogue. If one
+      // ever gets here, '' makes every product fail the currency check.
+      const verdict = oneCurrency(known);
+      const checked = checkProducts({
+        lines: input.products,
+        offers,
+        currency: verdict.kind === 'ok' ? verdict.currency : '',
+      });
+      if (checked.kind === 'refused') {
+        throw new MobileContractError(checked.errors);
+      }
+      productLines = checked.lines;
+      productFigures = checked.money;
+    }
+
+    //
+    // Recomputed by the same handler the desk quote uses, so the figure the
+    // app is checked against is the figure the booking will actually charge.
+    const quote = await this.quotes.execute({
+      branchId: input.salonId,
+      tradingDay: start.tradingDay,
+      serviceIds,
+      customerId: input.customerId,
+      channel: 'online',
+      startMin: start.minuteOfDay,
+    });
+
+    // The services' figures from the quote, plus the products'. The app's
+    // amount_without_tax, tax_amount and total must include its products.
+    const expected = addProducts(
+      {
+        subtotalFils: quote.subtotalMinor,
+        vatFils: quote.vatMinor,
+        discountFils: quote.tierDiscountMinor,
+        totalFils: quote.totalMinor,
+      },
+      productFigures,
+    );
+
+    return { basket, quote, expected, productLines };
+  }
+
   private verifyMoney(cmd: MobileBookingCommand, expected: MoneyFigures): void {
     const claim = (field: string, value: number): number => {
       const fils = aedToFils(value);
@@ -801,6 +991,18 @@ export class MobileBookingHandler {
             id: names.index.toSlug(i.serviceId),
             name: i.serviceName,
           })),
+          /**
+           * The packages this booking holds, `{ id, name }` like services:
+           * the row can say "Groom and Go" instead of only its parts.
+           * ABSENT for a booking of hand-picked services, whose row keeps
+           * exactly the keys it always had.
+           */
+          ...packagesKey(
+            packagesSold(b.items).map((p) => ({
+              id: PACKAGE_SPELLINGS.toSlug(p.packageId),
+              name: p.name,
+            })),
+          ),
           stylists: stylistIds.map((id) => ({
             id,
             name: names.staff.get(id)?.name ?? null,
@@ -1095,7 +1297,13 @@ export class MobileBookingHandler {
     return this.quotes.execute({
       branchId: b.branchId,
       tradingDay: b.tradingDay.toISOString().slice(0, 10),
-      serviceIds: b.items.map((i) => i.serviceId),
+      // AS IT WAS ASKED FOR: a package once, in place of its parts. From the
+      // parts alone the deposit came out on their own prices -- AED 92 on a
+      // package sold at AED 370 with an AED 74 deposit -- and the payment
+      // create had asked for was refused as too low (package.ts askedFor).
+      serviceIds: askedFor(b.items).map((l) =>
+        l.kind === 'package' ? PACKAGE_SPELLINGS.toSlug(l.id) : l.id,
+      ),
       customerId: b.customerId,
       channel: 'online',
       startMin: b.startMinute,
@@ -1135,10 +1343,38 @@ export class MobileBookingHandler {
   ): Promise<BookingMoney> {
     try {
       const quote = await this.inBookingTenant(b, () => this.quoteFor(b));
+
+      /**
+       * THE STORED BREAKDOWN WINS WHEN THE ROW HAS ALL THREE COLUMNS.
+       *
+       * The row holds only the real services, so a quote of them cannot
+       * know the booking was a package and loses the bundle discount.
+       * Confirm wrote these figures from the same pipeline that charged the
+       * customer, so they are what was agreed.
+       *
+       * THE DEPOSIT STAYS THE QUOTE'S, so the PATCH check is unchanged.
+       * Rows with any NULL (written before the columns existed) fall
+       * through to the quote exactly as before.
+       */
+      const storedTotal =
+        b.netFils !== null && b.taxFils !== null && b.discountFils !== null
+          ? storedTotalFils(b)
+          : null;
+      if (storedTotal !== null) {
+        return {
+          subtotalFils: b.netFils,
+          vatFils: b.taxFils ?? 0,
+          discountFils: b.discountFils ?? 0,
+          totalFils: storedTotal,
+          depositFils: quote.depositMinor,
+          priced: true,
+        };
+      }
+
       return {
         subtotalFils: quote.subtotalMinor,
         vatFils: quote.vatMinor,
-        discountFils: quote.tierDiscountMinor + quote.bundleDiscountMinor,
+        discountFils: quote.tierDiscountMinor,
         totalFils: quote.totalMinor,
         depositFils: quote.depositMinor,
         priced: true,
@@ -1328,6 +1564,21 @@ export class MobileBookingHandler {
         name: i.serviceName,
         amount: filsToAed(i.priceFils),
       })),
+      /**
+       * The packages this booking holds. `amount` is the package's price,
+       * net of VAT: the sum of its parts' `services[].amount` above, which
+       * carry it between them (package.ts). `service_ids` are those parts.
+       * ABSENT for a booking of hand-picked services, which keeps exactly
+       * the keys it always had.
+       */
+      ...packagesKey(
+        packagesSold(b.items).map((p) => ({
+          id: PACKAGE_SPELLINGS.toSlug(p.packageId),
+          name: p.name,
+          amount: filsToAed(p.priceFils),
+          service_ids: p.serviceIds.map((id) => index.toSlug(id)),
+        })),
+      ),
       // The rows as sold, in the order picked. Variant uuids, never folded
       // through toUuid, so there is no slug to turn them back into.
       products: productsOut(b.products),
@@ -1381,6 +1632,27 @@ export class MobileBookingHandler {
  * should surface as itself rather than as a plausible-looking
  * `validation_error` that sends the app down the wrong branch.
  */
+/**
+ * The basket's own refusals, in the contract's envelope.
+ *
+ * The catalogue refuses a basket in this service's envelope -- a basket
+ * mixing two currencies, a service with no usable price (a package with a
+ * part priced at nothing) -- and those reached the app as a shape it does
+ * not parse, with no errors[0].code to render. Here, and only here, they
+ * become the contract's closest words: §9's list is closed, and a code the
+ * app does not know is worse than a slightly broad one. Everything else,
+ * an outage above all, goes through translate() as before.
+ */
+export function translateBasketRefusal(e: unknown, field: string): unknown {
+  if (isBookingError(e) && e.code === 'BOOKING_CURRENCY_MIXED') {
+    return MobileContractError.of(field, 'currency_mismatch', e.message);
+  }
+  if (isBookingError(e) && e.code === 'BOOKING_STATE_INVALID') {
+    return MobileContractError.of(field, 'unknown_service', e.message);
+  }
+  return translate(e);
+}
+
 function translate(e: unknown): unknown {
   if (isMobileContractError(e)) return e;
 

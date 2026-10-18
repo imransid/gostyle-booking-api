@@ -65,6 +65,11 @@ services:
       # A party's status follows any lane still confirmed, not only the
       # booker's. Off: the booker's lane, exactly as today.
       MOBILE_GROUP_LIVE_STATUS: ${MOBILE_GROUP_LIVE_STATUS:-false}
+      # Salon packages from the platform (ListPackages), single and party,
+      # desk and app (docs/api/PACKAGES.md). Off: a real branch sells no
+      # packages; the slug demo salon keeps its three fixture ones. Needs
+      # SERVICES_FROM_PLATFORM and SKILLS_UNVERIFIED on to sell any.
+      PACKAGES_FROM_PLATFORM: ${PACKAGES_FROM_PLATFORM:-false}
       # Customer reminders (24h, 3h, 15m) by push and email. Off: claimed by
       # the ladder, never sent -- exactly today's behaviour.
       REMINDER_DELIVERY: ${REMINDER_DELIVERY:-false}

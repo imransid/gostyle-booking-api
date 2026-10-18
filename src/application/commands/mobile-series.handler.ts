@@ -1366,7 +1366,7 @@ export class MobileSeriesHandler {
         return {
           subtotalFils: q.subtotalMinor,
           vatFils: q.vatMinor,
-          discountFils: q.tierDiscountMinor + q.bundleDiscountMinor,
+          discountFils: q.tierDiscountMinor,
           totalFils: q.totalMinor,
           durationMin: q.durationMin,
         };

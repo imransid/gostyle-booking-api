@@ -45,13 +45,14 @@ import {
 import { PrismaService } from '@infrastructure/persistence/prisma.service';
 import { branchInstant } from '@infrastructure/persistence/hold.repository';
 import { Money } from '@domain/shared/money';
-import { priceOfService, sourceOf } from '@domain/booking/service-resolution';
+import { sourceOf } from '@domain/booking/service-resolution';
 import { formatMinute } from '@domain/availability/grid';
-import {
-  findPackage,
-  resolveSelection,
-  type ServicePackage,
-} from '@domain/booking/package';
+import { resolveBasket } from './basket';
+import type { PackageOrigin } from '@domain/booking/package';
+
+// The fixture price table moved beside resolveBasket; the paths that import
+// it from here keep doing so.
+export { PRICE_FILS, priceOf } from './basket';
 
 export interface ConfirmBookingCommand {
   readonly holdId: string;
@@ -145,23 +146,17 @@ export class ConfirmBookingHandler {
     // A PACKAGE STOPS EXISTING HERE. It expands into the services the branch
     // already sells, and everything below this line sees a plain selection:
     // same chain, same skills, same buffers, same chair demand. What survives
-    // is one line in the quote.
-    const packages = await this.packageCatalogue.forBranch(cmd.branchId);
-    const priceFor = await priceLookupFor(
+    // is the price: each part is charged its share of the package's.
+    const basket = await resolveBasket(
       this.context,
+      this.packageCatalogue,
       cmd.branchId,
       cmd.serviceIds,
-      packages,
     );
-    const selection = resolveSelection(cmd.serviceIds, packages, priceFor);
-
-    const services = await this.context.loadServices(
-      cmd.branchId,
-      selection.serviceIds,
-    );
-    if (services.length !== selection.serviceIds.length) {
+    if (basket.missing.length > 0) {
       throw new NotFoundException('One or more services do not exist');
     }
+    const services = basket.services;
 
     // The professional was decided when the hold was placed. Reading it back
     // rather than trusting the request is what stops a client confirming a
@@ -177,19 +172,23 @@ export class ConfirmBookingHandler {
       );
     }
 
-    const items: ConfirmItem[] = services.map((s) => ({
+    const items: ConfirmItem[] = services.map((s, i) => ({
       serviceId: s.id,
       serviceName: s.name,
       resourceType: s.resourceType,
       requiredSkill: s.skill,
-      // THE AED 0.00 FIX. priceOf() returns zero for an id it does not know,
-      // and every platform uuid is such an id -- so this row, which is what
-      // the customer is charged, would have been written as zero.
-      priceFils: priceOfService(s, priceOf),
+      // What this line is CHARGED: its own price, or for a package's part
+      // its share of the package price (package.ts). Every reader that sums
+      // the lines -- the till, desk capture, the payment link -- then charges
+      // the package price. THE AED 0.00 FIX still holds: the basket prices a
+      // platform service from the service, never from priceOf() alone.
+      priceFils: basket.pricesFils[i] ?? 0,
       durationMin: s.durationMin,
       staffId: reservation.staffId,
       // Recorded beside the price it explains, from the same object.
       source: sourceOf(s),
+      // The package this part was sold in, so the booking can say so.
+      package: packageOf(basket.origins[i] ?? null),
     }));
 
     const total = Money.sum(items.map((i) => Money.fils(i.priceFils)));
@@ -287,9 +286,6 @@ export class ConfirmBookingHandler {
     const priced = quote({
       serviceFils: total.fils,
       addOnFils: 0,
-      // The sum of the package parts minus the package price, which is what
-      // the customer is actually being given.
-      bundleDiscountFils: selection.bundleDiscountFils,
       tier: customer.tier,
       requirementFils: deposit.fils,
     });
@@ -313,7 +309,7 @@ export class ConfirmBookingHandler {
        */
       netFils: priced.subtotalNetFils,
       taxFils: priced.vatFils,
-      discountFils: priced.tierDiscountFils + priced.bundleDiscountFils,
+      discountFils: priced.tierDiscountFils,
       requirementSource:
         requirement.kind === 'none' ? null : requirement.source,
       payment:
@@ -408,50 +404,12 @@ export class ConfirmBookingHandler {
   }
 }
 
-/**
- * The catalogue in the fixture carries no prices yet, so they live here until
- * the real catalogue service lands. Fils, never decimals.
- */
-/**
- * The catalogue, until a catalogue service answers over gRPC.
- *
- * Exported rather than copied. A second table would have been two
- * sources of truth for what things cost, and the group path would have
- * priced parties on different numbers than the single path used for the
- * bookings inside them: correct-looking in every test that checked shape.
- */
-export const PRICE_FILS: Record<string, number> = {
-  'haircut-finish': 16000,
-  'blow-dry': 14000,
-  'fringe-trim': 6000,
-  'hair-colour': 48000,
-  'full-colour': 48000,
-  balayage: 72000,
-  keratin: 85000,
-  'gel-manicure': 18000,
-  'mani-pedi': 22000,
-  'luxury-facial': 38000,
-  'brow-lamination': 22000,
-  'hot-stone': 34000,
-  'hair-wash': 4000,
-};
-
-export function priceOf(serviceId: string): number {
-  return PRICE_FILS[serviceId] ?? 0;
-}
-
-export async function priceLookupFor(
-  context: BookingContextReader,
-  branchId: string,
-  ids: readonly string[],
-  packages: readonly ServicePackage[],
-): Promise<(serviceId: string) => number> {
-  const wanted = new Set(
-    ids.flatMap((id) => findPackage(packages, id)?.serviceIds ?? [id]),
-  );
-  const loaded = await context.loadServices(branchId, [...wanted]);
-  const prices = new Map(loaded.map((s) => [s.id, priceOfService(s, priceOf)]));
-  return (serviceId) => prices.get(serviceId) ?? priceOf(serviceId);
+function packageOf(
+  origin: PackageOrigin | null,
+): { readonly id: string; readonly name: string; readonly seq: number } | null {
+  return origin === null
+    ? null
+    : { id: origin.packageId, name: origin.name, seq: origin.seq };
 }
 
 /**

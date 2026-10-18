@@ -103,6 +103,8 @@ interface HandlerOptions {
   };
   /** B7: the stored booking's status columns, and its money ledger. */
   readonly row?: Readonly<Record<string, unknown>>;
+  /** The stored booking's lines. One haircut by default. */
+  readonly items?: readonly Readonly<Record<string, unknown>>[];
   readonly ledger?: readonly {
     readonly entryType: string;
     readonly amountFils: number;
@@ -180,7 +182,7 @@ function handlerWith(options: HandlerOptions = {}) {
     ...options.stored,
     ...options.row,
     depositFils: 5_000,
-    items: [
+    items: options.items ?? [
       {
         serviceId: 'haircut-finish',
         serviceName: 'Haircut & finish',
@@ -254,6 +256,7 @@ function handlerWith(options: HandlerOptions = {}) {
     { transition: () => Promise.resolve({ kind: 'transitioned' }) } as never,
     context as never,
     productCatalogue as never,
+    { forBranch: () => Promise.resolve([]) } as never,
   );
 
   const of = (method: string) => calls.filter((c) => c.method === method);
@@ -747,6 +750,100 @@ const patch = (
 });
 
 describe('§10 read: the products are part of what the booking is worth', () => {
+  it('reports the stored breakdown when the quote cannot see the bundle', async () => {
+    // The quote prices the real service alone (no discount); the row holds
+    // what create charged for the package.
+    const { handler } = handlerWith({
+      stored: { netFils: 35_000, taxFils: 1_488, discountFils: 5_250 },
+    });
+
+    const view = (await handler.read(OWNER)) as Record<string, unknown>;
+
+    expect(view.amount_without_tax).toBe(350);
+    expect(view.discount).toBe(52.5);
+    expect(view.tax_amount).toBe(14.88);
+    expect(view.total).toBe(312.38);
+    expect(view.due_amount).toBe(312.38);
+  });
+
+  it('re-quotes a package booking as it was sold, so the deposit is on the package price', async () => {
+    // From the parts alone the ladder ran on their own prices: an AED 74
+    // deposit on a package sold at AED 370 was refused as below AED 92.
+    const PKG = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1';
+    const part = (serviceId: string) => ({
+      serviceId,
+      serviceName: serviceId,
+      priceFils: 18_500,
+      staffId: 'maya',
+      packageId: PKG,
+      packageName: 'Groom and Go',
+      packageSeq: 0,
+    });
+    const { handler, of } = handlerWith({
+      items: [part('haircut-finish'), part('blow-dry')],
+      stored: { netFils: 37_000, taxFils: 1_850, discountFils: 0 },
+    });
+
+    await handler.read(OWNER);
+
+    const asked = (of('quotes.execute')[0]!.args as { serviceIds: string[] })
+      .serviceIds;
+    expect(asked).toEqual([PKG]);
+  });
+
+  it('re-quotes the demo package by its own id, not its stored hash', async () => {
+    const part = (serviceId: string) => ({
+      serviceId: toUuid(serviceId),
+      serviceName: serviceId,
+      priceFils: 28_000,
+      staffId: 'maya',
+      packageId: toUuid('colour-and-finish'),
+      packageName: 'Colour and finish',
+      packageSeq: 0,
+    });
+    const { handler, of } = handlerWith({
+      items: [part('full-colour'), part('blow-dry')],
+      stored: { netFils: 56_000, taxFils: 2_800, discountFils: 0 },
+    });
+
+    await handler.read(OWNER);
+
+    expect(
+      (of('quotes.execute')[0]!.args as { serviceIds: string[] }).serviceIds,
+    ).toEqual(['colour-and-finish']);
+  });
+
+  it('names the package a booking holds, at the price its parts carry', async () => {
+    // Groom and Go: AED 370 for a cut and a beard trim, stored as the two
+    // parts' shares. The read says so, and the parts still add up to it.
+    const PKG = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1';
+    const part = (serviceId: string, serviceName: string) => ({
+      serviceId,
+      serviceName,
+      priceFils: 18_500,
+      staffId: 'maya',
+      packageId: PKG,
+      packageName: 'Groom and Go',
+    });
+    const { handler } = handlerWith({
+      items: [part('haircut-finish', 'Haircut'), part('blow-dry', 'Beard')],
+      stored: { netFils: 37_000, taxFils: 1_850, discountFils: 0 },
+    });
+
+    const view = (await handler.read(OWNER)) as Record<string, unknown>;
+
+    expect(view.packages).toStrictEqual([
+      {
+        id: PKG,
+        name: 'Groom and Go',
+        amount: 370,
+        service_ids: ['haircut-finish', 'blow-dry'],
+      },
+    ]);
+    expect(view.amount_without_tax).toBe(370);
+    expect(view.total).toBe(388.5);
+  });
+
   it('lists the sold products and adds them to every figure', async () => {
     const { handler } = handlerWith({
       productsEnabled: true,

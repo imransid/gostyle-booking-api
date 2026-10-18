@@ -314,7 +314,7 @@ export class MobileRoutineBookingViewHandler {
     const adds = priceToday({
       subtotalFils: quote.subtotalMinor,
       vatFils: quote.vatMinor,
-      discountFils: quote.tierDiscountMinor + quote.bundleDiscountMinor,
+      discountFils: quote.tierDiscountMinor,
       totalFils: quote.totalMinor,
     });
     return {

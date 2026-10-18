@@ -17,9 +17,7 @@ import { quote } from '@domain/booking/quote';
 import { linkWindow } from '@domain/booking/payment-link';
 import { branchInstant } from '@infrastructure/persistence/hold.repository';
 import { Money } from '@domain/shared/money';
-import { resolveSelection } from '@domain/booking/package';
 import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
-import { priceOfService } from '@domain/booking/service-resolution';
 import {
   shout,
   toWireQuoteLine,
@@ -27,10 +25,7 @@ import {
   type WireQuoteLine,
 } from '@application/contract/wire';
 
-import {
-  priceOf,
-  priceLookupFor,
-} from '@application/commands/confirm-booking.handler';
+import { resolveBasket } from '@application/commands/basket';
 
 export interface QuoteQuery {
   readonly branchId: string;
@@ -70,18 +65,33 @@ export interface QuoteView {
   readonly tier: Shouted<Tier>;
   /** After any package expanded, in chain order. */
   readonly serviceIds: readonly string[];
+  /**
+   * Each package in the basket, with what it costs and what it saves.
+   * `priceMinor` is IN the subtotal already, carried by its parts.
+   */
   readonly packages: readonly {
     readonly packageId: string;
     readonly name: string;
     readonly serviceIds: readonly string[];
+    readonly priceMinor: number;
+    readonly price: string;
+    /** The parts at their own prices. Display only. */
+    readonly partsTotalMinor: number;
+    /** Parts minus price, never below zero. Display only, never subtracted. */
+    readonly savingMinor: number;
+    readonly saving: string;
   }[];
   readonly durationMin: number;
 
-  /** Net, exclusive of VAT, before any discount. */
+  /** Net, exclusive of VAT, before any discount. A package at its price. */
   readonly subtotalMinor: number;
   readonly subtotal: string;
   readonly addOnMinor: number;
-  /** The sum of a package's parts, less the package price. */
+  /**
+   * ALWAYS 0, kept so a client reading it does not break. It was the parts
+   * less the package price, taken off the subtotal; the package price is now
+   * carried by its parts (package.ts), and the saving is `packages[].saving`.
+   */
   readonly bundleDiscountMinor: number;
   readonly bundleDiscount: string;
   readonly tierDiscountMinor: number;
@@ -151,31 +161,24 @@ export class GetQuoteHandler {
     // Packages expand into real services here, exactly as they do at hold and
     // confirm: §15.4's "never a special case in the engine" holds for the
     // quote too, or the figure quoted would not be the figure charged.
-    const packages = await this.packageCatalogue.forBranch(q.branchId);
-    const priceFor = await priceLookupFor(
+    const basket = await resolveBasket(
       this.context,
+      this.packageCatalogue,
       q.branchId,
       q.serviceIds,
-      packages,
     );
-    const selection = resolveSelection(q.serviceIds, packages, priceFor);
-
-    const services = await this.context.loadServices(
-      q.branchId,
-      selection.serviceIds,
-    );
-    if (services.length !== selection.serviceIds.length) {
-      const known = new Set(services.map((s) => s.id));
-      const missing = selection.serviceIds.filter((id) => !known.has(id));
-      throw new NotFoundException(`Unknown service: ${missing.join(', ')}`);
+    if (basket.missing.length > 0) {
+      throw new NotFoundException(
+        `Unknown service: ${basket.missing.join(', ')}`,
+      );
     }
+    const services = basket.services;
 
     const customer = await this.customers.load(q.customerId);
 
-    const serviceFils = services.reduce(
-      (n, s) => n + priceOfService(s, priceOf),
-      0,
-    );
+    // What the basket is charged: a package at its own price, carried by its
+    // parts, so the quote and the till sum the same lines.
+    const serviceFils = basket.totalFils;
     const first = services[0];
 
     // Computed on the PRE-DISCOUNT total, and passed to quote() as a
@@ -211,7 +214,6 @@ export class GetQuoteHandler {
     const q1 = quote({
       serviceFils,
       addOnFils: 0,
-      bundleDiscountFils: selection.bundleDiscountFils,
       tier: customer.tier,
       requirementFils: requirement.amountFils,
     });
@@ -222,19 +224,24 @@ export class GetQuoteHandler {
       startMin: q.startMin,
       channel: shout(q.channel),
       tier: shout(customer.tier),
-      serviceIds: selection.serviceIds,
-      packages: selection.expansions.map((e) => ({
+      serviceIds: basket.serviceIds,
+      packages: basket.packages.map((e) => ({
         packageId: e.packageId,
         name: e.name,
         serviceIds: e.serviceIds,
+        priceMinor: e.packagePriceFils,
+        price: Money.fils(e.packagePriceFils).toString(),
+        partsTotalMinor: e.partsTotalFils,
+        savingMinor: e.savingFils,
+        saving: Money.fils(e.savingFils).toString(),
       })),
       durationMin: services.reduce((n, s) => n + s.durationMin, 0),
 
       subtotalMinor: q1.subtotalNetFils,
       subtotal: Money.fils(q1.subtotalNetFils).toString(),
       addOnMinor: q1.addOnFils,
-      bundleDiscountMinor: q1.bundleDiscountFils,
-      bundleDiscount: Money.fils(q1.bundleDiscountFils).toString(),
+      bundleDiscountMinor: 0,
+      bundleDiscount: Money.ZERO.toString(),
       tierDiscountMinor: q1.tierDiscountFils,
       tierDiscount: Money.fils(q1.tierDiscountFils).toString(),
       discountedSubtotalMinor: q1.discountedSubtotalFils,

@@ -67,6 +67,12 @@ export interface MobileGroupLaneInput {
     readonly priceFils: number;
     readonly durationMin: number;
     readonly source: ItemSource | null;
+    /** The package this part was sold in, or null for a hand-picked one. */
+    readonly package?: {
+      readonly id: string;
+      readonly name: string;
+      readonly seq: number;
+    } | null;
   }[];
   readonly products: readonly PricedProduct[];
   /** The services alone, as a single booking's row stores them. */
@@ -287,6 +293,10 @@ export class MobileGroupConfirmRepository {
             position,
             staffId,
             source: item.source,
+            // As a single booking's lines: the package, and its name as sold.
+            packageId: item.package ? toUuid(item.package.id) : null,
+            packageName: item.package?.name ?? null,
+            packageSeq: item.package?.seq ?? null,
           },
           select: { id: true },
         });

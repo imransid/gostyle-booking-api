@@ -195,6 +195,7 @@ describe('products reach persistence, or the key does not exist', () => {
         durationMin: 45,
         staffId: 'maya',
         source: 'fixture',
+        package: null,
       },
     ]);
   });

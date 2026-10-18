@@ -49,6 +49,8 @@ message ListPackagesRequest {
 message PackageItem {
   string service_id = 1;
   int32 quantity = 2;
+  // The service variant this line is pinned to ("Long hair"). EMPTY: none.
+  string variant_id = 3;
 }
 
 message PackageInfo {
@@ -57,6 +59,11 @@ message PackageInfo {
   int32 price_minor = 3;
   string currency = 4;
   repeated PackageItem items = 5;
+  // THIS PACKAGE IS AS THE LIVE MENU SELLS IT: name, price and items from the
+  // published snapshot (or the row, for one never snapshotted). booking-api
+  // sells only packages that say so, so a platform older than this field
+  // sells none of its packages rather than its drafts.
+  bool from_published_snapshot = 6;
 }
 
 message ListPackagesResponse {

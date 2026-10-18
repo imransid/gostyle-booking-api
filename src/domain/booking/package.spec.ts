@@ -2,7 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
   expandPackage,
   findPackage,
+  askedFor,
+  packagesSold,
   resolveSelection,
+  spreadOverParts,
   type ServicePackage,
 } from './package';
 
@@ -21,6 +24,8 @@ const COLOUR_AND_FINISH: ServicePackage = {
   priceFils: 56_000, // parts are 62,000
 };
 
+const sum = (xs: readonly number[]): number => xs.reduce((a, b) => a + b, 0);
+
 describe('expanding a package', () => {
   it('produces the services in order', () => {
     expect(expandPackage(COLOUR_AND_FINISH, priceOf).serviceIds).toEqual([
@@ -35,14 +40,24 @@ describe('expanding a package', () => {
     );
   });
 
-  it('carries the difference as the bundle discount', () => {
+  it('charges the package price, carried by the parts', () => {
     const e = expandPackage(COLOUR_AND_FINISH, priceOf);
-    expect(e.bundleDiscountFils).toBe(6_000);
     expect(e.packagePriceFils).toBe(56_000);
+    expect(sum(e.partPricesFils)).toBe(56_000);
   });
 
-  it('explains the saving in dirhams', () => {
-    expect(expandPackage(COLOUR_AND_FINISH, priceOf).explanation).toMatch(
+  it('shares the price out in proportion to what each part costs alone', () => {
+    // 56,000 x 48/62 = 43,354.8... and 56,000 x 14/62 = 12,645.1...: the
+    // spare fil goes to the larger remainder, and nothing is lost.
+    expect(expandPackage(COLOUR_AND_FINISH, priceOf).partPricesFils).toEqual([
+      43_355, 12_645,
+    ]);
+  });
+
+  it('works out the saving for display', () => {
+    const e = expandPackage(COLOUR_AND_FINISH, priceOf);
+    expect(e.savingFils).toBe(6_000);
+    expect(e.explanation).toMatch(
       /AED 60\.00 less than booking them separately/,
     );
   });
@@ -52,16 +67,47 @@ describe('expanding a package', () => {
       { ...COLOUR_AND_FINISH, priceFils: 62_000 },
       priceOf,
     );
-    expect(e.bundleDiscountFils).toBe(0);
+    expect(e.savingFils).toBe(0);
+    expect(e.partPricesFils).toEqual([48_000, 14_000]);
     expect(e.explanation).toMatch(/at the usual price/);
   });
 
-  it('refuses a package that costs more than its parts', () => {
-    // Not a negative discount. A surcharge dressed as a bundle is a pricing
-    // mistake, and clamping it at zero would hide it.
-    expect(() =>
-      expandPackage({ ...COLOUR_AND_FINISH, priceFils: 70_000 }, priceOf),
-    ).toThrow(/cannot cost more than its parts/);
+  it('sells a package dearer than its parts at its own price, saving nothing', () => {
+    // Branch overrides do this: the package keeps the tenant price while a
+    // part is cheaper at this branch. It is what the menu sells it for, so
+    // it is what is charged -- not a 500.
+    const e = expandPackage(
+      { ...COLOUR_AND_FINISH, priceFils: 70_000 },
+      priceOf,
+    );
+    expect(e.savingFils).toBe(0);
+    expect(sum(e.partPricesFils)).toBe(70_000);
+    expect(e.explanation).toMatch(/2 services for AED 700\.00/);
+  });
+
+  it('shares equally when the catalogue prices none of the parts', () => {
+    // A share of zero would make a part free; nothing priced means nothing
+    // to weight by, so each takes the same.
+    const e = expandPackage(
+      { id: 'p', name: 'P', serviceIds: ['x', 'y', 'z'], priceFils: 10_000 },
+      priceOf,
+    );
+    expect(e.partPricesFils).toEqual([3_334, 3_333, 3_333]);
+    expect(e.savingFils).toBe(0);
+  });
+
+  it('charges a part named twice twice', () => {
+    const e = expandPackage(
+      {
+        id: 'two-dries',
+        name: 'Two dries',
+        serviceIds: ['blow-dry', 'blow-dry'],
+        priceFils: 25_000,
+      },
+      priceOf,
+    );
+    expect(e.partsTotalFils).toBe(28_000);
+    expect(e.partPricesFils).toEqual([12_500, 12_500]);
   });
 
   it('refuses an empty package', () => {
@@ -71,26 +117,67 @@ describe('expanding a package', () => {
   });
 
   it('never produces a fractional fil', () => {
-    const e = expandPackage(COLOUR_AND_FINISH, priceOf);
-    expect(Number.isInteger(e.bundleDiscountFils)).toBe(true);
-    expect(Number.isInteger(e.partsTotalFils)).toBe(true);
+    const e = expandPackage(
+      { ...COLOUR_AND_FINISH, priceFils: 55_555 },
+      priceOf,
+    );
+    expect(e.partPricesFils.every(Number.isInteger)).toBe(true);
+    expect(sum(e.partPricesFils)).toBe(55_555);
+  });
+});
+
+describe('finding a package', () => {
+  it('ignores case, as service ids do', () => {
+    const pkg = {
+      ...COLOUR_AND_FINISH,
+      id: 'aaaaaaaa-0000-0000-0000-00000000000a',
+    };
+    expect(findPackage([pkg], 'AAAAAAAA-0000-0000-0000-00000000000A')).toBe(
+      pkg,
+    );
   });
 });
 
 describe('resolving a selection', () => {
   const packages = [COLOUR_AND_FINISH];
 
-  it('leaves plain services alone', () => {
+  it('leaves plain services alone, at their own price', () => {
     const r = resolveSelection(['blow-dry'], packages, priceOf);
     expect(r.serviceIds).toEqual(['blow-dry']);
+    expect(r.pricesFils).toEqual([14_000]);
+    expect(r.origins).toEqual([null]);
     expect(r.expansions).toEqual([]);
-    expect(r.bundleDiscountFils).toBe(0);
+    expect(r.savingFils).toBe(0);
   });
 
-  it('expands a package into its services', () => {
+  it('expands a package into its services, priced from the package', () => {
     const r = resolveSelection(['colour-and-finish'], packages, priceOf);
     expect(r.serviceIds).toEqual(['full-colour', 'blow-dry']);
-    expect(r.bundleDiscountFils).toBe(6_000);
+    expect(sum(r.pricesFils)).toBe(56_000);
+    expect(r.savingFils).toBe(6_000);
+  });
+
+  it('says which package each line came from', () => {
+    const r = resolveSelection(
+      ['gel-manicure', 'colour-and-finish'],
+      packages,
+      priceOf,
+    );
+    const origin = {
+      packageId: 'colour-and-finish',
+      name: 'Colour and finish',
+      seq: 0,
+    };
+    expect(r.origins).toEqual([null, origin, origin]);
+  });
+
+  it('counts each sale of a package, so the same one twice is two', () => {
+    const r = resolveSelection(
+      ['colour-and-finish', 'gel-manicure', 'colour-and-finish'],
+      packages,
+      priceOf,
+    );
+    expect(r.origins.map((o) => o?.seq ?? null)).toEqual([0, 0, null, 1, 1]);
   });
 
   it('mixes packages and plain services', () => {
@@ -100,10 +187,10 @@ describe('resolving a selection', () => {
       priceOf,
     );
     expect(r.serviceIds).toEqual(['full-colour', 'blow-dry', 'gel-manicure']);
-    expect(r.bundleDiscountFils).toBe(6_000);
+    expect(sum(r.pricesFils)).toBe(56_000 + 12_000);
   });
 
-  it('adds the discounts of two packages', () => {
+  it('adds the savings of two packages', () => {
     const second: ServicePackage = {
       id: 'pamper',
       name: 'Pamper',
@@ -115,8 +202,9 @@ describe('resolving a selection', () => {
       [...packages, second],
       priceOf,
     );
-    expect(r.bundleDiscountFils).toBe(10_000);
+    expect(r.savingFils).toBe(10_000);
     expect(r.serviceIds.length).toBe(4);
+    expect(sum(r.pricesFils)).toBe(96_000);
   });
 
   it('is the one place a package stops existing', () => {
@@ -134,5 +222,150 @@ describe('resolving a selection', () => {
       priceOf,
     );
     expect(r.serviceIds).toEqual(['gel-manicure', 'full-colour', 'blow-dry']);
+    expect(r.pricesFils).toEqual([12_000, 43_355, 12_645]);
+  });
+});
+
+describe('reading the packages back off a booking', () => {
+  const line = (
+    serviceId: string,
+    priceFils: number,
+    pkg: [string, string] | null,
+  ) => ({
+    serviceId,
+    priceFils,
+    packageId: pkg?.[0] ?? null,
+    packageName: pkg?.[1] ?? null,
+  });
+  const GROOM: [string, string] = [
+    'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1',
+    'Groom and Go',
+  ];
+
+  it('adds a package up from its lines', () => {
+    expect(
+      packagesSold([line('cut', 18_500, GROOM), line('beard', 18_500, GROOM)]),
+    ).toEqual([
+      {
+        packageId: GROOM[0],
+        name: 'Groom and Go',
+        priceFils: 37_000,
+        serviceIds: ['cut', 'beard'],
+      },
+    ]);
+  });
+
+  it('leaves hand-picked lines out', () => {
+    expect(packagesSold([line('fringe', 6_000, null)])).toEqual([]);
+  });
+
+  it('keeps the order packages first appear in', () => {
+    const PAMPER: [string, string] = ['pamper', 'Pamper'];
+    const sold = packagesSold([
+      line('facial', 30_000, PAMPER),
+      line('fringe', 6_000, null),
+      line('cut', 18_500, GROOM),
+      line('nails', 10_000, PAMPER),
+    ]);
+    expect(sold.map((p) => p.name)).toEqual(['Pamper', 'Groom and Go']);
+    expect(sold[0]!.priceFils).toBe(40_000);
+  });
+
+  it('reads back exactly what resolveSelection charged', () => {
+    const r = resolveSelection(
+      ['colour-and-finish'],
+      [COLOUR_AND_FINISH],
+      priceOf,
+    );
+    const lines = r.serviceIds.map((id, i) => ({
+      serviceId: id,
+      priceFils: r.pricesFils[i]!,
+      packageId: r.origins[i]?.packageId ?? null,
+      packageName: r.origins[i]?.name ?? null,
+    }));
+    expect(packagesSold(lines)[0]!.priceFils).toBe(56_000);
+  });
+});
+
+describe('spreading a line back over its parts', () => {
+  it('a child pays half the package, carried by the parts', () => {
+    // Colour and finish: 43,355 + 12,645 at full price. Half the package,
+    // rounded once, is 28,000; the parts add back to exactly that.
+    const parts = spreadOverParts(28_000, [43_355, 12_645]);
+    expect(sum(parts)).toBe(28_000);
+    expect(parts).toEqual([21_678, 6_322]);
+  });
+
+  it('a single part takes the whole line', () => {
+    expect(spreadOverParts(7_000, [14_000])).toEqual([7_000]);
+  });
+
+  it('shares equally when no part carries anything', () => {
+    expect(spreadOverParts(100, [0, 0])).toEqual([50, 50]);
+  });
+});
+
+describe('the same package sold twice', () => {
+  const HANDS: ServicePackage = {
+    id: 'hands-and-feet',
+    name: 'Hands and feet',
+    serviceIds: ['gel-manicure', 'luxury-facial'],
+    priceFils: 36_000,
+  };
+  const lines = () => {
+    const r = resolveSelection(
+      ['hands-and-feet', 'hands-and-feet'],
+      [HANDS],
+      priceOf,
+    );
+    return r.serviceIds.map((id, i) => ({
+      serviceId: id,
+      priceFils: r.pricesFils[i]!,
+      packageId: r.origins[i]?.packageId ?? null,
+      packageName: r.origins[i]?.name ?? null,
+      packageSeq: r.origins[i]?.seq ?? null,
+    }));
+  };
+
+  it('reads back as two packages at their own price, not one at double', () => {
+    const sold = packagesSold(lines());
+    expect(sold.map((p) => p.priceFils)).toEqual([36_000, 36_000]);
+    expect(sold.map((p) => p.serviceIds.length)).toEqual([2, 2]);
+  });
+
+  it('is asked for again as two lines of the package', () => {
+    expect(askedFor(lines())).toEqual([
+      { kind: 'package', id: 'hands-and-feet' },
+      { kind: 'package', id: 'hands-and-feet' },
+    ]);
+  });
+});
+
+describe('a booking, as it was asked for', () => {
+  it('a package once in place of its parts, hand-picked services as themselves', () => {
+    const r = resolveSelection(
+      ['fringe', 'colour-and-finish', 'gel-manicure'],
+      [COLOUR_AND_FINISH],
+      priceOf,
+    );
+    const stored = r.serviceIds.map((id, i) => ({
+      serviceId: id,
+      packageId: r.origins[i]?.packageId ?? null,
+      packageSeq: r.origins[i]?.seq ?? null,
+    }));
+    expect(askedFor(stored)).toEqual([
+      { kind: 'service', id: 'fringe' },
+      { kind: 'package', id: 'colour-and-finish' },
+      { kind: 'service', id: 'gel-manicure' },
+    ]);
+  });
+
+  it('a booking of hand-picked services is its services', () => {
+    expect(
+      askedFor([{ serviceId: 'cut', packageId: null }, { serviceId: 'dry' }]),
+    ).toEqual([
+      { kind: 'service', id: 'cut' },
+      { kind: 'service', id: 'dry' },
+    ]);
   });
 });

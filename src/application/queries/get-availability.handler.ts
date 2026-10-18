@@ -24,8 +24,7 @@ import {
 } from '@domain/availability/grid';
 import type { ChairOccupation } from '@domain/availability/capacity';
 import type { StaffBooking } from '@domain/availability/staff-mask';
-import { resolveSelection } from '@domain/booking/package';
-import { priceLookupFor } from '@application/commands/confirm-booking.handler';
+import { resolveBasket } from '@application/commands/basket';
 import {
   branchNowMinute,
   branchToday,
@@ -155,24 +154,18 @@ export class GetAvailabilityHandler {
     // Packages expand to real services before the engine sees anything, so
     // availability for a package is availability for its parts. There is no
     // package branch in the engine and there never should be.
-    const packages = await this.packageCatalogue.forBranch(query.branchId);
-    const priceFor = await priceLookupFor(
+    const basket = await resolveBasket(
       this.context,
+      this.packageCatalogue,
       query.branchId,
       query.serviceIds,
-      packages,
     );
-    const selection = resolveSelection(query.serviceIds, packages, priceFor);
-
-    const services = await this.context.loadServices(
-      query.branchId,
-      selection.serviceIds,
-    );
-    if (services.length !== selection.serviceIds.length) {
-      const known = new Set(services.map((s) => s.id));
-      const missing = selection.serviceIds.filter((id) => !known.has(id));
-      throw new NotFoundException(`Unknown service: ${missing.join(', ')}`);
+    if (basket.missing.length > 0) {
+      throw new NotFoundException(
+        `Unknown service: ${basket.missing.join(', ')}`,
+      );
     }
+    const services = basket.services;
 
     const day = await this.context.loadDay(query.branchId, query.tradingDay);
 

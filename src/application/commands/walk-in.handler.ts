@@ -1,6 +1,7 @@
 import {
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
@@ -21,9 +22,17 @@ import {
   type WalkInCandidate,
 } from '@domain/booking/walk-in';
 import { toWireNearestOption } from '@application/contract/wire';
-import { resolveSelection } from '@domain/booking/package';
 import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
-import { priceLookupFor } from './confirm-booking.handler';
+import { resolveBasket } from './basket';
+import { resourceDemandFor } from './place-hold.handler';
+import { SlugIndex } from '@infrastructure/persistence/slug-uuid';
+import { DEFAULT_BRANCH_ID } from '@infrastructure/tenancy/branch-context';
+
+/**
+ * Every branch slug that exists, so a stored branch id reads back as the
+ * branch it was written for (CLAUDE.md 8). A platform uuid passes through.
+ */
+const BRANCHES = new SlugIndex([DEFAULT_BRANCH_ID]);
 import {
   feasibleSet,
   staffAvailableAt,
@@ -86,6 +95,8 @@ const WALK_IN_HOLD_TTL_MS = 5 * 60 * 1000;
  */
 @Injectable()
 export class WalkInHandler {
+  private static readonly log = new Logger(WalkInHandler.name);
+
   constructor(
     private readonly repo: WalkInRepository,
     private readonly holds: HoldRepository,
@@ -116,40 +127,36 @@ export class WalkInHandler {
       );
     }
 
-    // Packages expand HERE, once, so the queue stores what will actually be
-    // performed and every later quote sees plain services.
-    const packages = await this.packageCatalogue.forBranch(cmd.branchId);
-    const priceFor = await priceLookupFor(
+    // THE QUEUE KEEPS WHAT WAS ASKED FOR, a package included, and expands it
+    // whenever it is read (basket.ts). It stored the expansion, so the seat
+    // handed the desk the parts, the desk confirmed the parts, and the
+    // package price was gone before the booking existed: AED 651 for a
+    // package sold at AED 588. The answer still lists the parts, as it did.
+    const basket = await resolveBasket(
       this.context,
+      this.packageCatalogue,
       cmd.branchId,
       cmd.serviceIds,
-      packages,
     );
-    const selection = resolveSelection(cmd.serviceIds, packages, priceFor);
-
-    const services = await this.context.loadServices(
-      cmd.branchId,
-      selection.serviceIds,
-    );
-    if (services.length !== selection.serviceIds.length) {
+    if (basket.missing.length > 0) {
       throw new UnprocessableEntityException(
         'One or more services do not exist.',
       );
     }
 
-    const durationMin = services.reduce((n, s) => n + s.durationMin, 0);
+    const durationMin = basket.services.reduce((n, s) => n + s.durationMin, 0);
 
     const joined = await this.repo.join({
       branchId: cmd.branchId,
       tradingDay: cmd.tradingDay,
       customerId: cmd.customerId,
       guestName: cmd.guestName,
-      serviceIds: selection.serviceIds,
+      serviceIds: cmd.serviceIds,
       durationMin,
       joinedMin: cmd.joinedMin,
     });
 
-    return { ...joined, serviceIds: selection.serviceIds };
+    return { ...joined, serviceIds: basket.serviceIds };
   }
 
   /**
@@ -185,11 +192,34 @@ export class WalkInHandler {
         sets.set(r.walkIn.serviceIds.join('+'), r.walkIn.serviceIds);
 
       for (const [key, ids] of sets) {
-        const services = await this.context.loadServices(branchId, ids);
-        if (services.length !== ids.length) {
+        // A queued package expands here, as it does everywhere else.
+        //
+        // ONE ROW'S TROUBLE IS ONE ROW'S. A queued package needs the
+        // platform's package list; with it down this threw, and the whole
+        // board answered 503 -- the walk-ins waiting for a plain haircut
+        // included. That set gets no options, says why in the log, and every
+        // other row is answered as usual.
+        let basket;
+        try {
+          basket = await resolveBasket(
+            this.context,
+            this.packageCatalogue,
+            branchId,
+            ids,
+          );
+        } catch (e) {
+          WalkInHandler.log.error(
+            `walk-in queue at ${branchId}: no options for [${ids.join(', ')}]: ` +
+              `${e instanceof Error ? e.message : String(e)}`,
+          );
           cache.set(key, []);
           continue;
         }
+        if (basket.missing.length > 0) {
+          cache.set(key, []);
+          continue;
+        }
+        const services = basket.services;
         const result = feasibleSet({
           services,
           professionals: day.professionals,
@@ -301,38 +331,53 @@ export class WalkInHandler {
     if (entry === null)
       throw new NotFoundException('That walk-in is not waiting.');
 
-    const services = await this.context.loadServices(
-      entry.branchId,
+    /**
+     * THE STORED BRANCH IS THE HASH. walk_in_entry.branch_id is a uuid
+     * column, so the demo salon's "marina-walk" comes back folded through
+     * toUuid -- and read as it is, it looks like a real platform branch.
+     * Found by running the journey: seating a queued package asked the
+     * platform for the demo salon's packages and answered 503. Read back
+     * through SlugIndex, as group confirm reads its branch.
+     */
+    const branchId = BRANCHES.toSlug(entry.branchId);
+
+    const basket = await resolveBasket(
+      this.context,
+      this.packageCatalogue,
+      branchId,
       row.walkIn.serviceIds,
     );
-    const day = await this.context.loadDay(entry.branchId, entry.tradingDay);
+    if (basket.missing.length > 0) {
+      throw new UnprocessableEntityException(
+        `That walk-in asked for something this branch no longer sells: ` +
+          `${basket.missing.join(', ')}.`,
+      );
+    }
+    const services = basket.services;
+    const day = await this.context.loadDay(branchId, entry.tradingDay);
+    const first = services[0];
     const last = services[services.length - 1];
-    if (last === undefined) {
+    if (first === undefined || last === undefined) {
       throw new UnprocessableEntityException('That walk-in wants nothing.');
     }
-    const resource = day.resources.find((r) => r.id === last.resourceType);
-    const units =
-      resource === undefined
-        ? 0
-        : Math.max(0, resource.units - resource.outOfService);
 
     const held = await this.holds.place({
-      branchId: entry.branchId,
+      branchId,
       customerId: row.customerId,
       tradingDay: entry.tradingDay,
       staffId,
       startMin,
-      durationMin: row.walkIn.durationMin,
-      claimPreMin: last.claims.preMin,
+      // The visit as it is now, from the same expansion the stations and
+      // the desk's confirm use. The minutes stored at join were the
+      // package's THEN: republished since, the stylist was held for 45
+      // minutes of a 170-minute visit and could be sold the rest.
+      durationMin: services.reduce((n, s) => n + s.durationMin, 0),
+      // The visit's own edges, as an ordinary hold takes them.
+      claimPreMin: first.claims.preMin,
       claimPostMin: last.claims.postMin,
-      resourceDemand: [
-        {
-          resourceType: last.resourceType,
-          startMin,
-          endMin: startMin + row.walkIn.durationMin,
-          units,
-        },
-      ],
+      // A station per part, for that part's minutes -- the same demand an
+      // ordinary hold places, not the last service's station for all of it.
+      resourceDemand: resourceDemandFor(services, startMin, day.resources),
       feasibilityToken: `walk-in:${walkInId}`,
       ttlMs: WALK_IN_HOLD_TTL_MS,
     });

@@ -5,7 +5,10 @@ import {
   type GroupAvailabilityQuery,
 } from './group-availability.handler';
 import { GroupHoldRepository } from '@infrastructure/persistence/group-hold.repository';
-import { FixtureBookingContext } from '@infrastructure/fixtures/fixture-booking-context';
+import {
+  FixtureBookingContext,
+  PACKAGES,
+} from '@infrastructure/fixtures/fixture-booking-context';
 import { toUuid } from '@infrastructure/persistence/hold.repository';
 import type { PrismaService } from '@infrastructure/persistence/prisma.service';
 import type { TenantContext } from '@infrastructure/tenancy/tenant-context';
@@ -132,7 +135,9 @@ function rig(closure?: string) {
   const context = new CountingContext(closure);
   const repo = new GroupHoldRepository(prisma, {} as TenantContext);
   return {
-    handler: new GroupAvailabilityHandler(repo, context),
+    handler: new GroupAvailabilityHandler(repo, context, {
+      forBranch: () => Promise.resolve(PACKAGES),
+    } as never),
     context,
     calls,
   };

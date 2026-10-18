@@ -417,6 +417,54 @@ describe('MobileGroupReadHandler: the one booking the app sees (§6)', () => {
   });
 });
 
+describe('MobileGroupReadHandler: a member who picked a package', () => {
+  const PKG = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1';
+  const part = (slug: string, name: string, priceFils: number) => ({
+    serviceId: toUuid(slug),
+    serviceName: name,
+    priceFils,
+    staffId: toUuid('anya'),
+    packageId: PKG,
+    packageName: 'Cut and dry',
+  });
+  const withPackage = [
+    LANES[0],
+    lane(1, {
+      items: [
+        part('haircut-finish', 'Haircut & finish', 12_800),
+        part('blow-dry', 'Blow dry', 7_200),
+      ],
+    }),
+    LANES[2],
+  ];
+
+  it('names the package on that member, at the price its parts carry', async () => {
+    const v = await harness({ lanes: withPackage }).handler.read(
+      GROUP,
+      customer(BOOKER),
+    );
+    expect(v.members[1]!.packages).toEqual([
+      {
+        id: PKG,
+        name: 'Cut and dry',
+        amount: 200,
+        // Spelled exactly as the member's own services lines are.
+        service_ids: v.members[1]!.services.map((x) => x.id),
+      },
+    ]);
+    expect(v.members[1]!.services[0]!.id).toBe('haircut-finish');
+  });
+
+  it('leaves the other members exactly as they were', async () => {
+    const v = await harness({ lanes: withPackage }).handler.read(
+      GROUP,
+      customer(BOOKER),
+    );
+    expect('packages' in v.members[0]!).toBe(false);
+    expect('packages' in v.members[2]!).toBe(false);
+  });
+});
+
 describe('MobileGroupReadHandler: My Bookings shows a party as one GROUP row', () => {
   const SINGLE = {
     id: 'eeeeeeee-5555-4eee-8eee-eeeeeeeeeeee',

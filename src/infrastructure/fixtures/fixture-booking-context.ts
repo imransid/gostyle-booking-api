@@ -456,7 +456,8 @@ export class FixtureBookingContext implements BookingContextReader {
  * chair demand and processing bands all come from the parts.
  *
  * Prices are net of VAT and below the sum of the parts, which is the whole
- * proposition. expandPackage refuses one that is not.
+ * proposition. A booking charges the package price, spread over the parts
+ * (package.ts).
  */
 export const PACKAGES: readonly ServicePackage[] = [
   {
