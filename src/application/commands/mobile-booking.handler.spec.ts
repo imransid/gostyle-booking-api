@@ -748,6 +748,22 @@ const patch = (
 });
 
 describe('§10 read: the products are part of what the booking is worth', () => {
+  it('reports the stored breakdown when the quote cannot see the bundle', async () => {
+    // The quote prices the real service alone (no discount); the row holds
+    // what create charged for the package.
+    const { handler } = handlerWith({
+      stored: { netFils: 35_000, taxFils: 1_488, discountFils: 5_250 },
+    });
+
+    const view = (await handler.read(OWNER)) as Record<string, unknown>;
+
+    expect(view.amount_without_tax).toBe(350);
+    expect(view.discount).toBe(52.5);
+    expect(view.tax_amount).toBe(14.88);
+    expect(view.total).toBe(312.38);
+    expect(view.due_amount).toBe(312.38);
+  });
+
   it('lists the sold products and adds them to every figure', async () => {
     const { handler } = handlerWith({
       productsEnabled: true,

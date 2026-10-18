@@ -1153,6 +1153,34 @@ export class MobileBookingHandler {
   ): Promise<BookingMoney> {
     try {
       const quote = await this.inBookingTenant(b, () => this.quoteFor(b));
+
+      /**
+       * THE STORED BREAKDOWN WINS WHEN THE ROW HAS ALL THREE COLUMNS.
+       *
+       * The row holds only the real services, so a quote of them cannot
+       * know the booking was a package and loses the bundle discount.
+       * Confirm wrote these figures from the same pipeline that charged the
+       * customer, so they are what was agreed.
+       *
+       * THE DEPOSIT STAYS THE QUOTE'S, so the PATCH check is unchanged.
+       * Rows with any NULL (written before the columns existed) fall
+       * through to the quote exactly as before.
+       */
+      const storedTotal =
+        b.netFils !== null && b.taxFils !== null && b.discountFils !== null
+          ? storedTotalFils(b)
+          : null;
+      if (storedTotal !== null) {
+        return {
+          subtotalFils: b.netFils,
+          vatFils: b.taxFils ?? 0,
+          discountFils: b.discountFils ?? 0,
+          totalFils: storedTotal,
+          depositFils: quote.depositMinor,
+          priced: true,
+        };
+      }
+
       return {
         subtotalFils: quote.subtotalMinor,
         vatFils: quote.vatMinor,
