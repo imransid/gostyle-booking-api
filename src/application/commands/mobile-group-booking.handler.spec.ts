@@ -655,6 +655,31 @@ describe('a member who picks a package', () => {
     expect(lane.endMin - lane.startMin).toBe(75);
   });
 
+  it('a package in another currency is refused in the contract envelope', async () => {
+    const taka: ServicePackage = {
+      ...CUT_AND_DRY,
+      id: 'taka',
+      currency: 'BDT',
+    };
+    const { handler } = harness({ packages: [taka] });
+    const e = await handler
+      .execute(
+        command({
+          members: [
+            { ...self, services: [{ id: 'taka', amount: 200 }] },
+            rana,
+            liam,
+          ],
+        }),
+      )
+      .catch((x: unknown) => x);
+    expect(isMobileContractError(e)).toBe(true);
+    expect((e as MobileContractError).errors[0]).toMatchObject({
+      field: 'members[0].services',
+      code: 'currency_mismatch',
+    });
+  });
+
   it('is refused by name when the package is not sold here', async () => {
     const { handler } = harness({ packages: [] });
     const e = await handler

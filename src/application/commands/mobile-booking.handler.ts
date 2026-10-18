@@ -658,12 +658,17 @@ export class MobileBookingHandler {
   }> {
     const { serviceIds, start } = input;
     // ---- 3. The services must exist at this salon ------------------------
-    const basket = await resolveBasket(
-      this.context,
-      this.packageCatalogue,
-      input.salonId,
-      serviceIds,
-    );
+    let basket: Basket;
+    try {
+      basket = await resolveBasket(
+        this.context,
+        this.packageCatalogue,
+        input.salonId,
+        serviceIds,
+      );
+    } catch (e) {
+      throw translateBasketRefusal(e, 'services');
+    }
     const known = basket.services;
     if (basket.missing.length > 0) {
       const missing = basket.missing;
@@ -1627,6 +1632,27 @@ export class MobileBookingHandler {
  * should surface as itself rather than as a plausible-looking
  * `validation_error` that sends the app down the wrong branch.
  */
+/**
+ * The basket's own refusals, in the contract's envelope.
+ *
+ * The catalogue refuses a basket in this service's envelope -- a basket
+ * mixing two currencies, a service with no usable price (a package with a
+ * part priced at nothing) -- and those reached the app as a shape it does
+ * not parse, with no errors[0].code to render. Here, and only here, they
+ * become the contract's closest words: §9's list is closed, and a code the
+ * app does not know is worse than a slightly broad one. Everything else,
+ * an outage above all, goes through translate() as before.
+ */
+export function translateBasketRefusal(e: unknown, field: string): unknown {
+  if (isBookingError(e) && e.code === 'BOOKING_CURRENCY_MIXED') {
+    return MobileContractError.of(field, 'currency_mismatch', e.message);
+  }
+  if (isBookingError(e) && e.code === 'BOOKING_STATE_INVALID') {
+    return MobileContractError.of(field, 'unknown_service', e.message);
+  }
+  return translate(e);
+}
+
 function translate(e: unknown): unknown {
   if (isMobileContractError(e)) return e;
 

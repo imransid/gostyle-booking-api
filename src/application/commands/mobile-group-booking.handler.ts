@@ -15,6 +15,7 @@ import { basketLines } from './basket';
 import { planMember, type PlannedMember } from './party-member';
 import { spreadOverParts } from '@domain/booking/package';
 import { MobileContractError } from './mobile-booking.error';
+import { translateBasketRefusal } from './mobile-booking.handler';
 import {
   MobileGroupReadHandler,
   type MobileGroupView,
@@ -385,12 +386,17 @@ export class MobileGroupBookingHandler {
     member: MobileGroupMemberCommand,
     index: number,
   ): Promise<PlannedMember> {
-    const planned = await planMember(
-      this.context,
-      this.packageCatalogue,
-      salonId,
-      member.services.map((s) => s.id),
-    );
+    let planned: PlannedMember;
+    try {
+      planned = await planMember(
+        this.context,
+        this.packageCatalogue,
+        salonId,
+        member.services.map((s) => s.id),
+      );
+    } catch (e) {
+      throw translateBasketRefusal(e, `members[${index}].services`);
+    }
     if (planned.basket.missing.length > 0) {
       throw MobileContractError.of(
         `members[${index}].services`,

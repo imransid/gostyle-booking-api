@@ -196,3 +196,23 @@ describe('what a quote refuses', () => {
     ).rejects.toMatchObject({ errors: [{ code: 'date_mismatch' }] });
   });
 });
+
+describe('the basket refusals, in the contract envelope', () => {
+  it('a basket mixing two currencies is currency_mismatch on services', async () => {
+    const { handler } = handlerWith();
+    // A package priced in taka, beside the dirham parts it is made of.
+    const taka = {
+      id: 'taka-pack',
+      name: 'Taka pack',
+      serviceIds: ['blow-dry'],
+      priceFils: 10_000,
+      currency: 'BDT',
+    };
+    (handler as unknown as { packageCatalogue: unknown }).packageCatalogue = {
+      forBranch: () => Promise.resolve([taka]),
+    };
+    await expect(handler.quote(ask(['taka-pack']))).rejects.toMatchObject({
+      errors: [{ field: 'services', code: 'currency_mismatch' }],
+    });
+  });
+});

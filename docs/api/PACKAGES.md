@@ -137,7 +137,11 @@ not. The same package twice is two sales, each read back at its own price.
      "products": [] }
    ```
 
-   Holds nothing, writes nothing, needs no stylist.
+   Holds nothing, writes nothing, needs no stylist. A basket the catalogue
+   refuses answers in the contract's envelope, on the quote and on create
+   alike: `currency_mismatch` on `services` for one that mixes currencies,
+   `unknown_service` for an id that is not sold here or a part with no
+   usable price (`members[i].services` for a party member).
 3. **Create** — `POST /v1/mobile-booking` with the package as a line:
    `"services": [{ "id": "<package id>", "amount": 560 }]` and the quote's
    `amount_without_tax`, `discount`, `tax_amount`, `total`, `due_amount` and
