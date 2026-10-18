@@ -8,9 +8,10 @@ import type {
   JoinWalkInInput,
   WalkInRow,
 } from '@infrastructure/persistence/walk-in.repository';
-import type {
-  PlaceHoldInput,
-  ResourceDemand,
+import {
+  toUuid,
+  type PlaceHoldInput,
+  type ResourceDemand,
 } from '@infrastructure/persistence/hold.repository';
 
 /**
@@ -45,8 +46,12 @@ function handlerWith(queued: readonly string[] = ['colour-and-finish']) {
       return Promise.resolve({ id: 'walk-1', position: 1 });
     },
     find: () => Promise.resolve(row),
+    // As the column holds it: the demo salon's slug folded through toUuid.
     entryContext: () =>
-      Promise.resolve({ branchId: 'marina-walk', tradingDay: '2026-10-19' }),
+      Promise.resolve({
+        branchId: toUuid('marina-walk'),
+        tradingDay: '2026-10-19',
+      }),
     markHeld: () => Promise.resolve(),
   };
   const holds = {
@@ -59,7 +64,13 @@ function handlerWith(queued: readonly string[] = ['colour-and-finish']) {
       });
     },
   };
-  const packages = { forBranch: () => Promise.resolve(PACKAGES) };
+  const askedFor: string[] = [];
+  const packages = {
+    forBranch: (branchId: string) => {
+      askedFor.push(branchId);
+      return Promise.resolve(PACKAGES);
+    },
+  };
 
   const handler = new WalkInHandler(
     repo as never,
@@ -68,7 +79,7 @@ function handlerWith(queued: readonly string[] = ['colour-and-finish']) {
     {} as never,
     packages as never,
   );
-  return { handler, joined, placed };
+  return { handler, joined, placed, askedFor };
 }
 
 const join = {
@@ -102,6 +113,15 @@ describe('joining the queue with a package', () => {
 });
 
 describe('seating a queued package', () => {
+  it('asks for the packages of the branch it was written for, not its hash', async () => {
+    // The column holds toUuid('marina-walk'); read as it is, the demo salon
+    // looked like a real platform branch and seating asked the platform for
+    // its packages (503 on the live run). CLAUDE.md 8.
+    const { handler, askedFor } = handlerWith();
+    await handler.seat('walk-1', 660, 'maya');
+    expect(askedFor).toEqual(['marina-walk']);
+  });
+
   it('hands the desk the package, so confirm charges its price', async () => {
     const { handler } = handlerWith();
     const out = await handler.seat('walk-1', 660, 'maya');

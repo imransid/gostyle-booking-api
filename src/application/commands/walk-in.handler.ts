@@ -24,6 +24,14 @@ import { toWireNearestOption } from '@application/contract/wire';
 import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
 import { resolveBasket } from './basket';
 import { resourceDemandFor } from './place-hold.handler';
+import { SlugIndex } from '@infrastructure/persistence/slug-uuid';
+import { DEFAULT_BRANCH_ID } from '@infrastructure/tenancy/branch-context';
+
+/**
+ * Every branch slug that exists, so a stored branch id reads back as the
+ * branch it was written for (CLAUDE.md 8). A platform uuid passes through.
+ */
+const BRANCHES = new SlugIndex([DEFAULT_BRANCH_ID]);
 import {
   feasibleSet,
   staffAvailableAt,
@@ -304,10 +312,20 @@ export class WalkInHandler {
     if (entry === null)
       throw new NotFoundException('That walk-in is not waiting.');
 
+    /**
+     * THE STORED BRANCH IS THE HASH. walk_in_entry.branch_id is a uuid
+     * column, so the demo salon's "marina-walk" comes back folded through
+     * toUuid -- and read as it is, it looks like a real platform branch.
+     * Found by running the journey: seating a queued package asked the
+     * platform for the demo salon's packages and answered 503. Read back
+     * through SlugIndex, as group confirm reads its branch.
+     */
+    const branchId = BRANCHES.toSlug(entry.branchId);
+
     const basket = await resolveBasket(
       this.context,
       this.packageCatalogue,
-      entry.branchId,
+      branchId,
       row.walkIn.serviceIds,
     );
     if (basket.missing.length > 0) {
@@ -317,7 +335,7 @@ export class WalkInHandler {
       );
     }
     const services = basket.services;
-    const day = await this.context.loadDay(entry.branchId, entry.tradingDay);
+    const day = await this.context.loadDay(branchId, entry.tradingDay);
     const first = services[0];
     const last = services[services.length - 1];
     if (first === undefined || last === undefined) {
@@ -325,7 +343,7 @@ export class WalkInHandler {
     }
 
     const held = await this.holds.place({
-      branchId: entry.branchId,
+      branchId,
       customerId: row.customerId,
       tradingDay: entry.tradingDay,
       staffId,
