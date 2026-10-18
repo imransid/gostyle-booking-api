@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { Logger } from '@nestjs/common';
 import { WalkInHandler } from './walk-in.handler';
 import {
   FixtureBookingContext,
@@ -24,7 +25,10 @@ import {
  * BookingContextReader with real chains.
  */
 
-function handlerWith(queued: readonly string[] = ['colour-and-finish']) {
+function handlerWith(
+  queued: readonly string[] = ['colour-and-finish'],
+  storedMin = 170,
+) {
   const joined: JoinWalkInInput[] = [];
   const placed: PlaceHoldInput[] = [];
 
@@ -33,7 +37,7 @@ function handlerWith(queued: readonly string[] = ['colour-and-finish']) {
       id: 'walk-1',
       label: 'Sara',
       serviceIds: queued,
-      durationMin: 170,
+      durationMin: storedMin,
       joinedMin: 600,
     },
     customerId: null,
@@ -157,5 +161,52 @@ describe('seating a queued package', () => {
     await expect(handler.seat('walk-1', 660, 'maya')).rejects.toThrow(
       /no longer sells: retired-service/,
     );
+  });
+});
+
+describe('the queue when the package list is down', () => {
+  it('answers every other row, and gives the package row no options', async () => {
+    const walkIn = (id: string, serviceIds: string[]) => ({
+      walkIn: { id, label: id, serviceIds, durationMin: 45, joinedMin: 600 },
+      customerId: null,
+      guestName: id,
+    });
+    const repo = {
+      waiting: () =>
+        Promise.resolve([
+          walkIn('plain', ['blow-dry']),
+          walkIn('package', ['colour-and-finish']),
+        ]),
+    };
+    const down = {
+      forBranch: () => Promise.reject(new Error('ListPackages unavailable')),
+    };
+    const error = vi
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+    const handler = new WalkInHandler(
+      repo as never,
+      {} as never,
+      new FixtureBookingContext(),
+      {} as never,
+      down as never,
+    );
+
+    const view = await handler.view('marina-walk', '2026-10-19', 600);
+
+    const byId = new Map(view.rows.map((r) => [r.id, r]));
+    expect(byId.get('plain')!.options.length).toBeGreaterThan(0);
+    expect(byId.get('package')!.options).toEqual([]);
+    expect(error).toHaveBeenCalled();
+    error.mockRestore();
+  });
+});
+
+describe('seating a package republished since it was queued', () => {
+  it('holds the stylist for the visit as it is now, not the minutes stored at join', async () => {
+    // Stored at join as 45 minutes; colour-and-finish is 170 today.
+    const { handler, placed } = handlerWith(['colour-and-finish'], 45);
+    await handler.seat('walk-1', 660, 'maya');
+    expect(placed[0]!.durationMin).toBe(170);
   });
 });

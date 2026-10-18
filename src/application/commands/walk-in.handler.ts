@@ -1,6 +1,7 @@
 import {
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   UnprocessableEntityException,
 } from '@nestjs/common';
@@ -94,6 +95,8 @@ const WALK_IN_HOLD_TTL_MS = 5 * 60 * 1000;
  */
 @Injectable()
 export class WalkInHandler {
+  private static readonly log = new Logger(WalkInHandler.name);
+
   constructor(
     private readonly repo: WalkInRepository,
     private readonly holds: HoldRepository,
@@ -190,12 +193,28 @@ export class WalkInHandler {
 
       for (const [key, ids] of sets) {
         // A queued package expands here, as it does everywhere else.
-        const basket = await resolveBasket(
-          this.context,
-          this.packageCatalogue,
-          branchId,
-          ids,
-        );
+        //
+        // ONE ROW'S TROUBLE IS ONE ROW'S. A queued package needs the
+        // platform's package list; with it down this threw, and the whole
+        // board answered 503 -- the walk-ins waiting for a plain haircut
+        // included. That set gets no options, says why in the log, and every
+        // other row is answered as usual.
+        let basket;
+        try {
+          basket = await resolveBasket(
+            this.context,
+            this.packageCatalogue,
+            branchId,
+            ids,
+          );
+        } catch (e) {
+          WalkInHandler.log.error(
+            `walk-in queue at ${branchId}: no options for [${ids.join(', ')}]: ` +
+              `${e instanceof Error ? e.message : String(e)}`,
+          );
+          cache.set(key, []);
+          continue;
+        }
         if (basket.missing.length > 0) {
           cache.set(key, []);
           continue;
@@ -348,7 +367,11 @@ export class WalkInHandler {
       tradingDay: entry.tradingDay,
       staffId,
       startMin,
-      durationMin: row.walkIn.durationMin,
+      // The visit as it is now, from the same expansion the stations and
+      // the desk's confirm use. The minutes stored at join were the
+      // package's THEN: republished since, the stylist was held for 45
+      // minutes of a 170-minute visit and could be sold the rest.
+      durationMin: services.reduce((n, s) => n + s.durationMin, 0),
       // The visit's own edges, as an ordinary hold takes them.
       claimPreMin: first.claims.preMin,
       claimPostMin: last.claims.postMin,
