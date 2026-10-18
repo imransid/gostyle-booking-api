@@ -7,7 +7,11 @@ import {
   type PackageOrigin,
   type ServicePackage,
 } from '@domain/booking/package';
-import { priceOfService } from '@domain/booking/service-resolution';
+import {
+  oneCurrency,
+  priceOfService,
+} from '@domain/booking/service-resolution';
+import { bookingError } from '@application/contract/errors';
 import { Money } from '@domain/shared/money';
 import { SERVICE_SLUGS } from '@infrastructure/fixtures/fixture-booking-context';
 import { SlugIndex } from '@infrastructure/persistence/slug-uuid';
@@ -147,6 +151,27 @@ export async function resolveBasket(
     );
     if (parts.length > 0) {
       loaded.add(await context.loadServices(branchId, parts));
+    }
+
+    // A package's price and its parts' prices are added and split as one
+    // figure, so they must be in one currency -- the same rule, and the
+    // same refusal, as a hand-picked basket that mixes two.
+    for (const pkg of packages) {
+      const verdict = oneCurrency([
+        { currency: pkg.currency },
+        ...pkg.serviceIds
+          .map((id) => loaded.get(id))
+          .filter((s): s is Service => s !== undefined),
+      ]);
+      if (verdict.kind === 'mixed') {
+        throw bookingError(
+          'BOOKING_CURRENCY_MIXED',
+          `${pkg.name} is priced in a different currency from its services ` +
+            `(${verdict.currencies.join(' and ')}). Prices in different ` +
+            'currencies cannot be added, and there is no rate to convert them with.',
+          { package: pkg.id, currencies: verdict.currencies },
+        );
+      }
     }
   }
 

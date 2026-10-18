@@ -49,6 +49,8 @@ message ListPackagesRequest {
 message PackageItem {
   string service_id = 1;
   int32 quantity = 2;
+  // The service variant this line is pinned to ("Long hair"). EMPTY: none.
+  string variant_id = 3;
 }
 
 message PackageInfo {

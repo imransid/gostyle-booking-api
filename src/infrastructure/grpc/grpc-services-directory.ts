@@ -47,7 +47,7 @@ interface PackageWire {
   name?: string;
   price_minor?: number;
   currency?: string;
-  items?: { service_id?: string; quantity?: number }[];
+  items?: { service_id?: string; quantity?: number; variant_id?: string }[];
 }
 
 /** The generated client surface. Nest lowercases the first letter of each rpc. */
@@ -180,6 +180,7 @@ export class GrpcServicesDirectory
         items: (p.items ?? []).map((i) => ({
           serviceId: i.service_id ?? '',
           quantity: i.quantity ?? 1,
+          variantId: i.variant_id ?? '',
         })),
       }));
     } catch (err) {

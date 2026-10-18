@@ -39,5 +39,10 @@ export interface CataloguePackage {
   readonly priceMinor: number;
   readonly currency: string;
   /** One entry per service in the package. quantity can be more than 1. */
-  readonly items: readonly { serviceId: string; quantity: number }[];
+  readonly items: readonly {
+    serviceId: string;
+    quantity: number;
+    /** The service variant this line is pinned to. Empty or absent: none. */
+    variantId?: string;
+  }[];
 }

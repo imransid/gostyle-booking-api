@@ -154,6 +154,23 @@ describe('a basket holding a package', () => {
   });
 });
 
+describe('a package in another currency', () => {
+  it('is refused, as a basket mixing two currencies is', async () => {
+    const taka: ServicePackage = {
+      id: 'taka-pack',
+      name: 'Taka pack',
+      serviceIds: ['blow-dry'],
+      priceFils: 10_000,
+      currency: 'BDT',
+    };
+    await expect(
+      resolveBasket(contextSpy(), packagesFrom([taka]).source, 'marina-walk', [
+        'taka-pack',
+      ]),
+    ).rejects.toMatchObject({ code: 'BOOKING_CURRENCY_MIXED' });
+  });
+});
+
 describe('an id that is neither', () => {
   it('is missing, and the package list was asked', async () => {
     const packages = packagesFrom(PACKAGES);

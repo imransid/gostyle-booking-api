@@ -33,6 +33,8 @@ export interface ServicePackage {
   readonly serviceIds: readonly string[];
   /** What the package sells for, net of VAT. */
   readonly priceFils: number;
+  /** The currency `priceFils` is in. Absent means the house currency. */
+  readonly currency?: string;
 }
 
 export interface PackageExpansion {
