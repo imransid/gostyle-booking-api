@@ -36,6 +36,26 @@ export interface GroupConfirmInput {
      * catalogue accounts for it. See sourceOfAll.
      */
     readonly source: ItemSource;
+    /**
+     * What is performed, in order, each line at what it is charged: a
+     * package's parts at their shares of its price, carrying the package
+     * (domain/booking/package.ts). Written one booking_item per part, as a
+     * single booking and an app party write them.
+     */
+    readonly parts: readonly {
+      readonly serviceId: string;
+      readonly serviceName: string;
+      readonly resourceType: string;
+      readonly requiredSkill: string;
+      readonly priceFils: number;
+      readonly durationMin: number;
+      readonly source: ItemSource;
+      readonly package: {
+        readonly id: string;
+        readonly name: string;
+        readonly seq: number;
+      } | null;
+    }[];
   }[];
   readonly roster: {
     readonly professionals: readonly {
@@ -238,21 +258,38 @@ export class GroupConfirmRepository {
           select: { id: true, code: true },
         });
 
-        const item = await tx.bookingItem.create({
-          data: {
-            bookingId: booking.id,
-            serviceId: toUuid(spec.serviceIds[0]!),
-            serviceName: spec.label,
-            resourceType: spec.resourceType,
-            requiredSkill: spec.skills[0] ?? 'hair',
-            priceFils: spec.priceFils,
-            durationMin: spec.durationMin,
-            position: 0,
-            staffId: toUuid(lane.staffId),
-            source: spec.source,
-          },
-          select: { id: true },
-        });
+        /**
+         * ONE LINE PER PART, as every other booking is written. This wrote a
+         * single line -- the first service's id under the participant's
+         * label, at the summed price -- so a member sold a package read
+         * back as hand-picked, and the app's read re-priced the lane as its
+         * first service alone (AED 208.95 for a lane worth AED 388.50).
+         * The reservations move to the first line, as before.
+         */
+        let firstItemId: string | null = null;
+        for (const [position, part] of spec.parts.entries()) {
+          const row = await tx.bookingItem.create({
+            data: {
+              bookingId: booking.id,
+              serviceId: toUuid(part.serviceId),
+              serviceName: part.serviceName,
+              resourceType: part.resourceType,
+              requiredSkill: part.requiredSkill,
+              priceFils: part.priceFils,
+              durationMin: part.durationMin,
+              position,
+              staffId: toUuid(lane.staffId),
+              source: part.source,
+              packageId: part.package ? toUuid(part.package.id) : null,
+              packageName: part.package?.name ?? null,
+              packageSeq: part.package?.seq ?? null,
+            },
+            select: { id: true },
+          });
+          firstItemId ??= row.id;
+        }
+        if (firstItemId === null) throw new Error('a lane needs a part');
+        const item = { id: firstItemId };
 
         // 5. Re-point the hold's reservations at this booking's item. Not
         //    recreated: the rows never leave the table, so the lane is

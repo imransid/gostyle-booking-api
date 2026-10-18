@@ -20,7 +20,7 @@ import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-p
 // The SAME basket step, and price table, the single confirm uses. One
 // catalogue, one answer.
 import { planMember } from './party-member';
-import { sourceOfAll } from '@domain/booking/service-resolution';
+import { sourceOf, sourceOfAll } from '@domain/booking/service-resolution';
 import { SlugIndex } from '@infrastructure/persistence/slug-uuid';
 import { DEFAULT_BRANCH_ID } from '@infrastructure/tenancy/branch-context';
 
@@ -147,6 +147,26 @@ export class GroupConfirmHandler {
           preferredStaffId: p.preferredStaffId,
           // One row, several services: mixed where they disagree.
           source: sourceOfAll(m.basket.services),
+          parts: m.basket.services.map((s, k) => {
+            const origin = m.basket.origins[k] ?? null;
+            return {
+              serviceId: s.id,
+              serviceName: s.name,
+              resourceType: s.resourceType,
+              requiredSkill: s.skill,
+              priceFils: m.basket.pricesFils[k] ?? 0,
+              durationMin: s.durationMin,
+              source: sourceOf(s),
+              package:
+                origin === null
+                  ? null
+                  : {
+                      id: origin.packageId,
+                      name: origin.name,
+                      seq: origin.seq,
+                    },
+            };
+          }),
         };
       }),
     );
