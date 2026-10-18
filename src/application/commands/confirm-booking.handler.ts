@@ -406,8 +406,10 @@ export class ConfirmBookingHandler {
 
 function packageOf(
   origin: PackageOrigin | null,
-): { readonly id: string; readonly name: string } | null {
-  return origin === null ? null : { id: origin.packageId, name: origin.name };
+): { readonly id: string; readonly name: string; readonly seq: number } | null {
+  return origin === null
+    ? null
+    : { id: origin.packageId, name: origin.name, seq: origin.seq };
 }
 
 /**

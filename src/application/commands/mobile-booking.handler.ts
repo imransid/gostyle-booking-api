@@ -8,7 +8,7 @@ import {
   resolveBasket,
   type Basket,
 } from './basket';
-import { packagesSold } from '@domain/booking/package';
+import { askedFor, packagesSold } from '@domain/booking/package';
 import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
 import { PaymentLinkHandler } from './payment-link.handler';
 import { LifecycleRepository } from '@infrastructure/persistence/lifecycle.repository';
@@ -112,7 +112,11 @@ interface QuotableBooking {
   readonly tradingDay: Date;
   readonly customerId: string;
   readonly startMinute: number;
-  readonly items: readonly { readonly serviceId: string }[];
+  readonly items: readonly {
+    readonly serviceId: string;
+    readonly packageId?: string | null;
+    readonly packageSeq?: number | null;
+  }[];
 }
 
 /**
@@ -1288,7 +1292,13 @@ export class MobileBookingHandler {
     return this.quotes.execute({
       branchId: b.branchId,
       tradingDay: b.tradingDay.toISOString().slice(0, 10),
-      serviceIds: b.items.map((i) => i.serviceId),
+      // AS IT WAS ASKED FOR: a package once, in place of its parts. From the
+      // parts alone the deposit came out on their own prices -- AED 92 on a
+      // package sold at AED 370 with an AED 74 deposit -- and the payment
+      // create had asked for was refused as too low (package.ts askedFor).
+      serviceIds: askedFor(b.items).map((l) =>
+        l.kind === 'package' ? PACKAGE_SPELLINGS.toSlug(l.id) : l.id,
+      ),
       customerId: b.customerId,
       channel: 'online',
       startMin: b.startMinute,

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   expandPackage,
   findPackage,
+  askedFor,
   packagesSold,
   resolveSelection,
   spreadOverParts,
@@ -165,8 +166,18 @@ describe('resolving a selection', () => {
     const origin = {
       packageId: 'colour-and-finish',
       name: 'Colour and finish',
+      seq: 0,
     };
     expect(r.origins).toEqual([null, origin, origin]);
+  });
+
+  it('counts each sale of a package, so the same one twice is two', () => {
+    const r = resolveSelection(
+      ['colour-and-finish', 'gel-manicure', 'colour-and-finish'],
+      packages,
+      priceOf,
+    );
+    expect(r.origins.map((o) => o?.seq ?? null)).toEqual([0, 0, null, 1, 1]);
   });
 
   it('mixes packages and plain services', () => {
@@ -291,5 +302,70 @@ describe('spreading a line back over its parts', () => {
 
   it('shares equally when no part carries anything', () => {
     expect(spreadOverParts(100, [0, 0])).toEqual([50, 50]);
+  });
+});
+
+describe('the same package sold twice', () => {
+  const HANDS: ServicePackage = {
+    id: 'hands-and-feet',
+    name: 'Hands and feet',
+    serviceIds: ['gel-manicure', 'luxury-facial'],
+    priceFils: 36_000,
+  };
+  const lines = () => {
+    const r = resolveSelection(
+      ['hands-and-feet', 'hands-and-feet'],
+      [HANDS],
+      priceOf,
+    );
+    return r.serviceIds.map((id, i) => ({
+      serviceId: id,
+      priceFils: r.pricesFils[i]!,
+      packageId: r.origins[i]?.packageId ?? null,
+      packageName: r.origins[i]?.name ?? null,
+      packageSeq: r.origins[i]?.seq ?? null,
+    }));
+  };
+
+  it('reads back as two packages at their own price, not one at double', () => {
+    const sold = packagesSold(lines());
+    expect(sold.map((p) => p.priceFils)).toEqual([36_000, 36_000]);
+    expect(sold.map((p) => p.serviceIds.length)).toEqual([2, 2]);
+  });
+
+  it('is asked for again as two lines of the package', () => {
+    expect(askedFor(lines())).toEqual([
+      { kind: 'package', id: 'hands-and-feet' },
+      { kind: 'package', id: 'hands-and-feet' },
+    ]);
+  });
+});
+
+describe('a booking, as it was asked for', () => {
+  it('a package once in place of its parts, hand-picked services as themselves', () => {
+    const r = resolveSelection(
+      ['fringe', 'colour-and-finish', 'gel-manicure'],
+      [COLOUR_AND_FINISH],
+      priceOf,
+    );
+    const stored = r.serviceIds.map((id, i) => ({
+      serviceId: id,
+      packageId: r.origins[i]?.packageId ?? null,
+      packageSeq: r.origins[i]?.seq ?? null,
+    }));
+    expect(askedFor(stored)).toEqual([
+      { kind: 'service', id: 'fringe' },
+      { kind: 'package', id: 'colour-and-finish' },
+      { kind: 'service', id: 'gel-manicure' },
+    ]);
+  });
+
+  it('a booking of hand-picked services is its services', () => {
+    expect(
+      askedFor([{ serviceId: 'cut', packageId: null }, { serviceId: 'dry' }]),
+    ).toEqual([
+      { kind: 'service', id: 'cut' },
+      { kind: 'service', id: 'dry' },
+    ]);
   });
 });

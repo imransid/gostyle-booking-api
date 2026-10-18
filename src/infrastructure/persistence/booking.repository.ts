@@ -43,7 +43,12 @@ export interface ConfirmItem {
    */
   readonly source: ItemSource;
   /** The package this line was sold in, or null for a hand-picked service. */
-  readonly package: { readonly id: string; readonly name: string } | null;
+  readonly package: {
+    readonly id: string;
+    readonly name: string;
+    /** Which sale of it, from 0: the same package twice is two. */
+    readonly seq: number;
+  } | null;
 }
 
 /**
@@ -264,6 +269,7 @@ export class BookingRepository {
                 packageId:
                   item.package === null ? null : toUuid(item.package.id),
                 packageName: item.package?.name ?? null,
+                packageSeq: item.package?.seq ?? null,
               },
               select: { id: true },
             }),

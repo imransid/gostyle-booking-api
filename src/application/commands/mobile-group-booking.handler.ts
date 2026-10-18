@@ -313,7 +313,11 @@ export class MobileGroupBookingHandler {
                 package:
                   origin === null
                     ? null
-                    : { id: origin.packageId, name: origin.name },
+                    : {
+                        id: origin.packageId,
+                        name: origin.name,
+                        seq: origin.seq,
+                      },
               };
             }),
             products: products[i]!,

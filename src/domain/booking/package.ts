@@ -59,6 +59,13 @@ export interface PackageExpansion {
 export interface PackageOrigin {
   readonly packageId: string;
   readonly name: string;
+  /**
+   * WHICH SALE of the package, counting from 0 in the order chosen. The
+   * same package twice is two sales, and a booking must be able to tell
+   * them apart: read back by id alone, two "Hands and feet" were one at
+   * double the price.
+   */
+  readonly seq: number;
 }
 
 /**
@@ -166,10 +173,14 @@ export function resolveSelection(
       continue;
     }
     const expansion = expandPackage(pkg, priceOf);
+    const origin = {
+      packageId: pkg.id,
+      name: pkg.name,
+      seq: expansions.length,
+    };
     expansions.push(expansion);
     serviceIds.push(...expansion.serviceIds);
     pricesFils.push(...expansion.partPricesFils);
-    const origin = { packageId: pkg.id, name: pkg.name };
     origins.push(...expansion.serviceIds.map(() => origin));
   }
 
@@ -209,30 +220,75 @@ export function packagesSold(
     /** Absent or null: a hand-picked line, or one written before the column. */
     readonly packageId?: string | null;
     readonly packageName?: string | null;
+    /** Which sale of the package this line belongs to. */
+    readonly packageSeq?: number | null;
   }[],
 ): readonly SoldPackage[] {
-  const byId = new Map<
+  const bySale = new Map<
     string,
-    { name: string; fils: Money[]; serviceIds: string[] }
+    { packageId: string; name: string; fils: Money[]; serviceIds: string[] }
   >();
   for (const i of items) {
     if (i.packageId === null || i.packageId === undefined) continue;
-    const key = i.packageId.toLowerCase();
-    const seen = byId.get(key) ?? {
+    const packageId = i.packageId.toLowerCase();
+    // One entry per SALE: the same package twice is two packages, each at
+    // its own price, never one at double.
+    const key = `${packageId}#${i.packageSeq ?? ''}`;
+    const seen = bySale.get(key) ?? {
+      packageId,
       name: i.packageName ?? '',
       fils: [],
       serviceIds: [],
     };
     seen.fils.push(Money.fils(i.priceFils));
     seen.serviceIds.push(i.serviceId);
-    byId.set(key, seen);
+    bySale.set(key, seen);
   }
-  return [...byId].map(([packageId, p]) => ({
-    packageId,
+  return [...bySale.values()].map((p) => ({
+    packageId: p.packageId,
     name: p.name,
     priceFils: Money.sum(p.fils).fils,
     serviceIds: p.serviceIds,
   }));
+}
+
+/** A line of a booking as it was asked for: a service, or a whole package. */
+export type AskedLine =
+  | { readonly kind: 'service'; readonly id: string }
+  | { readonly kind: 'package'; readonly id: string };
+
+/**
+ * A booking's lines as they were ASKED FOR, from what was stored: each
+ * package sold once, in place of its parts, and every hand-picked service
+ * as itself. The inverse of resolveSelection over a booking's items.
+ *
+ * WHY A READ NEEDS IT. The app's read and payment re-quote a booking to
+ * know its deposit, and re-quoted from the stored parts a package was its
+ * parts at their own prices: the deposit came out on AED 459 for a package
+ * sold at AED 370, and the payment create had asked for was refused as too
+ * low. Re-quoted from what was asked for, the ladder runs on the package
+ * price, exactly as it did at create.
+ */
+export function askedFor(
+  items: readonly {
+    readonly serviceId: string;
+    readonly packageId?: string | null;
+    readonly packageSeq?: number | null;
+  }[],
+): readonly AskedLine[] {
+  const out: AskedLine[] = [];
+  let last: string | null = null;
+  for (const i of items) {
+    if (i.packageId === null || i.packageId === undefined) {
+      out.push({ kind: 'service', id: i.serviceId });
+      last = null;
+      continue;
+    }
+    const sale = `${i.packageId.toLowerCase()}#${i.packageSeq ?? ''}`;
+    if (sale !== last) out.push({ kind: 'package', id: i.packageId });
+    last = sale;
+  }
+  return out;
 }
 
 /**

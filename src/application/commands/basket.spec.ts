@@ -109,8 +109,8 @@ describe('a basket holding a package', () => {
     expect(b.totalFils).toBe(56_000);
     expect(b.packages[0]?.savingFils).toBe(6_000);
     expect(b.origins).toEqual([
-      { packageId: 'colour-and-finish', name: 'Colour and finish' },
-      { packageId: 'colour-and-finish', name: 'Colour and finish' },
+      { packageId: 'colour-and-finish', name: 'Colour and finish', seq: 0 },
+      { packageId: 'colour-and-finish', name: 'Colour and finish', seq: 0 },
     ]);
   });
 

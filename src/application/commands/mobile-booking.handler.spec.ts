@@ -766,6 +766,53 @@ describe('§10 read: the products are part of what the booking is worth', () => 
     expect(view.due_amount).toBe(312.38);
   });
 
+  it('re-quotes a package booking as it was sold, so the deposit is on the package price', async () => {
+    // From the parts alone the ladder ran on their own prices: an AED 74
+    // deposit on a package sold at AED 370 was refused as below AED 92.
+    const PKG = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1';
+    const part = (serviceId: string) => ({
+      serviceId,
+      serviceName: serviceId,
+      priceFils: 18_500,
+      staffId: 'maya',
+      packageId: PKG,
+      packageName: 'Groom and Go',
+      packageSeq: 0,
+    });
+    const { handler, of } = handlerWith({
+      items: [part('haircut-finish'), part('blow-dry')],
+      stored: { netFils: 37_000, taxFils: 1_850, discountFils: 0 },
+    });
+
+    await handler.read(OWNER);
+
+    const asked = (of('quotes.execute')[0]!.args as { serviceIds: string[] })
+      .serviceIds;
+    expect(asked).toEqual([PKG]);
+  });
+
+  it('re-quotes the demo package by its own id, not its stored hash', async () => {
+    const part = (serviceId: string) => ({
+      serviceId: toUuid(serviceId),
+      serviceName: serviceId,
+      priceFils: 28_000,
+      staffId: 'maya',
+      packageId: toUuid('colour-and-finish'),
+      packageName: 'Colour and finish',
+      packageSeq: 0,
+    });
+    const { handler, of } = handlerWith({
+      items: [part('full-colour'), part('blow-dry')],
+      stored: { netFils: 56_000, taxFils: 2_800, discountFils: 0 },
+    });
+
+    await handler.read(OWNER);
+
+    expect(
+      (of('quotes.execute')[0]!.args as { serviceIds: string[] }).serviceIds,
+    ).toEqual(['colour-and-finish']);
+  });
+
   it('names the package a booking holds, at the price its parts carry', async () => {
     // Groom and Go: AED 370 for a cut and a beard trim, stored as the two
     // parts' shares. The read says so, and the parts still add up to it.

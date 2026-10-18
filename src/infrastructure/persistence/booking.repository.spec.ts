@@ -340,7 +340,11 @@ describe('confirm() records the package a line was sold in', () => {
   const itemData = (of: (m: string) => Call[], n: number) =>
     (
       of('bookingItem.create')[n]!.args[0] as {
-        data: { packageId: string | null; packageName: string | null };
+        data: {
+          packageId: string | null;
+          packageName: string | null;
+          packageSeq: number | null;
+        };
       }
     ).data;
 
@@ -350,12 +354,13 @@ describe('confirm() records the package a line was sold in', () => {
     expect(itemData(of, 0)).toMatchObject({
       packageId: null,
       packageName: null,
+      packageSeq: null,
     });
   });
 
   it('writes the id and the name as sold on every part', async () => {
     const PKG = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1';
-    const pkg = { id: PKG, name: 'Groom and Go' };
+    const pkg = { id: PKG, name: 'Groom and Go', seq: 0 };
     const { repository, of } = repositoryWith();
     await repository.confirm(
       input({
@@ -368,8 +373,9 @@ describe('confirm() records the package a line was sold in', () => {
     expect(itemData(of, 0)).toMatchObject({
       packageId: PKG,
       packageName: 'Groom and Go',
+      packageSeq: 0,
     });
-    expect(itemData(of, 1)).toMatchObject({ packageId: PKG });
+    expect(itemData(of, 1)).toMatchObject({ packageId: PKG, packageSeq: 0 });
   });
 
   it('folds a fixture package slug like a service slug (CLAUDE.md 8)', async () => {
@@ -377,7 +383,10 @@ describe('confirm() records the package a line was sold in', () => {
     await repository.confirm(
       input({
         items: [
-          { ...ITEM, package: { id: 'colour-and-finish', name: 'Colour' } },
+          {
+            ...ITEM,
+            package: { id: 'colour-and-finish', name: 'Colour', seq: 0 },
+          },
         ],
       }),
     );
