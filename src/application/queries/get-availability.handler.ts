@@ -25,7 +25,6 @@ import {
 import type { ChairOccupation } from '@domain/availability/capacity';
 import type { StaffBooking } from '@domain/availability/staff-mask';
 import { resolveSelection } from '@domain/booking/package';
-import { PACKAGES } from '@infrastructure/fixtures/fixture-booking-context';
 import { priceOf } from '@application/commands/confirm-booking.handler';
 import {
   branchNowMinute,
@@ -41,6 +40,8 @@ import {
   type PlannedBooking,
   type SellableStartsProbe,
 } from '@domain/availability/ranking';
+
+import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
 
 export interface GetAvailabilityQuery {
   readonly branchId: string;
@@ -145,6 +146,7 @@ function explain(
 export class GetAvailabilityHandler {
   constructor(
     @Inject(BOOKING_CONTEXT) private readonly context: BookingContextReader,
+    private readonly packageCatalogue: PlatformPackageCatalogue,
   ) {}
 
   async execute(query: GetAvailabilityQuery): Promise<AvailabilityView> {
@@ -153,7 +155,8 @@ export class GetAvailabilityHandler {
     // Packages expand to real services before the engine sees anything, so
     // availability for a package is availability for its parts. There is no
     // package branch in the engine and there never should be.
-    const selection = resolveSelection(query.serviceIds, PACKAGES, priceOf);
+    const packages = await this.packageCatalogue.forBranch(query.branchId);
+    const selection = resolveSelection(query.serviceIds, packages, priceOf);
 
     const services = await this.context.loadServices(
       query.branchId,

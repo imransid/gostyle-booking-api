@@ -22,7 +22,7 @@ import {
 } from '@domain/booking/walk-in';
 import { toWireNearestOption } from '@application/contract/wire';
 import { resolveSelection } from '@domain/booking/package';
-import { PACKAGES } from '@infrastructure/fixtures/fixture-booking-context';
+import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
 import { priceOf } from './confirm-booking.handler';
 import {
   feasibleSet,
@@ -91,8 +91,10 @@ export class WalkInHandler {
     private readonly holds: HoldRepository,
     @Inject(BOOKING_CONTEXT) private readonly context: BookingContextReader,
     /** Only to put a name on the board. See `view`. */
+
     @Inject(CUSTOMER_CONTEXT)
     private readonly customers: CustomerContextReader,
+    private readonly packageCatalogue: PlatformPackageCatalogue,
   ) {}
 
   async join(
@@ -116,7 +118,8 @@ export class WalkInHandler {
 
     // Packages expand HERE, once, so the queue stores what will actually be
     // performed and every later quote sees plain services.
-    const selection = resolveSelection(cmd.serviceIds, PACKAGES, priceOf);
+    const packages = await this.packageCatalogue.forBranch(cmd.branchId);
+    const selection = resolveSelection(cmd.serviceIds, packages, priceOf);
 
     const services = await this.context.loadServices(
       cmd.branchId,
