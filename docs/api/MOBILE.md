@@ -27,6 +27,11 @@ change an endpoint.
 
 ## Contents
 
+> **Packages (2026-10-18):** how a package is listed, priced and sold — at
+> the desk and in the app, single and party — is in
+> [PACKAGES.md](PACKAGES.md). In short: the package price is carried by its
+> parts, so there is no bundle-discount line any more.
+
 - [1. Getting started](#1-getting-started)
   - [Base URL](#base-url)
   - [Authentication](#authentication)
@@ -1602,7 +1607,7 @@ Price a basket without holding or charging anything: every intermediate the arit
 | `400` | { statusCode: 400, message: [ '<per-field messages>' ], error: 'Bad Request' } — e.g. ['day must be YYYY-MM-DD','pick at least one service','customerId must be a string',... | The global ValidationPipe ({ transform:true, whitelist:true, forbidNonWhitelisted:true }, src/main.ts:30). |
 | `401` | Missing bearer token \| Malformed token \| Unknown token issuer \| Token expired \| Invalid token \| Staff authentication unavailable | BookingAuthGuard / TokenVerifier, exactly as on the other routes. |
 | `404` | Unknown service: ${missing ids, comma-space separated} — e.g. 'Unknown service: nail-art' or 'Unknown service: nail-art, scalp-massage' | GetQuoteHandler: after package expansion, loadServices() returned fewer services than were asked for; the handler then NAMES the missing ids (unlike POST /v1/bookings, which just says 'One o. |
-| `500` | Internal server error | Two paths, neither caught and there is no exception filter: (a) a plain Error from expandPackage() — 'Package ${id} contains no services' (package.ts:51) or 'Package ${id} costs AED X but it. |
+| `500` | Internal server error | Changed 2026-10-18: a package priced above its parts is no longer an error — it is sold at its own price, saving 0 (see [PACKAGES.md](PACKAGES.md)). A package with no services is left out of the catalogue before it reaches here. What remains is a genuine bug. |
 
 > STATUS CODE MISMATCH — this returns HTTP 201, not 200, despite @ApiOkResponse: it is @Post('quote') with no @HttpCode(HttpStatus.OK). Do not assert on 200. It is a POST only because of the body; it writes NOTHING — no hold, no reservation, no row — so calling it repeatedly is free and holds no slot.
 
@@ -3000,7 +3005,7 @@ The queue in arrival order, each row with a live quote of the nearest starts the
 
 #### `POST /v1/walk-ins`
 
-Add somebody to the walk-in queue. Package ids in serviceIds are expanded to plain services here, once, before anything is stored.
+Add somebody to the walk-in queue. Changed 2026-10-18: package ids in serviceIds are STORED as asked for and expanded wherever the queue is read, so the seat answers with the package and the desk's confirm charges its price (see [PACKAGES.md](PACKAGES.md)). The 201 still answers with the expanded parts.
 
 *Source: [walk-ins.controller.ts:89](src/interface/http/walk-ins.controller.ts#L89)*
 
@@ -3035,7 +3040,7 @@ Add somebody to the walk-in queue. Package ids in serviceIds are expanded to pla
 | `500` | Internal server error | `tradingDay` passes the regex but is not a real date — e.g. '2027-13-45'. new Date('2027-13-45T00:00:00Z') is an Invalid Date and Prisma refuses to write it. |
 | `500` | Internal server error | CUSTOMER TOKENS ONLY: the ConsumerAuth gRPC service is unreachable — AuthService.verifyToken lets the error propagate by design. 500, not 401. |
 | `500` | Internal server error | CHECK walk_in_duration_positive (duration_min > 0) if the resolved services somehow sum to 0, and CHECK walk_in_wants_something (array_length(service_ids,1) >= 1). |
-| `500` | Internal server error | resolveSelection -> expandPackage throws a plain Error: 'Package <id> contains no services', or 'Package <id> costs X but its parts total Y. |
+| `500` | Internal server error | Changed 2026-10-18: no longer reachable from package pricing — a package priced above its parts is sold at its own price (see [PACKAGES.md](PACKAGES.md)). |
 
 > THE CONTRACT THE FE MUST GET RIGHT: (1) exactly one of customerId / guestName, enforced only by a database CHECK, so getting it wrong is a 500 rather than a 400. (2) serviceIds is expanded server-side and the response's serviceIds is the EXPANDED list — store that, because /seat and the queue view speak the expanded ids. (3) joinedMin's ceiling is 1319, not 1320.
 
