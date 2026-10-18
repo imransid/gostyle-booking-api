@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  PACKAGE_LIST_CACHE_MAX,
   PACKAGE_LIST_TTL_MS,
   PlatformPackageCatalogue,
 } from './platform-package-catalogue';
@@ -150,6 +151,28 @@ describe('PlatformPackageCatalogue.forBranch', () => {
       vi.advanceTimersByTime(PACKAGE_LIST_TTL_MS + 1);
       await catalogue.forBranch(BRANCH);
       expect(calls).toHaveLength(2);
+    });
+
+    it('is bounded: made-up branch ids cannot grow it for ever', async () => {
+      process.env.PACKAGES_FROM_PLATFORM = 'true';
+      const { catalogue } = make([]);
+      for (let i = 0; i < PACKAGE_LIST_CACHE_MAX + 50; i++) {
+        const branch = `22222222-2222-2222-2222-${String(i).padStart(12, '0')}`;
+        await catalogue.forBranch(branch);
+      }
+      expect(catalogue.cachedLists()).toBeLessThanOrEqual(
+        PACKAGE_LIST_CACHE_MAX,
+      );
+    });
+
+    it('drops lists that have gone stale', async () => {
+      vi.useFakeTimers();
+      process.env.PACKAGES_FROM_PLATFORM = 'true';
+      const { catalogue } = make([]);
+      await catalogue.forBranch(BRANCH);
+      vi.advanceTimersByTime(PACKAGE_LIST_TTL_MS + 1);
+      await catalogue.forBranch('22222222-2222-2222-2222-222222222223');
+      expect(catalogue.cachedLists()).toBe(1);
     });
 
     it('never keeps a failure', async () => {

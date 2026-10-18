@@ -21,6 +21,13 @@ export const PACKAGES_FROM_PLATFORM = (): boolean =>
  */
 export const PACKAGE_LIST_TTL_MS = 60_000;
 
+/**
+ * How many branches' lists are kept at once. The key is the caller's
+ * tenant and branch, so without a bound a client looping over made-up
+ * branch ids would grow the process for ever; the oldest entry goes first.
+ */
+export const PACKAGE_LIST_CACHE_MAX = 500;
+
 const log = new Logger('PlatformPackageCatalogue');
 
 @Injectable()
@@ -81,8 +88,28 @@ export class PlatformPackageCatalogue {
       `packages branch=${branchId} platform=${packages.length} ` +
         `skipped=${rows.length - packages.length}`,
     );
-    this.cache.set(key, { at: Date.now(), packages });
+    this.remember(key, packages);
     return packages;
+  }
+
+  /** Keep a list, dropping what is stale and, past the bound, the oldest. */
+  private remember(key: string, packages: readonly ServicePackage[]): void {
+    const now = Date.now();
+    for (const [k, v] of this.cache) {
+      if (now - v.at >= PACKAGE_LIST_TTL_MS) this.cache.delete(k);
+    }
+    this.cache.delete(key);
+    // A Map iterates in insertion order, so the first key is the oldest.
+    for (const oldest of this.cache.keys()) {
+      if (this.cache.size < PACKAGE_LIST_CACHE_MAX) break;
+      this.cache.delete(oldest);
+    }
+    this.cache.set(key, { at: now, packages });
+  }
+
+  /** For the spec: how many lists are held. */
+  cachedLists(): number {
+    return this.cache.size;
   }
 }
 
