@@ -103,6 +103,44 @@ export class MobileProductLineDto extends MobileLineDto {
   quantity?: number;
 }
 
+/** A line to price: the id alone. Its amount is what the quote answers. */
+export class MobileQuoteLineDto {
+  @ApiProperty({ example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1' })
+  @IsString()
+  id!: string;
+}
+
+export class MobileQuoteDto {
+  @ApiProperty({ example: 'marina-walk' })
+  @IsString()
+  salon_id!: string;
+
+  @ApiProperty({
+    type: [MobileQuoteLineDto],
+    description: 'Service or package ids, exactly as create takes them.',
+  })
+  @IsArray()
+  @ArrayNotEmpty({ message: 'Pick at least one service.' })
+  @ValidateNested({ each: true })
+  @Type(() => MobileQuoteLineDto)
+  services!: MobileQuoteLineDto[];
+
+  @ApiPropertyOptional({ type: [MobileProductLineDto] })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => MobileProductLineDto)
+  products?: MobileProductLineDto[];
+
+  @ApiProperty({ example: '2026-09-20' })
+  @Matches(DAY, { message: 'date must be YYYY-MM-DD' })
+  date!: string;
+
+  @ApiProperty({ example: '2026-09-20T20:00:00+04:00' })
+  @IsISO8601({ strict: true })
+  start_time!: string;
+}
+
 export class MobileBookingDto {
   @ApiProperty({ example: 'marina-walk' })
   @IsString()
@@ -337,6 +375,33 @@ export class MobileBookingController {
       // From the verified token, never the body (§1).
       customerId: actor.id ?? 'anonymous',
       idempotencyKey,
+    });
+  }
+
+  @Post('quote')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Price a basket before creating the booking',
+    description:
+      'Answers with the figures create will check -- amount_without_tax, ' +
+      'discount, tax_amount, total, due_amount -- plus the services lines ' +
+      '(a package at its own price) and the end_time to send back. Holds ' +
+      'nothing and writes nothing. Same refusals as create for an unknown ' +
+      'service or a refused product.',
+  })
+  @ApiOkResponse({ description: 'The figures, and the lines to send.' })
+  quote(
+    @Body() dto: MobileQuoteDto,
+    @CurrentActor() actor: Actor,
+  ): Promise<unknown> {
+    return this.handler.quote({
+      salonId: dto.salon_id,
+      serviceIds: dto.services.map((s) => s.id),
+      products: dto.products,
+      date: dto.date,
+      startTime: dto.start_time,
+      // From the verified token, never the body (§1).
+      customerId: actor.id ?? 'anonymous',
     });
   }
 
