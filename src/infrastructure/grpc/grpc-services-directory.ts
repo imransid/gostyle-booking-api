@@ -8,8 +8,10 @@ import { callWithRetry, type GrpcCallOptions } from './call-with-retry';
 import {
   describeGrpcFailure,
   grpcStatusName,
+  grpcStatusOf,
   isTransportFailure,
 } from './grpc-failure';
+import { status } from '@grpc/grpc-js';
 import { platformGrpcAddress } from './staff-grpc.constants';
 
 import type {
@@ -48,6 +50,7 @@ interface PackageWire {
   price_minor?: number;
   currency?: string;
   items?: { service_id?: string; quantity?: number; variant_id?: string }[];
+  from_published_snapshot?: boolean;
 }
 
 /** The generated client surface. Nest lowercases the first letter of each rpc. */
@@ -182,8 +185,25 @@ export class GrpcServicesDirectory
           quantity: i.quantity ?? 1,
           variantId: i.variant_id ?? '',
         })),
+        fromPublishedSnapshot: p.from_published_snapshot === true,
       }));
     } catch (err) {
+      /**
+       * A PLATFORM WITH NO ListPackages SELLS NO PACKAGES. It is not an
+       * outage to wait out: the method is not there and will not come back
+       * on its own, so a basket naming a package is told the package is not
+       * sold here, rather than answered 503 as if trying again could help.
+       * Said at ERROR, because PACKAGES_FROM_PLATFORM is on and somebody
+       * expects packages.
+       */
+      if (grpcStatusOf(err) === status.UNIMPLEMENTED) {
+        this.logger.error(
+          `listPackages: the platform at ${platformGrpcAddress()} has no ` +
+            'ListPackages, so this branch sells no packages. Deploy a ' +
+            'platform with it before PACKAGES_FROM_PLATFORM is on.',
+        );
+        return [];
+      }
       this.logger.error(
         `listPackages failed for tenant ${tenantId}: ${describeGrpcFailure(err)}`,
       );

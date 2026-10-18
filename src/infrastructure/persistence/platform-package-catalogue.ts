@@ -115,6 +115,23 @@ export class PlatformPackageCatalogue {
 
 /** A platform row as a package booking can sell, or null when it cannot. */
 function usable(r: CataloguePackage): ServicePackage | null {
+  /**
+   * ONLY THE LIVE MENU'S PACKAGES. A platform older than ListPackages-from-
+   * the-published-snapshot served the DRAFT row: a price edited but never
+   * republished, and no variant pins, so a "Long hair" package would be
+   * sold with the base service's minutes. Such a platform says nothing, and
+   * a booking-api switched on ahead of it sells none of its packages rather
+   * than its drafts.
+   */
+  if (r.fromPublishedSnapshot !== true) {
+    log.error(
+      `Skipping package ${r.id}: the platform did not say it is the live ` +
+        "menu's (from_published_snapshot). Deploy the platform that serves " +
+        'the published snapshot before PACKAGES_FROM_PLATFORM is on.',
+    );
+    return null;
+  }
+
   const serviceIds = r.items.flatMap((i) =>
     Array<string>(Math.max(1, i.quantity)).fill(i.serviceId),
   );

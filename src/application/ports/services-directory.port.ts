@@ -45,4 +45,9 @@ export interface CataloguePackage {
     /** The service variant this line is pinned to. Empty or absent: none. */
     variantId?: string;
   }[];
+  /**
+   * The platform read it as the live menu sells it, from the published
+   * snapshot. False or absent: an older platform that served the draft row.
+   */
+  readonly fromPublishedSnapshot?: boolean;
 }

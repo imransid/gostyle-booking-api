@@ -33,6 +33,7 @@ const row = (over: Record<string, unknown> = {}) => ({
   priceMinor: 70000,
   currency: 'AED',
   items: [{ serviceId: SVC_A, quantity: 1, variantId: '' }],
+  fromPublishedSnapshot: true,
   ...over,
 });
 
@@ -115,6 +116,19 @@ describe('PlatformPackageCatalogue.forBranch', () => {
       ]);
       const out = await catalogue.forBranch(BRANCH);
       expect(out.map((p) => p.id)).toEqual(['plain']);
+    });
+
+    it("sells nothing a platform did not say is the live menu's", async () => {
+      // An older platform served the draft row: an unpublished price, and no
+      // variant pins. Switched on ahead of the platform, nothing is sold.
+      process.env.PACKAGES_FROM_PLATFORM = 'true';
+      const { catalogue } = make([
+        row({ id: 'old-reader', fromPublishedSnapshot: undefined }),
+        row({ id: 'said-false', fromPublishedSnapshot: false }),
+        row({ id: 'live' }),
+      ]);
+      const out = await catalogue.forBranch(BRANCH);
+      expect(out.map((p) => p.id)).toEqual(['live']);
     });
 
     it('no tenant: sells nothing rather than guessing one', async () => {

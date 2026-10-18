@@ -363,7 +363,7 @@ check(
 );
 
 // ---------------------------------------------------- the platform is down
-section('D. A real branch whose platform has no ListPackages');
+section('D. A real branch whose platform has no ListPackages (an older release)');
 
 const plain = await call(DOWN_API, REAL_DESK, 'POST', '/bookings/quote', {
   day: DAY,
@@ -385,8 +385,8 @@ const pkgDown = await call(DOWN_API, REAL_DESK, 'POST', '/bookings/quote', {
   startMin: 600,
 });
 check(
-  'MUST FAIL: only the package basket is refused, as a dependency outage',
-  pkgDown.status === 503,
+  'MUST FAIL: a platform with no ListPackages sells no packages -- "not sold here", not an outage',
+  pkgDown.status === 404,
   `status ${pkgDown.status}: ${pkgDown.body?.code} ${pkgDown.body?.message ?? ''}`,
 );
 
