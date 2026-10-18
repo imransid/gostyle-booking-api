@@ -6,6 +6,8 @@ import {
 import { eligible } from '@domain/availability/feasible';
 import { DAILY_BOOKING_CAP } from '@domain/availability/grid';
 import { describeRefusal } from './get-availability.handler';
+import { resolveBasket } from '@application/commands/basket';
+import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
 
 export interface EligibleStaffQuery {
   readonly branchId: string;
@@ -17,6 +19,7 @@ export interface EligibleStaffQuery {
 export interface EligibleStaffView {
   readonly branchId: string;
   readonly tradingDay: string;
+  /** After any package expanded, in chain order: who does the parts. */
   readonly serviceIds: readonly string[];
   /** The skills this chain needs, in the order the services were given. */
   readonly requiredSkills: readonly string[];
@@ -49,25 +52,32 @@ export interface EligibleStaffView {
 export class GetEligibleStaffHandler {
   constructor(
     @Inject(BOOKING_CONTEXT) private readonly context: BookingContextReader,
+    private readonly packageCatalogue: PlatformPackageCatalogue,
   ) {}
 
   async execute(query: EligibleStaffQuery): Promise<EligibleStaffView> {
-    const services = await this.context.loadServices(
+    // The same basket every other stage of the wizard resolves, so a
+    // package picked at stage 1 is not "Unknown service" here at stage 2:
+    // who may do it is who may do every one of its parts.
+    const basket = await resolveBasket(
+      this.context,
+      this.packageCatalogue,
       query.branchId,
       query.serviceIds,
     );
-    if (services.length !== query.serviceIds.length) {
-      const known = new Set(services.map((s) => s.id));
-      const missing = query.serviceIds.filter((id) => !known.has(id));
-      throw new NotFoundException(`Unknown service: ${missing.join(', ')}`);
+    if (basket.missing.length > 0) {
+      throw new NotFoundException(
+        `Unknown service: ${basket.missing.join(', ')}`,
+      );
     }
+    const services = basket.services;
 
     const day = await this.context.loadDay(query.branchId, query.tradingDay);
 
     const base = {
       branchId: query.branchId,
       tradingDay: query.tradingDay,
-      serviceIds: query.serviceIds,
+      serviceIds: basket.serviceIds,
       requiredSkills: services.map((s) => s.skill),
       durationMin: services.reduce((n, s) => n + s.durationMin, 0),
     };
