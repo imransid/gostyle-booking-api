@@ -43,6 +43,10 @@ import {
   type ResourceDemand,
 } from '@infrastructure/persistence/hold.repository';
 
+import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
+import { resolveSelection } from '@domain/booking/package';
+import { priceLookupFor } from '@application/commands/confirm-booking.handler';
+
 export interface PlaceHoldCommand {
   readonly branchId: string;
   readonly tradingDay: string;
@@ -76,14 +80,24 @@ export class PlaceHoldHandler {
   constructor(
     @Inject(BOOKING_CONTEXT) private readonly context: BookingContextReader,
     private readonly holds: HoldRepository,
+    private readonly packageCatalogue: PlatformPackageCatalogue,
   ) {}
 
   async execute(cmd: PlaceHoldCommand): Promise<HoldView> {
-    const services = await this.context.loadServices(
+    const packages = await this.packageCatalogue.forBranch(cmd.branchId);
+    const priceFor = await priceLookupFor(
+      this.context,
       cmd.branchId,
       cmd.serviceIds,
+      packages,
     );
-    if (services.length !== cmd.serviceIds.length) {
+    const selection = resolveSelection(cmd.serviceIds, packages, priceFor);
+
+    const services = await this.context.loadServices(
+      cmd.branchId,
+      selection.serviceIds,
+    );
+    if (services.length !== selection.serviceIds.length) {
       throw new NotFoundException('One or more services do not exist');
     }
 
