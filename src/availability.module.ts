@@ -105,6 +105,7 @@ import { ServicesDirectoryController } from '@interface/http/services-directory.
 import { ListServicesHandler } from '@application/queries/list-services.handler';
 
 import { MobilePackagesController } from '@interface/http/mobile-packages.controller';
+import { PackagesController } from '@interface/http/packages.controller';
 import { MobilePackagesHandler } from '@application/queries/mobile-packages.handler';
 
 @Module({
@@ -134,6 +135,7 @@ import { MobilePackagesHandler } from '@application/queries/mobile-packages.hand
     // @Get(':id'), which swallows every literal at that depth. Asserted by
     // route-order.spec.ts, not left to memory.
     MobilePackagesController,
+    PackagesController,
     ServicesDirectoryController,
     SettingsController,
     ReadModelsController,
