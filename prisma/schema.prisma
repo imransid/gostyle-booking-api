@@ -1253,7 +1253,10 @@ model WalkInEntry {
   customerId String? @map("customer_id") @db.Uuid
   guestName  String? @map("guest_name")
 
-  /// What they want. Packages are expanded before they get here.
+  /// What they asked for: services, packages, or both. A package is
+  /// expanded wherever this is read (basket.ts), so it is still a package
+  /// -- at its own price -- when the desk confirms the seat. Rows written
+  /// before held the expansion, which reads exactly as it did.
   serviceIds  String[] @map("service_ids")
   durationMin Int      @map("duration_min") @db.SmallInt
 

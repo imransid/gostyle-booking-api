@@ -23,6 +23,7 @@ import {
 import { toWireNearestOption } from '@application/contract/wire';
 import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
 import { resolveBasket } from './basket';
+import { resourceDemandFor } from './place-hold.handler';
 import {
   feasibleSet,
   staffAvailableAt,
@@ -115,8 +116,11 @@ export class WalkInHandler {
       );
     }
 
-    // Packages expand HERE, once, so the queue stores what will actually be
-    // performed and every later quote sees plain services.
+    // THE QUEUE KEEPS WHAT WAS ASKED FOR, a package included, and expands it
+    // whenever it is read (basket.ts). It stored the expansion, so the seat
+    // handed the desk the parts, the desk confirmed the parts, and the
+    // package price was gone before the booking existed: AED 651 for a
+    // package sold at AED 588. The answer still lists the parts, as it did.
     const basket = await resolveBasket(
       this.context,
       this.packageCatalogue,
@@ -136,7 +140,7 @@ export class WalkInHandler {
       tradingDay: cmd.tradingDay,
       customerId: cmd.customerId,
       guestName: cmd.guestName,
-      serviceIds: basket.serviceIds,
+      serviceIds: cmd.serviceIds,
       durationMin,
       joinedMin: cmd.joinedMin,
     });
@@ -177,11 +181,18 @@ export class WalkInHandler {
         sets.set(r.walkIn.serviceIds.join('+'), r.walkIn.serviceIds);
 
       for (const [key, ids] of sets) {
-        const services = await this.context.loadServices(branchId, ids);
-        if (services.length !== ids.length) {
+        // A queued package expands here, as it does everywhere else.
+        const basket = await resolveBasket(
+          this.context,
+          this.packageCatalogue,
+          branchId,
+          ids,
+        );
+        if (basket.missing.length > 0) {
           cache.set(key, []);
           continue;
         }
+        const services = basket.services;
         const result = feasibleSet({
           services,
           professionals: day.professionals,
@@ -293,20 +304,25 @@ export class WalkInHandler {
     if (entry === null)
       throw new NotFoundException('That walk-in is not waiting.');
 
-    const services = await this.context.loadServices(
+    const basket = await resolveBasket(
+      this.context,
+      this.packageCatalogue,
       entry.branchId,
       row.walkIn.serviceIds,
     );
+    if (basket.missing.length > 0) {
+      throw new UnprocessableEntityException(
+        `That walk-in asked for something this branch no longer sells: ` +
+          `${basket.missing.join(', ')}.`,
+      );
+    }
+    const services = basket.services;
     const day = await this.context.loadDay(entry.branchId, entry.tradingDay);
+    const first = services[0];
     const last = services[services.length - 1];
-    if (last === undefined) {
+    if (first === undefined || last === undefined) {
       throw new UnprocessableEntityException('That walk-in wants nothing.');
     }
-    const resource = day.resources.find((r) => r.id === last.resourceType);
-    const units =
-      resource === undefined
-        ? 0
-        : Math.max(0, resource.units - resource.outOfService);
 
     const held = await this.holds.place({
       branchId: entry.branchId,
@@ -315,16 +331,12 @@ export class WalkInHandler {
       staffId,
       startMin,
       durationMin: row.walkIn.durationMin,
-      claimPreMin: last.claims.preMin,
+      // The visit's own edges, as an ordinary hold takes them.
+      claimPreMin: first.claims.preMin,
       claimPostMin: last.claims.postMin,
-      resourceDemand: [
-        {
-          resourceType: last.resourceType,
-          startMin,
-          endMin: startMin + row.walkIn.durationMin,
-          units,
-        },
-      ],
+      // A station per part, for that part's minutes -- the same demand an
+      // ordinary hold places, not the last service's station for all of it.
+      resourceDemand: resourceDemandFor(services, startMin, day.resources),
       feasibilityToken: `walk-in:${walkInId}`,
       ttlMs: WALK_IN_HOLD_TTL_MS,
     });
