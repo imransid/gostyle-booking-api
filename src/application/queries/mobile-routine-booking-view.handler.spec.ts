@@ -162,6 +162,7 @@ function build(sessions: readonly Session[]) {
     {} as never,
     context as never,
     { enabled: () => false } as never,
+    { forBranch: () => Promise.resolve([]) } as never,
   );
   const view = new MobileRoutineBookingViewHandler(
     reads,

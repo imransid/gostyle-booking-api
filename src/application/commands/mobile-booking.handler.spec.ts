@@ -254,6 +254,7 @@ function handlerWith(options: HandlerOptions = {}) {
     { transition: () => Promise.resolve({ kind: 'transitioned' }) } as never,
     context as never,
     productCatalogue as never,
+    { forBranch: () => Promise.resolve([]) } as never,
   );
 
   const of = (method: string) => calls.filter((c) => c.method === method);

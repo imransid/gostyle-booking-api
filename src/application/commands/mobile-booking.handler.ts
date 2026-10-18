@@ -1,6 +1,11 @@
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PlaceHoldHandler } from './place-hold.handler';
-import { ConfirmBookingHandler } from './confirm-booking.handler';
+import {
+  ConfirmBookingHandler,
+  priceLookupFor,
+} from './confirm-booking.handler';
+import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
+import { resolveSelection } from '@domain/booking/package';
 import { PaymentLinkHandler } from './payment-link.handler';
 import { LifecycleRepository } from '@infrastructure/persistence/lifecycle.repository';
 import { GetQuoteHandler } from '@application/queries/get-quote.handler';
@@ -208,6 +213,7 @@ export class MobileBookingHandler {
     // Behind PRODUCTS_FROM_PLATFORM. Resolved HERE and handed down; the
     // repository never asks the catalogue anything (CLAUDE.md 7).
     private readonly productCatalogue: PlatformProductCatalogue,
+    private readonly packageCatalogue: PlatformPackageCatalogue,
   ) {}
 
   async execute(cmd: MobileBookingCommand): Promise<unknown> {
@@ -285,10 +291,22 @@ export class MobileBookingHandler {
     }
 
     // ---- 3. The services must exist at this salon ------------------------
-    const known = await this.context.loadServices(cmd.salonId, serviceIds);
-    if (known.length !== serviceIds.length) {
+    const packages = await this.packageCatalogue.forBranch(cmd.salonId);
+    const priceFor = await priceLookupFor(
+      this.context,
+      cmd.salonId,
+      serviceIds,
+      packages,
+    );
+    const selection = resolveSelection(serviceIds, packages, priceFor);
+
+    const known = await this.context.loadServices(
+      cmd.salonId,
+      selection.serviceIds,
+    );
+    if (known.length !== selection.serviceIds.length) {
       const found = new Set(known.map((s) => s.id));
-      const missing = serviceIds.filter((i) => !found.has(i));
+      const missing = selection.serviceIds.filter((i) => !found.has(i));
 
       /**
        * SAY WHICH CATALOGUE SAID NO.
