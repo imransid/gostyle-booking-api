@@ -22,6 +22,7 @@ function contextSpy(): BookingContextReader {
     loadServices: (b, ids) => fixture.loadServices(b, ids),
     loadDay: (b, d) => fixture.loadDay(b, d),
     loadCatalogue: (b) => fixture.loadCatalogue(b),
+    loadMenu: (b) => fixture.loadMenu(b),
   };
 }
 

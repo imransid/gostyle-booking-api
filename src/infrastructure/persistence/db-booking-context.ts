@@ -6,6 +6,7 @@ import type {
 import type { Professional, Service } from '@domain/availability/feasible';
 import type { StaffBooking } from '@domain/availability/staff-mask';
 import type { ChairOccupation } from '@domain/availability/capacity';
+import { menuSource } from '@domain/booking/service-resolution';
 import { FixtureBookingContext } from '../fixtures/fixture-booking-context';
 import { PrismaService } from './prisma.service';
 import { toUuid } from './hold.repository';
@@ -80,22 +81,20 @@ export class DbBookingContext implements BookingContextReader {
   }
 
   /**
-   * The menu: platform first, fixture behind it.
+   * Every service an id might name: platform first, fixture behind it.
    *
-   * THE SAME SOURCE THE DIRECTORY ENDPOINT READS. This was the fixture and
-   * nothing else, so the booking wizard and `/services-directory` described
-   * two different salons -- the desk was offered haircut-finish and
-   * fringe-trim for a tenant that sells Keratin and Olaplex. Whichever list
-   * the front end built its picker from, it was wrong: one names services
-   * nobody sells, the other names services the engine then refuses.
+   * NOT THE MENU. This is what the readers build their `SlugIndex` from, so
+   * a stored slug id reads back as a name. The fixture entries STAY,
+   * appended, for exactly as long as the slug callers do (proof scripts,
+   * the desk tests, every existing integration). Platform ids win on a
+   * collision because a uuid can never be a slug, so there is no case where
+   * one shadows the other.
    *
-   * The fixture entries STAY, appended, for exactly as long as the slug
-   * callers do (proof scripts, the desk tests, every existing integration).
-   * Platform ids win on a collision because a uuid can never be a slug, so
-   * there is no case where one shadows the other.
+   * It used to be the menu as well, which listed all thirteen demo services
+   * after a real salon's own -- see `loadMenu`.
    *
-   * A platform failure falls back to the fixture rather than emptying the
-   * menu, because an empty catalogue reads as "this salon sells nothing".
+   * A platform failure falls back to the fixture, because a board that
+   * cannot name its services is worse than one that names only the slugs.
    */
   async loadCatalogue(branchId: string): Promise<Service[]> {
     const fixture = await this.fixture.loadCatalogue(branchId);
@@ -114,6 +113,31 @@ export class DbBookingContext implements BookingContextReader {
           (e instanceof Error ? e.message : String(e)),
       );
       return fixture;
+    }
+  }
+
+  /**
+   * What this branch SELLS: the list `GET /availability/catalogue` shows.
+   *
+   * THE SAME SOURCE THE DIRECTORY ENDPOINT READS, and only that. It was
+   * `loadCatalogue`, so a real salon's three services came back followed by
+   * thirteen it does not sell -- "Keratin treatment", "Balayage", "Gel
+   * manicure" -- which read as services the salon had archived and still
+   * showed. The demo menu now answers only for the demo salon (`menuSource`,
+   * the rule packages already follow).
+   *
+   * A platform failure is NOT papered over with the fixture here: the demo
+   * menu is never this salon's, and the adapter already turns a transport
+   * fault into a 503 that names the dependency.
+   */
+  async loadMenu(branchId: string): Promise<Service[]> {
+    switch (menuSource(branchId, this.platform.enabled())) {
+      case 'fixture':
+        return this.fixture.loadMenu(branchId);
+      case 'none':
+        return [];
+      case 'platform':
+        return this.platform.catalogue(branchId);
     }
   }
 

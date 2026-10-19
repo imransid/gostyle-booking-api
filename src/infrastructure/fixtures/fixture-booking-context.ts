@@ -446,6 +446,10 @@ export class FixtureBookingContext implements BookingContextReader {
   loadCatalogue(_branchId: string): Promise<Service[]> {
     return Promise.resolve([...SERVICES]);
   }
+
+  loadMenu(_branchId: string): Promise<Service[]> {
+    return Promise.resolve([...SERVICES]);
+  }
 }
 
 /**

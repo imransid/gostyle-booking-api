@@ -233,8 +233,9 @@ export class PlatformServiceCatalogue {
     const tenantId = this.tenants.current();
     if (tenantId === null) {
       PlatformServiceCatalogue.log.warn(
-        'Cannot list the platform catalogue: no X-Tenant-Id on this request, ' +
-          'and ListServices is tenant-scoped. Falling back to the fixture.',
+        `Cannot list the platform catalogue for branch ${branchId}: no ` +
+          'X-Tenant-Id on this request, and ListServices is tenant-scoped. ' +
+          'Listing no platform services.',
       );
       return [];
     }

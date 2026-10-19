@@ -415,7 +415,8 @@ export class GetCatalogueHandler {
   ) {}
 
   async execute(branchId: string): Promise<CatalogueItemView[]> {
-    const services = await this.context.loadCatalogue(branchId);
+    // The menu, not loadCatalogue: that one carries the demo services too.
+    const services = await this.context.loadMenu(branchId);
     return services.map((s) => ({
       id: s.id,
       name: s.name,
