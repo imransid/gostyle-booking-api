@@ -5,7 +5,10 @@ import {
   type ServicesDirectoryReader,
 } from '@application/ports/services-directory.port';
 import type { ServicePackage } from '@domain/booking/package';
-import { looksLikePlatformId } from '@domain/booking/service-resolution';
+import {
+  looksLikePlatformId,
+  menuSource,
+} from '@domain/booking/service-resolution';
 import { PACKAGES } from '../fixtures/fixture-booking-context';
 import { TenantContext } from '../tenancy/tenant-context';
 
@@ -57,8 +60,9 @@ export class PlatformPackageCatalogue {
    * nothing with it off.
    */
   async forBranch(branchId: string): Promise<readonly ServicePackage[]> {
-    if (!looksLikePlatformId(branchId)) return PACKAGES;
-    if (!PACKAGES_FROM_PLATFORM()) return [];
+    const source = menuSource(branchId, PACKAGES_FROM_PLATFORM());
+    if (source === 'fixture') return PACKAGES;
+    if (source === 'none') return [];
 
     const tenantId = this.tenants.current();
     if (tenantId === null || !looksLikePlatformId(tenantId)) {

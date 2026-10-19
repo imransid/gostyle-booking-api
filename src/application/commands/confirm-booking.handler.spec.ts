@@ -68,6 +68,7 @@ function handlerWith(
     loadServices: () => Promise.resolve([HAIRCUT]),
     loadDay: () => Promise.reject(new Error('not used')),
     loadCatalogue: () => Promise.reject(new Error('not used')),
+    loadMenu: () => Promise.reject(new Error('not used')),
   };
 
   const bookings = {
