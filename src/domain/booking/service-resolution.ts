@@ -81,6 +81,30 @@ export function looksLikePlatformId(id: string): boolean {
   return UUID_RE.test(id);
 }
 
+/** Where a branch's MENU comes from: what it sells, not what an id names. */
+export type MenuSource = 'fixture' | 'platform' | 'none';
+
+/**
+ * THE DEMO MENU BELONGS TO THE DEMO SALON.
+ *
+ * A slug branch ("marina-walk") is the fixture's own world -- the proof
+ * scripts and the desk tests -- and sells the fixture. A real branch sells
+ * what the platform says, with its switch on, and nothing with it off. The
+ * fixture is never a real salon's menu: appended to one, it offered
+ * "Bridal morning", and then "Keratin treatment" and "Balayage", at salons
+ * that sell none of them.
+ *
+ * One rule for services and packages alike, so the two lists cannot
+ * disagree about which salon is the demo.
+ */
+export function menuSource(
+  branchId: string,
+  platformSwitchOn: boolean,
+): MenuSource {
+  if (!looksLikePlatformId(branchId)) return 'fixture';
+  return platformSwitchOn ? 'platform' : 'none';
+}
+
 // ------------------------------------------------------------ the money
 
 /**
