@@ -17,6 +17,11 @@ import {
 } from '@domain/booking/check-in-request';
 import type { HistoryEntry } from '@domain/booking/check-in-attribution';
 import {
+  CHECK_IN_ANSWER_EVENTS,
+  type CheckInAnswer,
+} from '@domain/booking/check-in-push';
+import { CHECK_IN_PUSH_V1 } from '../messaging/check-in-push.flag';
+import {
   IN_THE_CHAIR,
   chairCheckInVerdict,
   type ChairRefusal,
@@ -457,9 +462,17 @@ export class CheckInRequestRepository {
       });
       if (lapse === null) continue;
 
-      const written = await this.prisma.checkInRequest.updateMany({
-        where: { id: row.id, state: 'waiting' },
-        data: lapseWrite(lapse, nowMs),
+      // EXPIRED is told to the customer (CHECK_IN_PUSH_V1): its event is
+      // written in the same transaction as the lapse, or neither is.
+      const written = await this.prisma.$transaction(async (tx) => {
+        const w = await tx.checkInRequest.updateMany({
+          where: { id: row.id, state: 'waiting' },
+          data: lapseWrite(lapse, nowMs),
+        });
+        if (w.count === 1 && lapse.to === 'expired') {
+          await announceAnswer(tx, row.id, 'expired');
+        }
+        return w;
       });
       if (written.count === 1) {
         lapsed.push({ id: row.id, code: row.code, to: lapse.to });
@@ -540,6 +553,7 @@ export class CheckInRequestRepository {
           },
           select: ROW_FIELDS,
         });
+        await announceAnswer(tx, request.id, 'approved');
         return { kind: 'approved' as const, request, checkIn: result };
       },
       // The check-in runs inside this window, on its own connection.
@@ -579,6 +593,7 @@ export class CheckInRequestRepository {
         where: { id },
         select: ROW_FIELDS,
       });
+      await announceAnswer(tx, id, 'rejected');
       return { kind: 'rejected' as const, request };
     });
   }
@@ -837,6 +852,31 @@ function lapseWrite(lapse: Lapse, nowMs: number) {
     decidedById: null,
     reason: lapse.reason,
   };
+}
+
+/**
+ * THE ANSWER, FOR THE CUSTOMER'S PHONE (CHECK_IN_PUSH_V1): one outbox event,
+ * written in the answer's own transaction, so an answer is told exactly when
+ * it is saved, and a rolled-back answer is never told. The push itself is
+ * the outbox chain's (CheckInPushListener), after the commit: a slow or
+ * broken push-app can never fail or slow the desk's answer.
+ *
+ * Off: nothing written, the answer exactly as before.
+ */
+async function announceAnswer(
+  tx: Tx,
+  requestId: string,
+  answer: CheckInAnswer,
+): Promise<void> {
+  if (!CHECK_IN_PUSH_V1()) return;
+  await tx.eventOutbox.create({
+    data: {
+      aggregateType: 'check_in_request',
+      aggregateId: requestId,
+      eventType: CHECK_IN_ANSWER_EVENTS[answer],
+      payload: { requestId, state: answer },
+    },
+  });
 }
 
 /** The booking is not there, or nothing on it is waiting: which one. */

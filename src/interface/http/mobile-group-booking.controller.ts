@@ -51,6 +51,7 @@ import {
   MobileGroupEnabledGuard,
   groupDepositPercent,
 } from './mobile-group.flag';
+import { MOBILE_GROUP_SELF_CHECK_IN } from './mobile-group-self-check-in.flag';
 
 export class MobileGroupMemberDto {
   @ApiProperty({ example: 0, description: "The app's own index. Echoed back." })
@@ -288,11 +289,16 @@ export class MobileGroupBookingController {
     @Param('groupId') groupId: string,
     @CurrentActor() actor: Actor,
   ): Promise<MobileGroupView> {
-    return this.reads.read(groupId, {
+    const who = {
       actorId: actor.id ?? 'anonymous',
       actorKind: actor.kind,
       actorBranchId: actor.branchId,
-    });
+    };
+    // The caller is passed only when MOBILE_GROUP_SELF_CHECK_IN is on: off,
+    // the party is exactly what it was.
+    return MOBILE_GROUP_SELF_CHECK_IN()
+      ? this.reads.read(groupId, who, actor.id ?? 'anonymous')
+      : this.reads.read(groupId, who);
   }
 
   @Post(':groupId/cancel')

@@ -442,3 +442,147 @@ describe('MobileGroupReadHandler: My Bookings shows a party as one GROUP row', (
     expect(await h.handler.decorateList({ nope: 1 })).toEqual({ nope: 1 });
   });
 });
+
+describe('MobileGroupReadHandler: who is looking (MOBILE_GROUP_SELF_CHECK_IN)', () => {
+  it('without a viewer, the party has exactly the keys it always had', async () => {
+    const v = await harness().handler.read(GROUP, customer(RANA));
+    expect(Object.keys(v)).toEqual([
+      'id',
+      'salon_id',
+      'booking_type',
+      'status',
+      'status_detail',
+      'payment_status',
+      'payment_status_detail',
+      'date',
+      'start_time',
+      'end_time',
+      'member_count',
+      'members',
+      'amount_without_tax',
+      'tax_amount',
+      'discount',
+      'promo_code',
+      'total',
+      'deposit_percent',
+      'deposit_amount',
+      'advance_paid_amount',
+      'due_amount',
+      'payment_method',
+      'pass_qr_code',
+      'expires_at',
+      'created_at',
+    ]);
+    for (const m of v.members) {
+      expect(Object.keys(m)).toEqual([
+        'ref',
+        'id',
+        'booking_code',
+        'user_id',
+        'name',
+        'kind',
+        'age_group',
+        'status',
+        'services',
+        'products',
+        'stylist',
+        'start_time',
+        'end_time',
+        'total',
+      ]);
+    }
+  });
+
+  it('flag off, no viewer: no member row has an is_me or booking_id key at all', async () => {
+    const h = harness();
+    const read = await h.handler.read(GROUP, customer(RANA));
+    const made = await h.handler.afterCreate(GROUP, new Map());
+    for (const m of [...read.members, ...made.members]) {
+      expect(m).not.toHaveProperty('is_me');
+      expect(m).not.toHaveProperty('booking_id');
+    }
+  });
+
+  it("three members, exactly one true: the viewer's own row", async () => {
+    const booker = await harness().handler.read(
+      GROUP,
+      customer(BOOKER),
+      BOOKER,
+    );
+    expect(booker.members.map((m) => m.is_me)).toEqual([true, false, false]);
+
+    const rana = await harness().handler.read(GROUP, customer(RANA), RANA);
+    expect(rana.members.map((m) => m.is_me)).toEqual([false, true, false]);
+  });
+
+  it("booking_id: the viewer's own lane id on their row, null on every other", async () => {
+    const booker = await harness().handler.read(
+      GROUP,
+      customer(BOOKER),
+      BOOKER,
+    );
+    expect(booker.members.map((m) => m.booking_id)).toEqual([
+      'booking-0',
+      null,
+      null,
+    ]);
+
+    const rana = await harness().handler.read(GROUP, customer(RANA), RANA);
+    expect(rana.members.map((m) => m.booking_id)).toEqual([
+      null,
+      'booking-1',
+      null,
+    ]);
+  });
+
+  it('booking_id is the LANE booking id, never the participant id', async () => {
+    const v = await harness().handler.read(GROUP, customer(RANA), RANA);
+    const mine = v.members.find((m) => m.is_me === true)!;
+    expect(mine.id).toBe('part-1');
+    expect(mine.booking_id).toBe('booking-1');
+    expect(mine.booking_id).not.toBe(mine.id);
+  });
+
+  it('a guest row is always false, and its booking_id null', async () => {
+    for (const id of [BOOKER, RANA]) {
+      const v = await harness().handler.read(GROUP, customer(id), id);
+      const guests = v.members.filter((m) => m.kind === 'guest');
+      expect(guests).toHaveLength(1);
+      expect(guests.map((m) => m.is_me)).toEqual([false]);
+      expect(guests.map((m) => m.booking_id)).toEqual([null]);
+    }
+  });
+
+  it("a staff viewer: every row false, even with an id equal to a member's", async () => {
+    const v = await harness().handler.read(
+      GROUP,
+      { actorId: BOOKER, actorKind: 'staff', actorBranchId: null },
+      BOOKER,
+    );
+    expect(v.members.map((m) => m.is_me)).toEqual([false, false, false]);
+    expect(v.members.map((m) => m.booking_id)).toEqual([null, null, null]);
+  });
+
+  it('is_me then booking_id go last, after the keys the row always had', async () => {
+    const without = await harness().handler.read(GROUP, customer(RANA));
+    const seen = await harness().handler.read(GROUP, customer(RANA), RANA);
+    seen.members.forEach((m, i) => {
+      expect(Object.keys(m)).toEqual([
+        ...Object.keys(without.members[i]!),
+        'is_me',
+        'booking_id',
+      ]);
+    });
+  });
+
+  it('a viewer changes nothing else: every other key and value is the same', async () => {
+    for (const id of [BOOKER, RANA]) {
+      const without = await harness().handler.read(GROUP, customer(id));
+      const seen = await harness().handler.read(GROUP, customer(id), id);
+      expect({
+        ...seen,
+        members: seen.members.map(({ is_me: _, booking_id: __, ...m }) => m),
+      }).toStrictEqual(without);
+    }
+  });
+});

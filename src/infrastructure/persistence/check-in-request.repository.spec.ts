@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Prisma } from '../../generated/prisma/client';
 import {
   CHAIR_LOCK_CLASS,
@@ -148,14 +148,18 @@ describe('lapseWaiting', () => {
     const updateMany = vi.fn(() =>
       Promise.resolve({ count: counts.shift() ?? 1 }),
     );
+    const create = vi.fn(() => Promise.resolve({}));
+    // Each lapse is written in its own transaction, with its event (if any).
+    const tx = { checkInRequest: { updateMany }, eventOutbox: { create } };
     const prisma = {
       $queryRaw: vi.fn(() => Promise.resolve(rows)),
-      checkInRequest: { updateMany },
+      $transaction: vi.fn((fn: (t: typeof tx) => unknown) => fn(tx)),
     };
     return {
       r: new CheckInRequestRepository(prisma as never),
       prisma,
       updateMany,
+      create,
     };
   }
 
@@ -186,6 +190,43 @@ describe('lapseWaiting', () => {
         decidedById: null,
         reason: 'Nobody answered before the booking ended.',
       },
+    });
+  });
+
+  describe('the answer for the phone (CHECK_IN_PUSH_V1)', () => {
+    afterEach(() => vi.unstubAllEnvs());
+
+    it('writes one check_in_request.expired event with the expiry, and none for a close', async () => {
+      vi.stubEnv('CHECK_IN_PUSH_V1', 'true');
+      const h = lapsing([
+        row('ignored', 'confirmed', NOW - MIN),
+        row('moved', 'cancelled', NOW + 60 * MIN),
+      ]);
+      await h.r.lapseWaiting(NOW);
+      expect(h.create).toHaveBeenCalledTimes(1);
+      expect(h.create).toHaveBeenCalledWith({
+        data: {
+          aggregateType: 'check_in_request',
+          aggregateId: 'ignored',
+          eventType: 'check_in_request.expired',
+          payload: { requestId: 'ignored', state: 'expired' },
+        },
+      });
+    });
+
+    it('writes none when the desk answered in between', async () => {
+      vi.stubEnv('CHECK_IN_PUSH_V1', 'true');
+      const h = lapsing([row('raced', 'confirmed', NOW - MIN)], [0]);
+      await h.r.lapseWaiting(NOW);
+      expect(h.create).not.toHaveBeenCalled();
+    });
+
+    it('writes none with the switch off, and still expires', async () => {
+      const h = lapsing([row('ignored', 'confirmed', NOW - MIN)]);
+      await expect(h.r.lapseWaiting(NOW)).resolves.toEqual([
+        { id: 'ignored', code: 'GS-ignored', to: 'expired' },
+      ]);
+      expect(h.create).not.toHaveBeenCalled();
     });
   });
 
@@ -310,6 +351,39 @@ describe('approveWith: lock, check in, then mark', () => {
       approved,
     };
   }
+
+  describe('the answer for the phone (CHECK_IN_PUSH_V1)', () => {
+    afterEach(() => vi.unstubAllEnvs());
+
+    it('writes check_in_request.approved after the mark, in the same transaction', async () => {
+      vi.stubEnv('CHECK_IN_PUSH_V1', 'true');
+      const h = approving({});
+      const create = vi.fn(() => {
+        h.order.push('event');
+        return Promise.resolve({});
+      });
+      Object.assign(h.tx, { eventOutbox: { create } });
+      await h.r.approveWith(decider, h.checkIn);
+      expect(h.order).toEqual(['lock', 'check-in', 'mark', 'event']);
+      expect(create).toHaveBeenCalledWith({
+        data: {
+          aggregateType: 'check_in_request',
+          aggregateId: 'req-1',
+          eventType: 'check_in_request.approved',
+          payload: { requestId: 'req-1', state: 'approved' },
+        },
+      });
+    });
+
+    it('writes nothing when nothing was approved', async () => {
+      vi.stubEnv('CHECK_IN_PUSH_V1', 'true');
+      const h = approving({ waiting: false });
+      const create = vi.fn();
+      Object.assign(h.tx, { eventOutbox: { create } });
+      await h.r.approveWith(decider, h.checkIn);
+      expect(create).not.toHaveBeenCalled();
+    });
+  });
 
   it('locks the waiting request, runs the check-in, then marks it, in that order', async () => {
     const h = approving({});
@@ -438,6 +512,35 @@ describe('reject', () => {
     reason: 'Not at the salon',
     nowMs: START,
   };
+
+  describe('the answer for the phone (CHECK_IN_PUSH_V1)', () => {
+    afterEach(() => vi.unstubAllEnvs());
+
+    it('writes check_in_request.rejected in the same transaction, never the reason', async () => {
+      vi.stubEnv('CHECK_IN_PUSH_V1', 'true');
+      const h = rejecting([{ id: 'req-1' }]);
+      const create = vi.fn(() => Promise.resolve({}));
+      Object.assign(h.tx, { eventOutbox: { create } });
+      await h.r.reject(input);
+      expect(create).toHaveBeenCalledWith({
+        data: {
+          aggregateType: 'check_in_request',
+          aggregateId: 'req-1',
+          eventType: 'check_in_request.rejected',
+          payload: { requestId: 'req-1', state: 'rejected' },
+        },
+      });
+    });
+
+    it('writes nothing when nothing was waiting', async () => {
+      vi.stubEnv('CHECK_IN_PUSH_V1', 'true');
+      const h = rejecting([]);
+      const create = vi.fn();
+      Object.assign(h.tx, { eventOutbox: { create } });
+      await h.r.reject(input);
+      expect(create).not.toHaveBeenCalled();
+    });
+  });
 
   it('one UPDATE, only of a WAITING request, with who, when and why', async () => {
     const h = rejecting([{ id: 'req-1' }]);

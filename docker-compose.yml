@@ -58,6 +58,10 @@ services:
       # Customer reminders (24h, 3h, 15m) by push and email. Off: claimed by
       # the ladder, never sent -- exactly today's behaviour.
       REMINDER_DELIVERY: ${REMINDER_DELIVERY:-false}
+      # A push to the customer when the desk approves or rejects their
+      # check-in, or it expires unanswered. Off: no answer event, no push --
+      # the desk's approve and reject exactly as today.
+      CHECK_IN_PUSH_V1: ${CHECK_IN_PUSH_V1:-false}
       PUSH_API_URL: ${PUSH_API_URL:-http://push-app:3351}
       PUSH_API_KEY: ${PUSH_API_KEY:-}
       # customer-api's ConsumerDirectory answers only with this key; the same

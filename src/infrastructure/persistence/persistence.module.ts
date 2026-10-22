@@ -53,6 +53,11 @@ import { ProductsGrpcModule } from '../grpc/products-grpc.module';
 import { JournalSyncRepository } from './journal-sync.repository';
 
 import { PushListener } from '../messaging/push-listener';
+import { CheckInPushListener } from '../messaging/check-in-push-listener';
+import {
+  CUSTOMER_CONTACT,
+  type CustomerContactReader,
+} from '@application/ports/customer-contact.port';
 import { PushNotificationClient } from '../messaging/push-notification.client';
 import { ReminderDeliveryListener } from '../messaging/reminder-delivery-listener';
 import { SmtpEmailClient } from '../messaging/smtp-email.client';
@@ -165,13 +170,19 @@ import { EMAIL_SENDER } from '@application/ports/email-sender.port';
         walkIns: WalkInRepository,
         push: PushNotificationClient,
         deliveries: NotificationDeliveryRepository,
+        contacts: CustomerContactReader,
       ) =>
         new GroupStatusListener(
           new WalkInSeatedListener(
             new WalkInGapListener(
               new WaitlistListener(
                 new PushListener(
-                  new ReminderDeliveryListener(next, deliveries),
+                  new CheckInPushListener(
+                    new ReminderDeliveryListener(next, deliveries),
+                    prisma,
+                    push,
+                    contacts,
+                  ),
                   prisma,
                   push,
                 ),
@@ -190,6 +201,7 @@ import { EMAIL_SENDER } from '@application/ports/email-sender.port';
         WalkInRepository,
         PushNotificationClient,
         NotificationDeliveryRepository,
+        CUSTOMER_CONTACT,
       ],
     },
     LifecycleRepository,

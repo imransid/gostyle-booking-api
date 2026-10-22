@@ -160,12 +160,26 @@ The welcome screen says who checked the customer in ("Checked in by Layla R."). 
   - No reception list screen, approve and reject buttons, reason picker, or "needs a decision" handling.
   - No live alert when a request is raised: the desk has to refresh the list.
   - The list now shows the customer's name (commit 11). It is null when customer-api is slow or down, or for a customer it does not know.
-- **Notifications:** no push to the customer on approve or reject; the app reads the state. No events of its own for raise, approve or reject. Approve writes the normal `booking.checked_in` event.
+- **Notifications:** built since: see "The customer's push" below. Still no event of its own for a raise, and no live alert for the desk.
 - **Parties:** one request per lane. There is no party-wide request, and a guest's lane cannot raise.
 - **Staff scope on the older routes:** still parked on `fix/staff-scope`. When it is rebased, it takes this branch's version of the scope helper.
 - **Tests and docs:**
   - CI does not run the live tests, because they need a database. How to run them is at the top of `self-check-in.live.spec.ts`.
   - The API docs in `docs/api` are not updated. Swagger lists the new routes.
+
+## The customer's push (CHECK_IN_PUSH_V1)
+
+When the desk **approves** or **rejects** a request, or it **expires** with
+nobody answering, the customer's phone gets a push. Off by default.
+
+- **How.** The answer writes one outbox event in its own transaction (`check_in_request.approved`, `.rejected`, `.expired`; `announceAnswer` in `check-in-request.repository.ts`). The outbox chain's `CheckInPushListener` sends it after the commit, through push-app, like the booking pushes. A slow or broken push-app never fails or slows the desk's answer.
+- **To whom.** Whoever tapped (`raised_by_id`): a member who said "I am here" hears about themselves; the booker who said "We are here" hears about each member, guests included, one push per member, by name.
+- **Never twice.** push-app's `eventId` is `check-in:<requestId>:<answer>`; a re-delivered event does not buzz again.
+- **Their switch wins.** customer-api's push preference off: nothing sent. customer-api unreachable: sent anyway, as reminders do.
+- **Not told:** `closed` (the desk's own button, a cancel, a move) and `withdrawn` (the customer did it). The desk's reason for a rejection is never in the push.
+- **The phone reads** (booking code from the booking): "You are checked in" / "Welcome! Booking GS-1417."; "Please speak to the desk" / "The salon could not confirm your arrival. Booking GS-1417."; for a party member, "Rana Saleh is checked in", "The salon could not confirm Mina's arrival.". `data`: `type`, `bookingId`, `code`, `requestId`, and `groupId` for a party lane.
+- **Turning it on:** `docker service update --env-add CHECK_IN_PUSH_V1=true gostyle-booking_api`. Needs `PUSH_API_KEY` (already set for reminders). Off again: `--env-rm CHECK_IN_PUSH_V1`. Events written while it was on are still sent.
+- **Proof (2026-10-15, local, a fake push-app):** a single approval, a party's member approved and guest rejected (both to the booker, by name), a member's own approval (to them), an expiry, and silence for a withdrawal and a desk-button close. With the switch off: no event, no push, approve as today.
 
 ## Where a reviewer should look first
 
