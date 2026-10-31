@@ -1,0 +1,15 @@
+-- A third channel for notification_delivery: `hub`, the hand-over of a
+-- customer-facing booking event to customer-api's Notification Center
+-- (gRPC CustomerNotifications.Notify, behind MOBILE_NOTIFY_HUB). The center
+-- keeps it and sends the push and email itself; this row is how booking-api
+-- makes sure it was handed over, with the same lease, retries and fence as
+-- a reminder's push and email rows.
+--
+-- ADD VALUE IF NOT EXISTS so a re-run is a no-op (CLAUDE.md 3: retry-safe).
+-- Additive only: no existing row changes, and nothing writes the value
+-- until MOBILE_NOTIFY_HUB is on.
+--
+-- NOTE ON TRANSACTIONS, as in 20260918060000_mobile_payment_rails: the value
+-- is only ADDED here; the first row using it is written later, by
+-- application code, in its own transaction.
+ALTER TYPE notification_channel ADD VALUE IF NOT EXISTS 'hub';

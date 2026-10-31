@@ -6,10 +6,16 @@ import {
 } from '@domain/booking/reminder-delivery';
 import type { ReminderChannel } from '@domain/booking/reminders';
 
-/** One delivery to create, from one reminder event and one channel. */
+/**
+ * A reminder's own channels, or `hub`: a booking event handed to
+ * customer-api's Notification Center (HubListener, MOBILE_NOTIFY_HUB).
+ */
+export type DeliveryChannel = ReminderChannel | 'hub';
+
+/** One delivery to create, from one event and one channel. */
 export interface NewDelivery {
   readonly sourceEventId: string;
-  readonly channel: ReminderChannel;
+  readonly channel: DeliveryChannel;
   readonly eventType: string;
   readonly bookingId: string;
   readonly customerId: string;
@@ -22,7 +28,7 @@ export interface NewDelivery {
 export interface ClaimedDelivery {
   readonly id: string;
   readonly sourceEventId: string;
-  readonly channel: ReminderChannel;
+  readonly channel: DeliveryChannel;
   readonly eventType: string;
   readonly bookingId: string;
   readonly customerId: string;
@@ -42,6 +48,8 @@ export interface DeliveryBooking {
   readonly paymentStatus: string;
   readonly durationMin: number;
   readonly services: readonly string[];
+  /** The hub's salon: customer-api names it and reads its clock. */
+  readonly branchId: string;
 }
 
 export interface DeliveryQueueStats {
@@ -57,7 +65,7 @@ export interface DeliveryQueueStats {
 interface ClaimRow {
   readonly id: string;
   readonly source_event_id: string;
-  readonly channel: ReminderChannel;
+  readonly channel: DeliveryChannel;
   readonly event_type: string;
   readonly booking_id: string;
   readonly customer_id: string;
@@ -156,6 +164,7 @@ export class NotificationDeliveryRepository {
         customerId: true,
         paymentStatus: true,
         durationMin: true,
+        branchId: true,
         items: { select: { serviceName: true }, orderBy: { position: 'asc' } },
       },
     });
@@ -171,6 +180,7 @@ export class NotificationDeliveryRepository {
           paymentStatus: b.paymentStatus,
           durationMin: b.durationMin,
           services: b.items.map((i) => i.serviceName),
+          branchId: b.branchId,
         },
       ]),
     );

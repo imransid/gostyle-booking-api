@@ -28,6 +28,11 @@ import {
   type EmailSender,
 } from '@application/ports/email-sender.port';
 import {
+  CUSTOMER_NOTIFIER,
+  type CustomerNotifier,
+} from '@application/ports/customer-notifier.port';
+import { hubPlan } from '@domain/booking/hub-notification';
+import {
   NotificationDeliveryRepository,
   type ClaimedDelivery,
   type DeliveryBooking,
@@ -82,6 +87,7 @@ export class DispatchRemindersHandler {
     @Inject(CUSTOMER_CONTACT) private readonly contacts: CustomerContactReader,
     @Inject(PUSH_SENDER) private readonly push: PushSender,
     @Inject(EMAIL_SENDER) private readonly email: EmailSender,
+    @Inject(CUSTOMER_NOTIFIER) private readonly notifier: CustomerNotifier,
   ) {}
 
   async run(
@@ -134,6 +140,10 @@ export class DispatchRemindersHandler {
     nowMs: number,
   ): Promise<RowResult> {
     try {
+      // A hand-over to customer-api (MOBILE_NOTIFY_HUB), not a reminder:
+      // none of the reminder rules below are about it.
+      if (d.channel === 'hub') return await this.dispatchHub(d, booking, nowMs);
+
       const ready = readiness({
         booking:
           booking === null
@@ -194,6 +204,49 @@ export class DispatchRemindersHandler {
       );
       return 'lost';
     }
+  }
+
+  /**
+   * Hand one booking event to customer-api's Notification Center.
+   *
+   * Decided from the booking as it is NOW (hubPlan): an app booking still
+   * waiting for its payment is not "confirmed" yet, and is told when the
+   * payment is recorded (booking.payment_recorded). A missing customer is
+   * a desk walk-in with no app: skipped, not retried. No answer retries
+   * with the reminder backoff, never past the row's expiry.
+   */
+  private async dispatchHub(
+    d: ClaimedDelivery,
+    booking: DeliveryBooking | null,
+    nowMs: number,
+  ): Promise<RowResult> {
+    if (nowMs >= d.expiresAtMs) {
+      return this.write(d, { status: 'skipped', reason: 'expired' }, nowMs);
+    }
+    const plan = hubPlan({
+      eventType: d.eventType,
+      sourceEventId: d.sourceEventId,
+      customerId: d.customerId,
+      booking,
+      expiresAtMs: d.expiresAtMs,
+    });
+    if (plan.kind === 'skip') {
+      return this.write(d, { status: 'skipped', reason: plan.reason }, nowMs);
+    }
+
+    const settlement = settle({
+      outcome: await this.notifier.notify(plan.request),
+      attempt: d.attempt,
+      nowMs,
+      expiresAtMs: d.expiresAtMs,
+    });
+    if (settlement.status === 'failed') {
+      DispatchRemindersHandler.log.error(
+        `${d.eventType} hand-over for booking ${booking?.code ?? d.bookingId} ` +
+          `failed on attempt ${d.attempt}: ${settlement.error}`,
+      );
+    }
+    return this.write(d, settlement, nowMs);
   }
 
   /**
