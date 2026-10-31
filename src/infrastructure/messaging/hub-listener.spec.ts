@@ -110,3 +110,22 @@ describe('HubListener', () => {
     expect(next.publish).not.toHaveBeenCalled();
   });
 });
+
+describe('HubListener and the chosen reminder', () => {
+  it('a reminder row is about the start it was claimed for, and ends there', async () => {
+    process.env.MOBILE_NOTIFY_HUB = 'true';
+    const { listener, deliveries } = setup();
+    const claimedFor = '2026-11-02T06:00:00.000Z';
+    await listener.publish({
+      ...event('reminder.chosen', 'ev-8'),
+      payload: { startAt: claimedFor },
+    });
+    const [rows] = deliveries.enqueue.mock.calls[0]!;
+    const row = (rows as Record<string, unknown>[])[0]!;
+    // Not the booking's start now (START): a move between the claim and
+    // this row must read as moved when it is sent.
+    expect(row.scheduledFor).toEqual(new Date(claimedFor));
+    expect(row.expiresAt).toEqual(new Date(claimedFor));
+    expect(row.eventType).toBe('reminder.chosen');
+  });
+});

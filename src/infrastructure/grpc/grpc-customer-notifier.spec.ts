@@ -20,14 +20,22 @@ const REQUEST: NotifyRequest = {
   deliverBy: '2026-11-01T08:00:00.000Z',
 };
 
-function build(reply: () => Observable<unknown>) {
+function build(
+  reply: () => Observable<unknown>,
+  leadsReply: (data: { consumer_ids: string[] }) => Observable<unknown> = () =>
+    of({ leads: {} }),
+) {
   const notify = vi.fn((_data: unknown, _md: Metadata, _opts: unknown) =>
     reply(),
   );
-  const client = { getService: vi.fn(() => ({ notify })) };
+  const getReminderLeads = vi.fn(
+    (data: { consumer_ids: string[] }, _md: Metadata, _opts: unknown) =>
+      leadsReply(data),
+  );
+  const client = { getService: vi.fn(() => ({ notify, getReminderLeads })) };
   const adapter = new GrpcCustomerNotifier(client as never);
   adapter.onModuleInit();
-  return { adapter, notify };
+  return { adapter, notify, getReminderLeads };
 }
 
 const grpcError = (code: number, details = '') =>
@@ -119,5 +127,38 @@ describe('outcomeOf', () => {
   it('an outcome this build does not know is asked again later', () => {
     expect(outcomeOf({ outcome: 'OUTCOME_UNSPECIFIED' }).kind).toBe('retry');
     expect(outcomeOf({}).kind).toBe('retry');
+  });
+});
+
+describe('leads (GetReminderLeads)', () => {
+  it("reads each customer's switch and time; a missing one is not there", async () => {
+    const { adapter } = build(
+      () => of({}),
+      () => of({ leads: { c1: { enabled: true, lead_minutes: 30 }, c2: {} } }),
+    );
+    const got = await adapter.leads(['c1', 'c2', 'c3']);
+    expect(got.kind).toBe('answered');
+    if (got.kind !== 'answered') return;
+    expect(got.leads.get('c1')).toEqual({ enabled: true, leadMinutes: 30 });
+    // proto3 left false and 0 off the wire: not a choice.
+    expect(got.leads.get('c2')).toEqual({ enabled: false, leadMinutes: 0 });
+    expect(got.leads.has('c3')).toBe(false);
+  });
+
+  it('asks in batches of 1000, each id once', async () => {
+    const ids = Array.from({ length: 2500 }, (_, i) => `c${i}`);
+    const { adapter, getReminderLeads } = build(() => of({}));
+    await adapter.leads([...ids, 'c1']);
+    expect(
+      getReminderLeads.mock.calls.map(([d]) => d.consumer_ids.length),
+    ).toEqual([1000, 1000, 500]);
+  });
+
+  it('no answer is unavailable, never half an answer', async () => {
+    const { adapter } = build(
+      () => of({}),
+      () => throwError(() => grpcError(status.UNAVAILABLE, 'refused')),
+    );
+    expect((await adapter.leads(['c1'])).kind).toBe('unavailable');
   });
 });

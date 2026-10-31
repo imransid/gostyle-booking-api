@@ -83,6 +83,8 @@ import { MobileSeriesJobHandler } from '@application/commands/mobile-series-job.
 import { MobileSeriesJob } from '@infrastructure/scheduling/mobile-series-job.service';
 import { DispatchRemindersHandler } from '@application/commands/dispatch-reminders.handler';
 import { ReminderDispatchJob } from '@infrastructure/scheduling/reminder-dispatch.service';
+import { PlanChosenRemindersHandler } from '@application/commands/plan-chosen-reminders.handler';
+import { ChosenReminderJob } from '@infrastructure/scheduling/chosen-reminder.service';
 import { ReminderHealth } from '@infrastructure/scheduling/reminder-health';
 import { MobileSeriesJobController } from '@interface/http/mobile-series-job.controller';
 import { MobileGroupBookingHandler } from '@application/commands/mobile-group-booking.handler';
@@ -194,6 +196,8 @@ import { MobilePackagesHandler } from '@application/queries/mobile-packages.hand
     MobileSeriesJob,
     DispatchRemindersHandler,
     ReminderDispatchJob,
+    PlanChosenRemindersHandler,
+    ChosenReminderJob,
     ReminderHealth,
     DeskExtrasHandler,
     DeskActionsHandler,

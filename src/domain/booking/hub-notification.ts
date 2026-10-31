@@ -10,6 +10,8 @@
  * booking-api sends facts, not words: customer-api writes the sentence,
  * with the salon's name and the time on the salon's clock.
  */
+import { REMINDER_LIVE_STATUSES } from './reminders';
+
 /**
  * What is handed over: facts, and the key that makes a repeat harmless.
  * The port (CUSTOMER_NOTIFIER) takes exactly this.
@@ -36,6 +38,9 @@ export const HUB_EVENTS: ReadonlySet<string> = new Set([
   'booking.payment_recorded',
   'booking.rescheduled',
   'booking.cancelled',
+  // The app customer's own reminder, at the time they chose
+  // (MOBILE_REMINDER_CHOICE, chosen-reminder.ts).
+  'reminder.chosen',
 ]);
 
 /**
@@ -76,6 +81,8 @@ export function hubPlan(input: {
   readonly sourceEventId: string;
   readonly customerId: string;
   readonly booking: HubBooking | null;
+  /** The booking start the row was written for. */
+  readonly scheduledForMs: number;
   readonly expiresAtMs: number;
 }): HubPlan {
   const { booking } = input;
@@ -120,6 +127,22 @@ export function hubPlan(input: {
       );
     case 'booking.cancelled':
       return send('booking.cancelled', `booking.cancelled:${booking.id}`);
+    case 'reminder.chosen':
+      // The reminder rules reminders.ts gives the fixed rungs: only about a
+      // visit still coming, at the time it was claimed for. A moved booking
+      // has its stamp cleared and gets its own.
+      if (
+        !(REMINDER_LIVE_STATUSES as readonly string[]).includes(booking.status)
+      ) {
+        return { kind: 'skip', reason: `booking_${booking.status}` };
+      }
+      if (booking.startAtMs !== input.scheduledForMs) {
+        return { kind: 'skip', reason: 'moved' };
+      }
+      return send(
+        'booking.reminder',
+        `booking.reminder:${booking.id}:${booking.startAtMs}`,
+      );
     default:
       return { kind: 'skip', reason: 'not_a_hub_event' };
   }

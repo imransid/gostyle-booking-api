@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { ClientsModule, Transport } from '@nestjs/microservices';
 
 import { CUSTOMER_NOTIFIER } from '@application/ports/customer-notifier.port';
+import { REMINDER_LEADS } from '@application/ports/reminder-leads.port';
 import { consumerGrpcAddress } from '../../auth/auth.constants';
 import {
   CUSTOMER_NOTIFICATIONS_CLIENT,
@@ -11,9 +12,9 @@ import {
 import { platformChannelOptions } from './channel-options';
 
 /**
- * Wires the customer notifier port to customer-api's CustomerNotifications,
- * on the same server as ConsumerAuth and ConsumerDirectory, read through the
- * same consumerGrpcAddress.
+ * Wires the customer notifier and reminder lead ports to customer-api's
+ * CustomerNotifications, on the same server as ConsumerAuth and
+ * ConsumerDirectory, read through the same consumerGrpcAddress.
  */
 @Module({
   imports: [
@@ -38,7 +39,11 @@ import { platformChannelOptions } from './channel-options';
       },
     ]),
   ],
-  providers: [{ provide: CUSTOMER_NOTIFIER, useClass: GrpcCustomerNotifier }],
-  exports: [CUSTOMER_NOTIFIER],
+  providers: [
+    GrpcCustomerNotifier,
+    { provide: CUSTOMER_NOTIFIER, useExisting: GrpcCustomerNotifier },
+    { provide: REMINDER_LEADS, useExisting: GrpcCustomerNotifier },
+  ],
+  exports: [CUSTOMER_NOTIFIER, REMINDER_LEADS],
 })
 export class CustomerNotificationsGrpcModule {}

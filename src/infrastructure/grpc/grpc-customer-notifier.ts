@@ -10,6 +10,11 @@ import type {
   CustomerNotifier,
   NotifyRequest,
 } from '@application/ports/customer-notifier.port';
+import type {
+  ReminderLeadReader,
+  ReminderLeadsAnswer,
+} from '@application/ports/reminder-leads.port';
+import type { ReminderChoice } from '@domain/booking/chosen-reminder';
 
 /** Injection token for the raw client; CUSTOMER_NOTIFIER names the port. */
 export const CUSTOMER_NOTIFICATIONS_CLIENT = 'CUSTOMER_NOTIFICATIONS_CLIENT';
@@ -32,13 +37,25 @@ interface NotifyReplyWire {
   notification_id?: string;
 }
 
+interface ReminderLeadsReplyWire {
+  leads?: Record<string, { enabled?: boolean; lead_minutes?: number }>;
+}
+
 interface CustomerNotificationsGrpc {
   notify(
     data: NotifyRequestWire,
     metadata?: Metadata,
     options?: GrpcCallOptions,
   ): Observable<NotifyReplyWire>;
+  getReminderLeads(
+    data: { consumer_ids: string[] },
+    metadata?: Metadata,
+    options?: GrpcCallOptions,
+  ): Observable<ReminderLeadsReplyWire>;
 }
+
+/** customer-api answers at most this many ids per call. */
+export const LEADS_PER_CALL = 1000;
 
 /**
  * One attempt per claim, as the reminder push makes: the dispatcher retries
@@ -55,11 +72,13 @@ const MISCONFIGURED: ReadonlySet<number> = new Set<number>([
 ]);
 
 /**
- * CUSTOMER_NOTIFIER over gRPC to customer-api's CustomerNotifications, the
- * same server and key as ConsumerDirectory.
+ * CUSTOMER_NOTIFIER and REMINDER_LEADS over gRPC to customer-api's
+ * CustomerNotifications, the same server and key as ConsumerDirectory.
  */
 @Injectable()
-export class GrpcCustomerNotifier implements CustomerNotifier, OnModuleInit {
+export class GrpcCustomerNotifier
+  implements CustomerNotifier, ReminderLeadReader, OnModuleInit
+{
   private readonly logger = new Logger(GrpcCustomerNotifier.name);
   private svc!: CustomerNotificationsGrpc;
 
@@ -106,6 +125,44 @@ export class GrpcCustomerNotifier implements CustomerNotifier, OnModuleInit {
         );
       }
       return { kind: 'retry', error };
+    }
+  }
+
+  /**
+   * One call per LEADS_PER_CALL customers; any call without an answer makes
+   * the whole answer unavailable, so a tick never acts on half a picture.
+   */
+  async leads(customerIds: readonly string[]): Promise<ReminderLeadsAnswer> {
+    const key = (process.env.INTERNAL_GRPC_KEY ?? '').trim();
+    const unique = [...new Set(customerIds)];
+    const leads = new Map<string, ReminderChoice>();
+    try {
+      for (let i = 0; i < unique.length; i += LEADS_PER_CALL) {
+        const batch = unique.slice(i, i + LEADS_PER_CALL);
+        const reply = await callOnce(CALL_TIMEOUT_MS, (md, opts) => {
+          if (key !== '') md.set('x-internal-key', key);
+          return this.svc.getReminderLeads({ consumer_ids: batch }, md, opts);
+        });
+        for (const [id, lead] of Object.entries(reply.leads ?? {})) {
+          leads.set(id, {
+            // proto3 leaves false and 0 off the wire; a missing lead is not a
+            // choice, and chosenVerdict waits on it.
+            enabled: lead.enabled === true,
+            leadMinutes: lead.lead_minutes ?? 0,
+          });
+        }
+      }
+      return { kind: 'answered', leads };
+    } catch (e) {
+      const code = grpcStatusOf(e);
+      const error = `customer-api ${describeGrpcFailure(e)}`;
+      if (code !== null && MISCONFIGURED.has(code)) {
+        this.logger.error(
+          `${error} -- check INTERNAL_GRPC_KEY on both sides and that ` +
+            'customer-api serves GetReminderLeads',
+        );
+      }
+      return { kind: 'unavailable', error };
     }
   }
 }

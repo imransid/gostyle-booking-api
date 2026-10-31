@@ -85,6 +85,10 @@ services:
       # Notification Center (it keeps them and sends the push and email).
       # Off: PushListener pushes them, as today. Needs customer-api's Notify.
       MOBILE_NOTIFY_HUB: ${MOBILE_NOTIFY_HUB:-false}
+      # One reminder per app booking at the customer's chosen time, through
+      # the Notification Center; the fixed 24h/3h/15m rungs keep desk
+      # bookings only. Needs MOBILE_NOTIFY_HUB on. Off: the ladder as today.
+      MOBILE_REMINDER_CHOICE: ${MOBILE_REMINDER_CHOICE:-false}
       PUSH_API_URL: ${PUSH_API_URL:-http://push-app:3351}
       PUSH_API_KEY: ${PUSH_API_KEY:-}
       # customer-api's ConsumerDirectory answers only with this key; the same

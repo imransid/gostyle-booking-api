@@ -16,6 +16,7 @@ const plan = (eventType: string, booking: HubBooking | null = BOOKING) =>
     sourceEventId: 'ev-9',
     customerId: 'c-1',
     booking,
+    scheduledForMs: BOOKING.startAtMs,
     expiresAtMs: EXPIRES,
   });
 
@@ -109,5 +110,48 @@ describe('hubPlan', () => {
     for (const type of HUB_EVENTS) {
       expect(plan(type).kind).toBe('send');
     }
+  });
+});
+
+describe('hubPlan for the chosen reminder', () => {
+  const reminder = (booking: HubBooking, scheduledForMs = BOOKING.startAtMs) =>
+    hubPlan({
+      eventType: 'reminder.chosen',
+      sourceEventId: 'ev-9',
+      customerId: 'c-1',
+      booking,
+      scheduledForMs,
+      expiresAtMs: BOOKING.startAtMs,
+    });
+
+  it('is an appointment reminder, keyed on the booking and its start', () => {
+    const p = reminder(BOOKING);
+    expect(p.kind === 'send' && p.request.type).toBe('booking.reminder');
+    expect(p.kind === 'send' && p.request.dedupeKey).toBe(
+      `booking.reminder:${BOOKING.id}:${BOOKING.startAtMs}`,
+    );
+  });
+
+  it('a moved booking has its own reminder; this one is dropped', () => {
+    expect(reminder(BOOKING, BOOKING.startAtMs - 60_000)).toEqual({
+      kind: 'skip',
+      reason: 'moved',
+    });
+  });
+
+  it.each(['cancelled', 'checked_in', 'no_show'])(
+    'a visit that is %s is not reminded of',
+    (status) => {
+      expect(reminder({ ...BOOKING, status })).toEqual({
+        kind: 'skip',
+        reason: `booking_${status}`,
+      });
+    },
+  );
+
+  it('an unpaid booking is still reminded of, as the fixed rungs do', () => {
+    expect(reminder({ ...BOOKING, status: 'pending_payment' }).kind).toBe(
+      'send',
+    );
   });
 });
