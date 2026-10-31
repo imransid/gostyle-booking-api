@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DomainEvent } from '@application/ports/event-publisher.port';
 import type { ContactLookup } from '@application/ports/customer-contact.port';
 import { CheckInPushListener } from './check-in-push-listener';
@@ -261,5 +261,22 @@ describe('CheckInPushListener', () => {
     expect(h.prisma.checkInRequest.findUnique).not.toHaveBeenCalled();
     expect(h.send).not.toHaveBeenCalled();
     expect(h.next.publish).toHaveBeenCalledWith(other);
+  });
+});
+
+describe('CheckInPushListener with MOBILE_NOTIFY_HUB on', () => {
+  const saved = process.env.MOBILE_NOTIFY_HUB;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.MOBILE_NOTIFY_HUB;
+    else process.env.MOBILE_NOTIFY_HUB = saved;
+  });
+
+  it('stays quiet: the Notification Center tells them, one push not two', async () => {
+    process.env.MOBILE_NOTIFY_HUB = 'true';
+    const h = harness({});
+    await h.listener.publish(event('check_in_request.approved'));
+    expect(h.send).not.toHaveBeenCalled();
+    expect(h.prisma.checkInRequest.findUnique).not.toHaveBeenCalled();
+    expect(h.next.publish).toHaveBeenCalledTimes(1);
   });
 });

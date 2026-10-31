@@ -3,6 +3,7 @@ import type {
   EventPublisher,
 } from '@application/ports/event-publisher.port';
 import { HUB_EVENTS } from '@domain/booking/hub-notification';
+import { answerOfEvent } from '@domain/booking/check-in-push';
 import { PrismaService } from '../persistence/prisma.service';
 import { NotificationDeliveryRepository } from '../persistence/notification-delivery.repository';
 import { MOBILE_NOTIFY_HUB } from './notify-hub.flag';
@@ -12,6 +13,9 @@ import { MOBILE_NOTIFY_HUB } from './notify-hub.flag';
  * confirmed" is old news, and the row gives up.
  */
 export const HUB_DELIVER_WITHIN_MS = 24 * 60 * 60 * 1000;
+
+/** A check-in answer is about being at the desk now: two hours at most. */
+export const CHECK_IN_DELIVER_WITHIN_MS = 2 * 60 * 60 * 1000;
 
 /**
  * One link in the outbox chain: turns a customer-facing booking event into
@@ -44,6 +48,9 @@ export class HubListener implements EventPublisher {
   }
 
   private async enqueue(event: DomainEvent): Promise<void> {
+    if (answerOfEvent(event.eventType) !== null) {
+      return this.enqueueCheckIn(event);
+    }
     const booking = await this.prisma.booking.findUnique({
       where: { id: event.aggregateId },
       select: { customerId: true, startAt: true },
@@ -70,6 +77,36 @@ export class HubListener implements EventPublisher {
         customerId: booking.customerId,
         scheduledFor,
         expiresAt,
+        nextAttemptAt: new Date(nowMs),
+      },
+    ]);
+  }
+
+  /**
+   * A check-in answer's aggregate is the request, not the booking. It goes
+   * to whoever tapped (raised_by_id), and only a customer taps.
+   */
+  private async enqueueCheckIn(event: DomainEvent): Promise<void> {
+    const request = await this.prisma.checkInRequest.findUnique({
+      where: { id: event.aggregateId },
+      select: {
+        raisedByKind: true,
+        raisedById: true,
+        booking: { select: { id: true, startAt: true } },
+      },
+    });
+    if (request === null || request.raisedByKind !== 'customer') return;
+
+    const nowMs = Date.now();
+    await this.deliveries.enqueue([
+      {
+        sourceEventId: event.id,
+        channel: 'hub',
+        eventType: event.eventType,
+        bookingId: request.booking.id,
+        customerId: request.raisedById,
+        scheduledFor: request.booking.startAt,
+        expiresAt: new Date(nowMs + CHECK_IN_DELIVER_WITHIN_MS),
         nextAttemptAt: new Date(nowMs),
       },
     ]);

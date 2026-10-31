@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { HUB_EVENTS, hubPlan, type HubBooking } from './hub-notification';
+import {
+  HUB_EVENTS,
+  checkInNotice,
+  hubPlan,
+  type HubBooking,
+} from './hub-notification';
 
 const BOOKING: HubBooking = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -106,8 +111,9 @@ describe('hubPlan', () => {
     });
   });
 
-  it('HUB_EVENTS is what the plan knows', () => {
+  it('HUB_EVENTS is what the plan knows, check-in answers aside', () => {
     for (const type of HUB_EVENTS) {
+      if (type.startsWith('check_in_request.')) continue;
       expect(plan(type).kind).toBe('send');
     }
   });
@@ -152,6 +158,56 @@ describe('hubPlan for the chosen reminder', () => {
   it('an unpaid booking is still reminded of, as the fixed rungs do', () => {
     expect(reminder({ ...BOOKING, status: 'pending_payment' }).kind).toBe(
       'send',
+    );
+  });
+});
+
+describe('checkInNotice', () => {
+  const notice = (
+    self: boolean,
+    memberName: string | null,
+    groupId: string | null = null,
+  ) =>
+    checkInNotice({
+      answer: 'approved',
+      requestId: 'req-1',
+      to: 'booker-1',
+      self,
+      memberName,
+      booking: BOOKING,
+      groupId,
+      expiresAtMs: EXPIRES,
+    });
+
+  it('their own check-in, in the words the push always used', () => {
+    expect(notice(true, null)).toEqual({
+      consumerId: 'booker-1',
+      type: 'check_in.approved',
+      dedupeKey: 'check_in:req-1:approved',
+      params: {
+        booking_id: BOOKING.id,
+        booking_code: 'GS-1481',
+        branch_id: BOOKING.branchId,
+        start_at: '2026-11-02T07:00:00.000Z',
+        request_id: 'req-1',
+        title: 'You are checked in',
+        body: 'Welcome! Booking GS-1481.',
+      },
+      targetType: 'booking',
+      targetId: BOOKING.id,
+      deliverBy: '2026-11-01T08:00:00.000Z',
+    });
+  });
+
+  it('a party member, by name, with the group', () => {
+    const n = notice(false, 'Sara A.', 'g-1');
+    expect(n.params.title).toBe('Sara A. is checked in');
+    expect(n.params.group_id).toBe('g-1');
+  });
+
+  it('a party member without a name', () => {
+    expect(notice(false, null).params.title).toBe(
+      'A member of your party is checked in',
     );
   });
 });

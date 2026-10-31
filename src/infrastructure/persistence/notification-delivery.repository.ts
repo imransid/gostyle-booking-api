@@ -52,6 +52,23 @@ export interface DeliveryBooking {
   readonly branchId: string;
 }
 
+/**
+ * What a check-in answer's hand-over needs: the request behind the outbox
+ * event, who tapped, and the party member it was about.
+ */
+export interface CheckInFacts {
+  readonly requestId: string;
+  readonly raisedByKind: string;
+  readonly raisedById: string;
+  readonly bookingCustomerId: string;
+  readonly groupId: string | null;
+  /** The party lane's participant, when the booking is one. */
+  readonly member: {
+    readonly guestName: string | null;
+    readonly customerId: string | null;
+  } | null;
+}
+
 export interface DeliveryQueueStats {
   /** Every delivery not yet settled, including ones waiting for later. */
   readonly pending: number;
@@ -196,6 +213,41 @@ export class NotificationDeliveryRepository {
    * kill -9, a pause or a network stall leaves the row either as the last
    * finished attempt wrote it, or due again.
    */
+  /**
+   * The check-in request a check_in_request.* event was about, read through
+   * the outbox row (the delivery keeps only its id). Null when either is
+   * gone.
+   */
+  async checkInFacts(sourceEventId: string): Promise<CheckInFacts | null> {
+    const event = await this.prisma.eventOutbox.findUnique({
+      where: { id: sourceEventId },
+      select: { aggregateId: true },
+    });
+    if (event === null) return null;
+    const request = await this.prisma.checkInRequest.findUnique({
+      where: { id: event.aggregateId },
+      select: {
+        id: true,
+        raisedByKind: true,
+        raisedById: true,
+        booking: { select: { id: true, customerId: true, groupId: true } },
+      },
+    });
+    if (request === null) return null;
+    const member = await this.prisma.groupParticipant.findUnique({
+      where: { bookingId: request.booking.id },
+      select: { guestName: true, customerId: true },
+    });
+    return {
+      requestId: request.id,
+      raisedByKind: request.raisedByKind,
+      raisedById: request.raisedById,
+      bookingCustomerId: request.booking.customerId,
+      groupId: request.booking.groupId,
+      member,
+    };
+  }
+
   async record(
     claim: Pick<ClaimedDelivery, 'id' | 'attempt'>,
     outcome: Settlement | { readonly status: 'superseded' },

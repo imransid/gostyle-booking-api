@@ -19,6 +19,19 @@ const event = (eventType: string, id = 'ev-1'): DomainEvent => ({
 const setup = () => {
   const next = { publish: vi.fn(async (_e: DomainEvent) => {}) };
   const prisma = {
+    checkInRequest: {
+      findUnique: vi.fn((_a: unknown) =>
+        Promise.resolve({
+          raisedByKind: 'customer',
+          raisedById: 'booker-1',
+          booking: { id: BOOKING, startAt: START },
+        } as {
+          raisedByKind: string;
+          raisedById: string;
+          booking: { id: string; startAt: Date };
+        } | null),
+      ),
+    },
     booking: {
       findUnique: vi.fn((_a: unknown) =>
         Promise.resolve({ customerId: CUSTOMER, startAt: START } as {
@@ -85,7 +98,7 @@ describe('HubListener', () => {
     for (const type of [
       'booking.no_show',
       'reminder.confirm_24h',
-      'check_in_request.approved',
+      'check_in_request.closed',
     ]) {
       await listener.publish(event(type));
     }
@@ -127,5 +140,48 @@ describe('HubListener and the chosen reminder', () => {
     expect(row.scheduledFor).toEqual(new Date(claimedFor));
     expect(row.expiresAt).toEqual(new Date(claimedFor));
     expect(row.eventType).toBe('reminder.chosen');
+  });
+});
+
+describe('HubListener and check-in answers', () => {
+  it.each(['approved', 'rejected', 'expired'])(
+    'check_in_request.%s goes to whoever tapped, for two hours',
+    async (answer) => {
+      process.env.MOBILE_NOTIFY_HUB = 'true';
+      const { listener, deliveries, prisma } = setup();
+      const before = Date.now();
+      await listener.publish({
+        ...event(`check_in_request.${answer}`, 'ev-ci'),
+        aggregateType: 'check_in_request',
+        aggregateId: 'req-1',
+      });
+      expect(prisma.checkInRequest.findUnique.mock.calls[0]![0]).toMatchObject({
+        where: { id: 'req-1' },
+      });
+      const [rows] = deliveries.enqueue.mock.calls[0]!;
+      const row = (rows as Record<string, unknown>[])[0]!;
+      expect(row).toMatchObject({
+        sourceEventId: 'ev-ci',
+        channel: 'hub',
+        eventType: `check_in_request.${answer}`,
+        bookingId: BOOKING,
+        customerId: 'booker-1',
+      });
+      const expires = (row.expiresAt as Date).getTime();
+      expect(expires).toBeGreaterThanOrEqual(before + 2 * 60 * 60 * 1000);
+      expect(expires).toBeLessThan(before + 3 * 60 * 60 * 1000);
+    },
+  );
+
+  it("a request the desk raised is nobody's to tell", async () => {
+    process.env.MOBILE_NOTIFY_HUB = 'true';
+    const { listener, deliveries, prisma } = setup();
+    prisma.checkInRequest.findUnique.mockResolvedValueOnce({
+      raisedByKind: 'staff',
+      raisedById: 's-1',
+      booking: { id: BOOKING, startAt: START },
+    });
+    await listener.publish(event('check_in_request.approved'));
+    expect(deliveries.enqueue).not.toHaveBeenCalled();
   });
 });
