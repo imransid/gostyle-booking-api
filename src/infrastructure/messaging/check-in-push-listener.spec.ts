@@ -33,6 +33,7 @@ function found(
       pushEnabled: over.pushEnabled ?? true,
       bookingConfirmation: true,
       bookingChanges: true,
+      emailEnabled: true,
     },
   };
 }

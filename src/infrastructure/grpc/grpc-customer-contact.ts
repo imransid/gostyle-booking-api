@@ -39,6 +39,7 @@ interface ConsumerContactWire {
    */
   booking_confirmation?: boolean;
   booking_changes?: boolean;
+  email_enabled?: boolean;
 }
 
 interface ConsumerDirectoryGrpc {
@@ -133,6 +134,7 @@ export class GrpcCustomerContact
           pushEnabled: res.push_enabled === true,
           bookingConfirmation: res.booking_confirmation !== false,
           bookingChanges: res.booking_changes !== false,
+          emailEnabled: res.email_enabled !== false,
         },
       };
     } catch (e) {

@@ -29,6 +29,11 @@ export interface CustomerContact {
    */
   readonly bookingConfirmation: boolean;
   readonly bookingChanges: boolean;
+  /**
+   * NotificationPreference.email, the Email channel switch. True when a
+   * customer-api too old to send it answers, as above.
+   */
+  readonly emailEnabled: boolean;
 }
 
 export type ContactLookup =

@@ -52,6 +52,7 @@ describe('found', () => {
         pushEnabled: true,
         bookingConfirmation: true,
         bookingChanges: false,
+        emailEnabled: true,
       },
     });
   });
@@ -64,6 +65,15 @@ describe('found', () => {
     const got = await adapter.lookup(CUSTOMER);
     expect(got.kind === 'found' && got.contact.bookingConfirmation).toBe(true);
     expect(got.kind === 'found' && got.contact.bookingChanges).toBe(true);
+    expect(got.kind === 'found' && got.contact.emailEnabled).toBe(true);
+  });
+
+  it('the Email switch off is answered as off', async () => {
+    const { adapter } = build(() =>
+      of({ found: true, consumer_id: CUSTOMER, email_enabled: false }),
+    );
+    const got = await adapter.lookup(CUSTOMER);
+    expect(got.kind === 'found' && got.contact.emailEnabled).toBe(false);
   });
 
   it('a customer with no email: found, email null', async () => {

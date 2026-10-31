@@ -54,6 +54,7 @@ const found = (over: Partial<CustomerContact> = {}): ContactLookup => ({
     pushEnabled: true,
     bookingConfirmation: true,
     bookingChanges: true,
+    emailEnabled: true,
     ...over,
   },
 });
