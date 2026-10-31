@@ -161,6 +161,8 @@ const found = (
     fullName: 'Sara Ahmed',
     appointmentReminder: true,
     pushEnabled: true,
+    bookingConfirmation: true,
+    bookingChanges: true,
     ...over,
   },
 });

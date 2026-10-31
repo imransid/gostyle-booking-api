@@ -186,6 +186,7 @@ import { PlatformPackageCatalogue } from './platform-package-catalogue';
                   ),
                   prisma,
                   push,
+                  contacts,
                 ),
                 waitlist,
               ),
