@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import type {
   CreateIntentInput,
@@ -6,6 +6,27 @@ import type {
   PaymentIntent,
   RefundResult,
 } from '@application/ports/payment-gateway.port';
+
+/**
+ * The webhook secret for local runs and tests (scripts/qa-suite.mjs signs
+ * with it). NEVER used where NODE_ENV is production: it is in this
+ * repository, so anyone could sign a "payment captured" with it.
+ */
+export const DEV_WEBHOOK_SECRET = 'simulated-webhook-secret';
+
+/**
+ * The secret webhooks are signed with: PAYMENT_WEBHOOK_SECRET, or, outside
+ * production only, DEV_WEBHOOK_SECRET. Null in production without one, and
+ * then every webhook is refused: fail closed, never open. An empty or
+ * blank value counts as unset (an HMAC with an empty key is no secret).
+ */
+export function webhookSecret(
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const configured = (env.PAYMENT_WEBHOOK_SECRET ?? '').trim();
+  if (configured !== '') return configured;
+  return env.NODE_ENV === 'production' ? null : DEV_WEBHOOK_SECRET;
+}
 
 /**
  * A gateway that moves no money.
@@ -22,11 +43,16 @@ import type {
  * until the day it went live.
  */
 @Injectable()
-export class SimulatedGateway implements PaymentGateway {
+export class SimulatedGateway implements PaymentGateway, OnModuleInit {
   private static readonly log = new Logger(SimulatedGateway.name);
 
-  private get secret(): string {
-    return process.env.PAYMENT_WEBHOOK_SECRET ?? 'simulated-webhook-secret';
+  onModuleInit(): void {
+    if (webhookSecret() === null) {
+      SimulatedGateway.log.error(
+        'PAYMENT_WEBHOOK_SECRET is not set: every POST /v1/webhooks/payments ' +
+          'is refused (401) until it is.',
+      );
+    }
   }
 
   createIntent(input: CreateIntentInput): Promise<PaymentIntent> {
@@ -59,7 +85,9 @@ export class SimulatedGateway implements PaymentGateway {
    * endpoint, and getting it right here costs one function call.
    */
   verifySignature(rawBody: string, signature: string): boolean {
-    const expected = this.sign(rawBody);
+    const secret = webhookSecret();
+    if (secret === null) return false;
+    const expected = hmac(secret, rawBody);
     const a = Buffer.from(expected);
     const b = Buffer.from(signature);
     // timingSafeEqual throws on a length mismatch, which is itself a leak of
@@ -68,8 +96,19 @@ export class SimulatedGateway implements PaymentGateway {
     return timingSafeEqual(a, b);
   }
 
-  /** Exposed so the simulate endpoint can sign the webhook it fires. */
+  /**
+   * Exposed so a simulator can sign the webhook it fires. Throws where
+   * there is no secret: nothing signs in production without one.
+   */
   sign(rawBody: string): string {
-    return createHmac('sha256', this.secret).update(rawBody).digest('hex');
+    const secret = webhookSecret();
+    if (secret === null) {
+      throw new Error('PAYMENT_WEBHOOK_SECRET is not set');
+    }
+    return hmac(secret, rawBody);
   }
+}
+
+function hmac(secret: string, rawBody: string): string {
+  return createHmac('sha256', secret).update(rawBody).digest('hex');
 }
