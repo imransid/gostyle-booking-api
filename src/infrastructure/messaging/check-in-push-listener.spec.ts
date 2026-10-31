@@ -31,6 +31,8 @@ function found(
       fullName: over.fullName ?? null,
       appointmentReminder: true,
       pushEnabled: over.pushEnabled ?? true,
+      bookingConfirmation: true,
+      bookingChanges: true,
     },
   };
 }

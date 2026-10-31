@@ -22,6 +22,13 @@ export interface CustomerContact {
   readonly appointmentReminder: boolean;
   /** NotificationPreference.push, the master switch for push. */
   readonly pushEnabled: boolean;
+  /**
+   * NotificationPreference.booking_confirmation and .booking_changes. True
+   * when a customer-api too old to send them answers: an unknown switch is
+   * "on", never "off".
+   */
+  readonly bookingConfirmation: boolean;
+  readonly bookingChanges: boolean;
 }
 
 export type ContactLookup =

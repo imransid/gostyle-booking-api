@@ -33,6 +33,12 @@ interface ConsumerContactWire {
   language?: string;
   appointment_reminder?: boolean;
   push_enabled?: boolean;
+  /**
+   * proto3 `optional`: present whenever customer-api knows them, false
+   * included, so a missing key means an older customer-api, not "off".
+   */
+  booking_confirmation?: boolean;
+  booking_changes?: boolean;
 }
 
 interface ConsumerDirectoryGrpc {
@@ -125,6 +131,8 @@ export class GrpcCustomerContact
           fullName: blankToNull(res.full_name),
           appointmentReminder: res.appointment_reminder === true,
           pushEnabled: res.push_enabled === true,
+          bookingConfirmation: res.booking_confirmation !== false,
+          bookingChanges: res.booking_changes !== false,
         },
       };
     } catch (e) {

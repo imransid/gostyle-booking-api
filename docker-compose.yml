@@ -77,6 +77,10 @@ services:
       # check-in, or it expires unanswered. Off: no answer event, no push --
       # the desk's approve and reject exactly as today.
       CHECK_IN_PUSH_V1: ${CHECK_IN_PUSH_V1:-false}
+      # The "Booking confirmed / cancelled / moved" pushes ask customer-api
+      # first and respect the customer's push, booking confirmation and
+      # booking changes switches. Off: they go to everyone, as today.
+      MOBILE_PUSH_PREFS: ${MOBILE_PUSH_PREFS:-false}
       PUSH_API_URL: ${PUSH_API_URL:-http://push-app:3351}
       PUSH_API_KEY: ${PUSH_API_KEY:-}
       # customer-api's ConsumerDirectory answers only with this key; the same
