@@ -231,6 +231,11 @@ model Booking {
   reminded24hAt DateTime? @map("reminded_24h_at") @db.Timestamptz(6)
   reminded3hAt  DateTime? @map("reminded_3h_at") @db.Timestamptz(6)
   nudged15mAt   DateTime? @map("nudged_15m_at") @db.Timestamptz(6)
+  /// The app customer's own reminder, at the time they chose
+  /// (MOBILE_REMINDER_CHOICE): when it was claimed (sent or passed over),
+  /// and the lead it was claimed with, in minutes. Cleared by every move.
+  remindedChosenAt DateTime? @map("reminded_chosen_at") @db.Timestamptz(6)
+  reminderLeadMin  Int?      @map("reminder_lead_min") @db.SmallInt
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)

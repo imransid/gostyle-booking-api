@@ -228,6 +228,7 @@ export class DispatchRemindersHandler {
       sourceEventId: d.sourceEventId,
       customerId: d.customerId,
       booking,
+      scheduledForMs: d.scheduledForMs,
       expiresAtMs: d.expiresAtMs,
     });
     if (plan.kind === 'skip') {

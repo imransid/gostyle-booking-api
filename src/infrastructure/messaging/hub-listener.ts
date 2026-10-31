@@ -51,6 +51,16 @@ export class HubListener implements EventPublisher {
     if (booking === null) return;
 
     const nowMs = Date.now();
+    // A reminder is about the start it was claimed FOR (its payload), not
+    // whatever the booking says a second later: a move in between must read
+    // as moved at send time. It is noise after that start; everything else
+    // may keep trying for a day.
+    const reminderStart = claimedStart(event);
+    const scheduledFor = reminderStart ?? booking.startAt;
+    const expiresAt =
+      reminderStart !== null
+        ? reminderStart
+        : new Date(nowMs + HUB_DELIVER_WITHIN_MS);
     await this.deliveries.enqueue([
       {
         sourceEventId: event.id,
@@ -58,10 +68,18 @@ export class HubListener implements EventPublisher {
         eventType: event.eventType,
         bookingId: event.aggregateId,
         customerId: booking.customerId,
-        scheduledFor: booking.startAt,
-        expiresAt: new Date(nowMs + HUB_DELIVER_WITHIN_MS),
+        scheduledFor,
+        expiresAt,
         nextAttemptAt: new Date(nowMs),
       },
     ]);
   }
+}
+
+/** reminder.chosen's payload startAt, or null for any other event. */
+function claimedStart(event: DomainEvent): Date | null {
+  if (event.eventType !== 'reminder.chosen') return null;
+  const raw = (event.payload as { startAt?: unknown } | null)?.startAt;
+  const ms = typeof raw === 'string' ? Date.parse(raw) : NaN;
+  return Number.isNaN(ms) ? null : new Date(ms);
 }
