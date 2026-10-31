@@ -9,6 +9,7 @@ import type {
 } from '@application/ports/customer-contact.port';
 import { PrismaService } from '../persistence/prisma.service';
 import { PushNotificationClient } from './push-notification.client';
+import { MOBILE_NOTIFY_HUB } from './notify-hub.flag';
 
 /**
  * The customer's own switches, honoured or not.
@@ -88,7 +89,9 @@ export class PushListener implements EventPublisher {
 
   async publish(event: DomainEvent): Promise<void> {
     const message = MESSAGES.get(event.eventType);
-    if (message) {
+    // With MOBILE_NOTIFY_HUB on, customer-api's Notification Center tells
+    // the customer (HubListener), so this one stays quiet: one push, not two.
+    if (message && !MOBILE_NOTIFY_HUB()) {
       await this.tryPush(event, message);
     }
     // Whatever happened above, the event still goes where it was going.

@@ -78,6 +78,28 @@ describe('PushListener with MOBILE_PUSH_PREFS off', () => {
   });
 });
 
+describe('PushListener with MOBILE_NOTIFY_HUB on', () => {
+  const savedHub = process.env.MOBILE_NOTIFY_HUB;
+  afterEach(() => {
+    if (savedHub === undefined) delete process.env.MOBILE_NOTIFY_HUB;
+    else process.env.MOBILE_NOTIFY_HUB = savedHub;
+  });
+
+  it.each(['booking.confirmed', 'booking.cancelled', 'booking.rescheduled'])(
+    'stays quiet for %s: the Notification Center tells them',
+    async (type) => {
+      process.env.MOBILE_NOTIFY_HUB = 'true';
+      const { listener, next, push, contacts } = setup();
+
+      await listener.publish(event(type));
+
+      expect(push.send).not.toHaveBeenCalled();
+      expect(contacts.lookup).not.toHaveBeenCalled();
+      expect(next.publish).toHaveBeenCalledOnce();
+    },
+  );
+});
+
 describe('PushListener with MOBILE_PUSH_PREFS on', () => {
   const on = () => {
     process.env.MOBILE_PUSH_PREFS = 'true';

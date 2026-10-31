@@ -81,6 +81,10 @@ services:
       # first and respect the customer's push, booking confirmation and
       # booking changes switches. Off: they go to everyone, as today.
       MOBILE_PUSH_PREFS: ${MOBILE_PUSH_PREFS:-false}
+      # Booking confirmed / moved / cancelled through customer-api's
+      # Notification Center (it keeps them and sends the push and email).
+      # Off: PushListener pushes them, as today. Needs customer-api's Notify.
+      MOBILE_NOTIFY_HUB: ${MOBILE_NOTIFY_HUB:-false}
       PUSH_API_URL: ${PUSH_API_URL:-http://push-app:3351}
       PUSH_API_KEY: ${PUSH_API_KEY:-}
       # customer-api's ConsumerDirectory answers only with this key; the same

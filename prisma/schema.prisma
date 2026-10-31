@@ -651,10 +651,13 @@ model EventOutbox {
 
 // ============================================================ notification_delivery
 
-/// How a reminder reaches the customer.
+/// How a reminder reaches the customer, or `hub`: a customer-facing booking
+/// event handed to customer-api's Notification Center (MOBILE_NOTIFY_HUB),
+/// which sends the push and email itself.
 enum NotificationChannel {
   push
   email
+  hub
 
   @@map("notification_channel")
 }
