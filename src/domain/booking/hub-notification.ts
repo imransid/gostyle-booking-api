@@ -77,6 +77,14 @@ export interface HubBooking {
   readonly status: string;
   readonly startAtMs: number;
   readonly branchId: string;
+  /** A party lane's group, or null. */
+  readonly groupId?: string | null;
+  /** A routine visit's routine and its live visits, or null. */
+  readonly seriesId?: string | null;
+  readonly series?: {
+    readonly firstStartMs: number;
+    readonly visits: number;
+  } | null;
 }
 
 export type HubPlan =
@@ -96,7 +104,11 @@ export function hubPlan(input: {
   const { booking } = input;
   if (booking === null) return { kind: 'skip', reason: 'booking_gone' };
 
-  const send = (type: string, dedupeKey: string): HubPlan => ({
+  const send = (
+    type: string,
+    dedupeKey: string,
+    extra: Readonly<Record<string, string>> = {},
+  ): HubPlan => ({
     kind: 'send',
     request: {
       consumerId: input.customerId,
@@ -107,6 +119,7 @@ export function hubPlan(input: {
         booking_code: booking.code,
         branch_id: booking.branchId,
         start_at: new Date(booking.startAtMs).toISOString(),
+        ...extra,
       },
       targetType: 'booking',
       targetId: booking.id,
@@ -123,6 +136,29 @@ export function hubPlan(input: {
       if (!CONFIRMED.has(booking.status)) {
         // Cancelled, or gone some other way, before it could be told.
         return { kind: 'skip', reason: `booking_${booking.status}` };
+      }
+      // ONE PER ROUTINE, ONE PER PARTY. A routine of eight visits, or a
+      // party of three, is one thing the customer did: one item, one push,
+      // keyed on the routine or the group (every account in a party still
+      // hears it once). A routine's words name its first visit and how
+      // many there are.
+      if (booking.seriesId && booking.series) {
+        return send(
+          'booking.confirmed',
+          `booking.confirmed:series:${booking.seriesId}`,
+          {
+            series_id: booking.seriesId,
+            visits: String(booking.series.visits),
+            start_at: new Date(booking.series.firstStartMs).toISOString(),
+          },
+        );
+      }
+      if (booking.groupId) {
+        return send(
+          'booking.confirmed',
+          `booking.confirmed:group:${booking.groupId}`,
+          { group_id: booking.groupId },
+        );
       }
       // Keyed on the booking, not the event: the create and the payment
       // both lead here, and the customer hears it once.

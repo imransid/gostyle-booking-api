@@ -213,6 +213,9 @@ function setup() {
     durationMin: 105,
     services: ['Full colour'],
     branchId: '33333333-3333-4333-8333-333333333333',
+    groupId: null,
+    seriesId: null,
+    series: null,
   });
   const contacts = {
     lookup: vi.fn((_id: string): Promise<ContactLookup> =>

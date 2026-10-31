@@ -211,3 +211,64 @@ describe('checkInNotice', () => {
     );
   });
 });
+
+describe('one confirmation per routine, one per party', () => {
+  it('a routine visit speaks for the routine: its first visit and how many', () => {
+    const p = plan('booking.confirmed', {
+      ...BOOKING,
+      seriesId: 'ser-1',
+      series: { firstStartMs: Date.parse('2026-11-01T07:00:00Z'), visits: 4 },
+    });
+    expect(p.kind).toBe('send');
+    if (p.kind !== 'send') return;
+    expect(p.request.dedupeKey).toBe('booking.confirmed:series:ser-1');
+    expect(p.request.params.series_id).toBe('ser-1');
+    expect(p.request.params.visits).toBe('4');
+    expect(p.request.params.start_at).toBe('2026-11-01T07:00:00.000Z');
+  });
+
+  it('every visit of a routine has the same key: told once', () => {
+    const series = { firstStartMs: 1, visits: 2 };
+    const a = plan('booking.confirmed', {
+      ...BOOKING,
+      seriesId: 'ser-1',
+      series,
+    });
+    const b = plan('booking.payment_recorded', {
+      ...BOOKING,
+      id: 'other-visit',
+      seriesId: 'ser-1',
+      series,
+    });
+    expect(a.kind === 'send' && b.kind === 'send').toBe(true);
+    if (a.kind === 'send' && b.kind === 'send') {
+      expect(a.request.dedupeKey).toBe(b.request.dedupeKey);
+    }
+  });
+
+  it('a party lane speaks for the party', () => {
+    const p = plan('booking.confirmed', { ...BOOKING, groupId: 'g-1' });
+    expect(p.kind === 'send' && p.request.dedupeKey).toBe(
+      'booking.confirmed:group:g-1',
+    );
+    expect(p.kind === 'send' && p.request.params.group_id).toBe('g-1');
+  });
+
+  it('a move or a cancel stays one per visit', () => {
+    const moved = plan('booking.rescheduled', {
+      ...BOOKING,
+      groupId: 'g-1',
+      seriesId: 'ser-1',
+    });
+    const cancelled = plan('booking.cancelled', {
+      ...BOOKING,
+      seriesId: 'ser-1',
+    });
+    expect(moved.kind === 'send' && moved.request.dedupeKey).toBe(
+      'booking.rescheduled:ev-9',
+    );
+    expect(cancelled.kind === 'send' && cancelled.request.dedupeKey).toBe(
+      `booking.cancelled:${BOOKING.id}`,
+    );
+  });
+});

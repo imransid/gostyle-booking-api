@@ -191,4 +191,37 @@ describe('bookings', () => {
       position: 'asc',
     });
   });
+
+  it('a routine visit carries its routine: first start and live visits, one query', async () => {
+    const { repo, prisma } = build();
+    prisma.booking.findMany.mockResolvedValue([
+      {
+        id: 'b1',
+        status: 'confirmed',
+        startAt: new Date(NOW),
+        code: 'GS-1050',
+        customerId: 'c1',
+        paymentStatus: 'none_required',
+        durationMin: 30,
+        groupId: null,
+        seriesId: 'ser-1',
+        items: [],
+      },
+    ]);
+    (prisma.booking as Record<string, unknown>).groupBy = vi
+      .fn()
+      .mockResolvedValue([
+        {
+          seriesId: 'ser-1',
+          _count: { _all: 4 },
+          _min: { startAt: new Date(NOW - 1000) },
+        },
+      ]);
+    const got = await repo.bookings(['b1']);
+    expect(got.get('b1')?.series).toEqual({
+      firstStartMs: NOW - 1000,
+      visits: 4,
+    });
+    expect(got.get('b1')?.seriesId).toBe('ser-1');
+  });
 });
