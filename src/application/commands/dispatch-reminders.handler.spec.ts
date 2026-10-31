@@ -9,6 +9,7 @@ import {
 } from '@domain/booking/reminder-delivery';
 import type { Rung } from '@domain/booking/reminders';
 import type {
+  CheckInFacts,
   ClaimedDelivery,
   DeliveryBooking,
 } from '@infrastructure/persistence/notification-delivery.repository';
@@ -53,6 +54,11 @@ interface Row {
 class MemoryDeliveries {
   rows: Row[] = [];
   bookingRows = new Map<string, DeliveryBooking>();
+  checkIns = new Map<string, CheckInFacts>();
+
+  checkInFacts(sourceEventId: string): Promise<CheckInFacts | null> {
+    return Promise.resolve(this.checkIns.get(sourceEventId) ?? null);
+  }
 
   queue(
     rung: Rung,
@@ -207,6 +213,9 @@ function setup() {
     durationMin: 105,
     services: ['Full colour'],
     branchId: '33333333-3333-4333-8333-333333333333',
+    groupId: null,
+    seriesId: null,
+    series: null,
   });
   const contacts = {
     lookup: vi.fn((_id: string): Promise<ContactLookup> =>
@@ -762,5 +771,88 @@ describe('a hand-over to the Notification Center (channel hub)', () => {
 
     expect(notifier.notify).toHaveBeenCalledOnce();
     expect(push.send).toHaveBeenCalledOnce();
+  });
+});
+
+describe('a check-in answer through the Notification Center', () => {
+  const NOW = Date.parse('2026-10-11T03:50:00Z');
+  const facts = (over: Partial<CheckInFacts> = {}): CheckInFacts => ({
+    requestId: 'req-1',
+    raisedByKind: 'customer',
+    raisedById: CUSTOMER,
+    bookingCustomerId: CUSTOMER,
+    groupId: null,
+    member: null,
+    ...over,
+  });
+
+  it('their own: the push words, to whoever tapped, keyed on the request', async () => {
+    const { store, handler, notifier, contacts } = setup();
+    store.checkIns.set('ev-ci', facts());
+    store.queueHub('check_in_request.approved', 'ev-ci', NOW);
+
+    await handler.run(NOW);
+
+    const request = notifier.notify.mock.calls[0]![0];
+    expect(request.consumerId).toBe(CUSTOMER);
+    expect(request.type).toBe('check_in.approved');
+    expect(request.dedupeKey).toBe('check_in:req-1:approved');
+    expect(request.params.title).toBe('You are checked in');
+    expect(request.params.body).toBe('Welcome! Booking GS-1050.');
+    expect(contacts.lookup).not.toHaveBeenCalled();
+  });
+
+  it("a guest in the booker's party, by the name the booker typed", async () => {
+    const { store, handler, notifier } = setup();
+    store.checkIns.set(
+      'ev-ci',
+      facts({
+        raisedById: 'booker-9',
+        groupId: 'g-1',
+        member: { guestName: 'Mona', customerId: null },
+      }),
+    );
+    store.queueHub('check_in_request.rejected', 'ev-ci', NOW);
+
+    await handler.run(NOW);
+
+    const request = notifier.notify.mock.calls[0]![0];
+    expect(request.consumerId).toBe('booker-9');
+    expect(request.params.body).toBe(
+      "The salon could not confirm Mona's arrival. Booking GS-1050.",
+    );
+    expect(request.params.group_id).toBe('g-1');
+  });
+
+  it('a registered member, by the name customer-api gives the salon side, asked quickly', async () => {
+    const { store, handler, notifier, contacts } = setup();
+    contacts.lookup.mockResolvedValue(found({ fullName: 'Omar S.' }));
+    store.checkIns.set(
+      'ev-ci',
+      facts({
+        raisedById: 'booker-9',
+        member: { guestName: null, customerId: 'member-1' },
+      }),
+    );
+    store.queueHub('check_in_request.approved', 'ev-ci', NOW);
+
+    await handler.run(NOW);
+
+    expect(contacts.lookup).toHaveBeenCalledWith('member-1', {
+      quickMs: 2_000,
+    });
+    expect(notifier.notify.mock.calls[0]![0].params.title).toBe(
+      'Omar S. is checked in',
+    );
+  });
+
+  it('a request that is gone is skipped, not retried', async () => {
+    const { store, handler, notifier } = setup();
+    store.queueHub('check_in_request.expired', 'ev-ci', NOW);
+
+    await handler.run(NOW);
+
+    expect(notifier.notify).not.toHaveBeenCalled();
+    expect(store.get('hub', 'ev-ci').skipReason).toBe('request_gone');
   });
 });

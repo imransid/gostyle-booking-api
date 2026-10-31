@@ -50,6 +50,31 @@ export interface DeliveryBooking {
   readonly services: readonly string[];
   /** The hub's salon: customer-api names it and reads its clock. */
   readonly branchId: string;
+  /** A party lane's group. */
+  readonly groupId: string | null;
+  /** A routine visit's routine, and that routine's live visits. */
+  readonly seriesId: string | null;
+  readonly series: {
+    readonly firstStartMs: number;
+    readonly visits: number;
+  } | null;
+}
+
+/**
+ * What a check-in answer's hand-over needs: the request behind the outbox
+ * event, who tapped, and the party member it was about.
+ */
+export interface CheckInFacts {
+  readonly requestId: string;
+  readonly raisedByKind: string;
+  readonly raisedById: string;
+  readonly bookingCustomerId: string;
+  readonly groupId: string | null;
+  /** The party lane's participant, when the booking is one. */
+  readonly member: {
+    readonly guestName: string | null;
+    readonly customerId: string | null;
+  } | null;
 }
 
 export interface DeliveryQueueStats {
@@ -165,9 +190,14 @@ export class NotificationDeliveryRepository {
         paymentStatus: true,
         durationMin: true,
         branchId: true,
+        groupId: true,
+        seriesId: true,
         items: { select: { serviceName: true }, orderBy: { position: 'asc' } },
       },
     });
+    const series = await this.seriesSummaries([
+      ...new Set(rows.flatMap((b) => (b.seriesId ? [b.seriesId] : []))),
+    ]);
     return new Map(
       rows.map((b) => [
         b.id,
@@ -181,6 +211,9 @@ export class NotificationDeliveryRepository {
           durationMin: b.durationMin,
           services: b.items.map((i) => i.serviceName),
           branchId: b.branchId,
+          groupId: b.groupId ?? null,
+          seriesId: b.seriesId ?? null,
+          series: b.seriesId ? (series.get(b.seriesId) ?? null) : null,
         },
       ]),
     );
@@ -196,6 +229,77 @@ export class NotificationDeliveryRepository {
    * kill -9, a pause or a network stall leaves the row either as the last
    * finished attempt wrote it, or due again.
    */
+  /**
+   * Each routine's live visits: how many, and the first start. One query
+   * for the batch.
+   */
+  private async seriesSummaries(
+    seriesIds: readonly string[],
+  ): Promise<Map<string, { firstStartMs: number; visits: number }>> {
+    if (seriesIds.length === 0) return new Map();
+    const rows = await this.prisma.booking.groupBy({
+      by: ['seriesId'],
+      where: {
+        seriesId: { in: [...seriesIds] },
+        status: {
+          in: ['confirmed', 'pending_payment', 'checked_in', 'in_service'],
+        },
+      },
+      _count: { _all: true },
+      _min: { startAt: true },
+    });
+    return new Map(
+      rows.flatMap((r) =>
+        r.seriesId === null || r._min.startAt === null
+          ? []
+          : [
+              [
+                r.seriesId,
+                {
+                  firstStartMs: r._min.startAt.getTime(),
+                  visits: r._count._all,
+                },
+              ] as const,
+            ],
+      ),
+    );
+  }
+
+  /**
+   * The check-in request a check_in_request.* event was about, read through
+   * the outbox row (the delivery keeps only its id). Null when either is
+   * gone.
+   */
+  async checkInFacts(sourceEventId: string): Promise<CheckInFacts | null> {
+    const event = await this.prisma.eventOutbox.findUnique({
+      where: { id: sourceEventId },
+      select: { aggregateId: true },
+    });
+    if (event === null) return null;
+    const request = await this.prisma.checkInRequest.findUnique({
+      where: { id: event.aggregateId },
+      select: {
+        id: true,
+        raisedByKind: true,
+        raisedById: true,
+        booking: { select: { id: true, customerId: true, groupId: true } },
+      },
+    });
+    if (request === null) return null;
+    const member = await this.prisma.groupParticipant.findUnique({
+      where: { bookingId: request.booking.id },
+      select: { guestName: true, customerId: true },
+    });
+    return {
+      requestId: request.id,
+      raisedByKind: request.raisedByKind,
+      raisedById: request.raisedById,
+      bookingCustomerId: request.booking.customerId,
+      groupId: request.booking.groupId,
+      member,
+    };
+  }
+
   async record(
     claim: Pick<ClaimedDelivery, 'id' | 'attempt'>,
     outcome: Settlement | { readonly status: 'superseded' },

@@ -31,7 +31,11 @@ import {
   CUSTOMER_NOTIFIER,
   type CustomerNotifier,
 } from '@application/ports/customer-notifier.port';
-import { hubPlan } from '@domain/booking/hub-notification';
+import { checkInNotice, hubPlan } from '@domain/booking/hub-notification';
+import {
+  answerOfEvent,
+  type CheckInAnswer,
+} from '@domain/booking/check-in-push';
 import {
   NotificationDeliveryRepository,
   type ClaimedDelivery,
@@ -46,6 +50,9 @@ import { renderReminderEmail } from '@infrastructure/messaging/reminder-email.la
  * the lease (DISPATCH_LEASE_MS) or a second worker would take the same rows.
  */
 export const DISPATCH_BATCH = 10;
+
+/** A party member's name for a check-in answer waits at most this long. */
+export const CHECK_IN_NAME_MS = 2_000;
 
 export interface DispatchReport {
   readonly claimed: number;
@@ -223,6 +230,9 @@ export class DispatchRemindersHandler {
     if (nowMs >= d.expiresAtMs) {
       return this.write(d, { status: 'skipped', reason: 'expired' }, nowMs);
     }
+    const answer = answerOfEvent(d.eventType);
+    if (answer !== null) return this.dispatchCheckIn(d, booking, answer, nowMs);
+
     const plan = hubPlan({
       eventType: d.eventType,
       sourceEventId: d.sourceEventId,
@@ -247,6 +257,66 @@ export class DispatchRemindersHandler {
           `failed on attempt ${d.attempt}: ${settlement.error}`,
       );
     }
+    return this.write(d, settlement, nowMs);
+  }
+
+  /**
+   * A desk's answer to a check-in, handed over with the words the check-in
+   * push has always used. A party member's name is a guest's as the booker
+   * typed it, or a registered member's as customer-api gives it to the
+   * salon side, asked quickly: no answer in time words it without a name.
+   */
+  private async dispatchCheckIn(
+    d: ClaimedDelivery,
+    booking: DeliveryBooking | null,
+    answer: CheckInAnswer,
+    nowMs: number,
+  ): Promise<RowResult> {
+    if (booking === null) {
+      return this.write(
+        d,
+        { status: 'skipped', reason: 'booking_gone' },
+        nowMs,
+      );
+    }
+    const facts = await this.deliveries.checkInFacts(d.sourceEventId);
+    if (facts === null || facts.raisedByKind !== 'customer') {
+      return this.write(
+        d,
+        { status: 'skipped', reason: 'request_gone' },
+        nowMs,
+      );
+    }
+
+    const self = facts.bookingCustomerId === facts.raisedById;
+    let memberName: string | null = null;
+    if (!self && facts.member !== null) {
+      memberName = facts.member.guestName;
+      if (memberName === null && facts.member.customerId !== null) {
+        const who = await this.contacts.lookup(facts.member.customerId, {
+          quickMs: CHECK_IN_NAME_MS,
+        });
+        memberName = who.kind === 'found' ? who.contact.fullName : null;
+      }
+    }
+
+    const settlement = settle({
+      outcome: await this.notifier.notify(
+        checkInNotice({
+          answer,
+          requestId: facts.requestId,
+          to: facts.raisedById,
+          self,
+          memberName,
+          booking,
+          groupId: facts.groupId,
+          expiresAtMs: d.expiresAtMs,
+        }),
+      ),
+      attempt: d.attempt,
+      nowMs,
+      expiresAtMs: d.expiresAtMs,
+    });
     return this.write(d, settlement, nowMs);
   }
 

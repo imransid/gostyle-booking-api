@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { HUB_EVENTS, hubPlan, type HubBooking } from './hub-notification';
+import {
+  HUB_EVENTS,
+  checkInNotice,
+  hubPlan,
+  type HubBooking,
+} from './hub-notification';
 
 const BOOKING: HubBooking = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -106,8 +111,9 @@ describe('hubPlan', () => {
     });
   });
 
-  it('HUB_EVENTS is what the plan knows', () => {
+  it('HUB_EVENTS is what the plan knows, check-in answers aside', () => {
     for (const type of HUB_EVENTS) {
+      if (type.startsWith('check_in_request.')) continue;
       expect(plan(type).kind).toBe('send');
     }
   });
@@ -152,6 +158,117 @@ describe('hubPlan for the chosen reminder', () => {
   it('an unpaid booking is still reminded of, as the fixed rungs do', () => {
     expect(reminder({ ...BOOKING, status: 'pending_payment' }).kind).toBe(
       'send',
+    );
+  });
+});
+
+describe('checkInNotice', () => {
+  const notice = (
+    self: boolean,
+    memberName: string | null,
+    groupId: string | null = null,
+  ) =>
+    checkInNotice({
+      answer: 'approved',
+      requestId: 'req-1',
+      to: 'booker-1',
+      self,
+      memberName,
+      booking: BOOKING,
+      groupId,
+      expiresAtMs: EXPIRES,
+    });
+
+  it('their own check-in, in the words the push always used', () => {
+    expect(notice(true, null)).toEqual({
+      consumerId: 'booker-1',
+      type: 'check_in.approved',
+      dedupeKey: 'check_in:req-1:approved',
+      params: {
+        booking_id: BOOKING.id,
+        booking_code: 'GS-1481',
+        branch_id: BOOKING.branchId,
+        start_at: '2026-11-02T07:00:00.000Z',
+        request_id: 'req-1',
+        title: 'You are checked in',
+        body: 'Welcome! Booking GS-1481.',
+      },
+      targetType: 'booking',
+      targetId: BOOKING.id,
+      deliverBy: '2026-11-01T08:00:00.000Z',
+    });
+  });
+
+  it('a party member, by name, with the group', () => {
+    const n = notice(false, 'Sara A.', 'g-1');
+    expect(n.params.title).toBe('Sara A. is checked in');
+    expect(n.params.group_id).toBe('g-1');
+  });
+
+  it('a party member without a name', () => {
+    expect(notice(false, null).params.title).toBe(
+      'A member of your party is checked in',
+    );
+  });
+});
+
+describe('one confirmation per routine, one per party', () => {
+  it('a routine visit speaks for the routine: its first visit and how many', () => {
+    const p = plan('booking.confirmed', {
+      ...BOOKING,
+      seriesId: 'ser-1',
+      series: { firstStartMs: Date.parse('2026-11-01T07:00:00Z'), visits: 4 },
+    });
+    expect(p.kind).toBe('send');
+    if (p.kind !== 'send') return;
+    expect(p.request.dedupeKey).toBe('booking.confirmed:series:ser-1');
+    expect(p.request.params.series_id).toBe('ser-1');
+    expect(p.request.params.visits).toBe('4');
+    expect(p.request.params.start_at).toBe('2026-11-01T07:00:00.000Z');
+  });
+
+  it('every visit of a routine has the same key: told once', () => {
+    const series = { firstStartMs: 1, visits: 2 };
+    const a = plan('booking.confirmed', {
+      ...BOOKING,
+      seriesId: 'ser-1',
+      series,
+    });
+    const b = plan('booking.payment_recorded', {
+      ...BOOKING,
+      id: 'other-visit',
+      seriesId: 'ser-1',
+      series,
+    });
+    expect(a.kind === 'send' && b.kind === 'send').toBe(true);
+    if (a.kind === 'send' && b.kind === 'send') {
+      expect(a.request.dedupeKey).toBe(b.request.dedupeKey);
+    }
+  });
+
+  it('a party lane speaks for the party', () => {
+    const p = plan('booking.confirmed', { ...BOOKING, groupId: 'g-1' });
+    expect(p.kind === 'send' && p.request.dedupeKey).toBe(
+      'booking.confirmed:group:g-1',
+    );
+    expect(p.kind === 'send' && p.request.params.group_id).toBe('g-1');
+  });
+
+  it('a move or a cancel stays one per visit', () => {
+    const moved = plan('booking.rescheduled', {
+      ...BOOKING,
+      groupId: 'g-1',
+      seriesId: 'ser-1',
+    });
+    const cancelled = plan('booking.cancelled', {
+      ...BOOKING,
+      seriesId: 'ser-1',
+    });
+    expect(moved.kind === 'send' && moved.request.dedupeKey).toBe(
+      'booking.rescheduled:ev-9',
+    );
+    expect(cancelled.kind === 'send' && cancelled.request.dedupeKey).toBe(
+      `booking.cancelled:${BOOKING.id}`,
     );
   });
 });
