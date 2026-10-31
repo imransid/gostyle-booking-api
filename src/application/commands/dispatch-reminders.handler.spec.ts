@@ -163,6 +163,7 @@ const found = (
     pushEnabled: true,
     bookingConfirmation: true,
     bookingChanges: true,
+    emailEnabled: true,
     ...over,
   },
 });
@@ -457,6 +458,16 @@ describe('who the customer is decides the email, not the push', () => {
     expect(store.get('email').skipReason).toBe('opted_out');
     expect(push.send).not.toHaveBeenCalled();
     expect(email.send).not.toHaveBeenCalled();
+  });
+
+  it('the Email switch off: email skipped, push still sent', async () => {
+    const { store, handler, contacts, push, email } = setup();
+    contacts.lookup.mockResolvedValue(found({ emailEnabled: false }));
+    store.queue('confirm_24h', 'e24', AT_24H);
+    await handler.run(AT_24H);
+    expect(store.get('email').skipReason).toBe('opted_out');
+    expect(email.send).not.toHaveBeenCalled();
+    expect(push.send).toHaveBeenCalledOnce();
   });
 
   it('push turned off: push skipped, email still sent', async () => {

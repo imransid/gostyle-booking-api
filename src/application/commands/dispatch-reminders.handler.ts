@@ -273,6 +273,9 @@ export class DispatchRemindersHandler {
     const { contact } = who;
     if (!contact.appointmentReminder)
       return { kind: 'skipped', reason: 'opted_out' };
+    // The Email channel switch (customer-api NOTIFICATION_CHANNELS_V1).
+    // Read as on from a customer-api that does not send it.
+    if (!contact.emailEnabled) return { kind: 'skipped', reason: 'opted_out' };
     if (contact.email === null) return { kind: 'skipped', reason: 'no_email' };
     if (!contact.emailVerified)
       return { kind: 'skipped', reason: 'email_unverified' };
