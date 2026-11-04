@@ -9,6 +9,8 @@ import { branchInstant } from '@infrastructure/persistence/hold.repository';
 import { formatMinute } from '@domain/availability/grid';
 import { Money } from '@domain/shared/money';
 import { shout, type Shouted } from '@application/contract/wire';
+import { packagesSold } from '@domain/booking/package';
+import { PACKAGE_SPELLINGS } from '@application/commands/basket';
 import type { BookingStatus, ActorKind } from '@domain/booking/lifecycle';
 import type { PaymentStatus } from '../../generated/prisma/enums';
 
@@ -42,6 +44,19 @@ export interface BookingDetailView {
   readonly linkExpiresAt: string | null;
   readonly tenantId: string | null;
   readonly createdAt: string;
+  /**
+   * The packages this booking holds, read back off its items. `priceMinor`
+   * is the package's price, net of VAT: the sum of its items' priceMinor,
+   * which carry it between them. Empty for hand-picked services.
+   */
+  readonly packages: readonly {
+    readonly packageId: string;
+    readonly name: string;
+    readonly priceMinor: number;
+    readonly price: string;
+    /** Its items' serviceRef, in the order they are performed. */
+    readonly serviceRefs: readonly string[];
+  }[];
   readonly items: readonly {
     readonly position: number;
     /** The STORED id. Frozen at the booking; not what the engine answers to. */
@@ -143,6 +158,13 @@ export class GetBookingHandler {
         b.linkExpiresAt === null ? null : b.linkExpiresAt.toISOString(),
       tenantId: b.tenantId,
       createdAt: b.createdAt.toISOString(),
+      packages: packagesSold(b.items).map((p) => ({
+        packageId: PACKAGE_SPELLINGS.toSlug(p.packageId),
+        name: p.name,
+        priceMinor: p.priceFils,
+        price: Money.fils(p.priceFils).toString(),
+        serviceRefs: p.serviceIds.map((id) => names.index.toSlug(id)),
+      })),
       items: b.items.map((i) => ({
         position: i.position,
         serviceId: i.serviceId,

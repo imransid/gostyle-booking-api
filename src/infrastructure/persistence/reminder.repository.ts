@@ -8,6 +8,11 @@ import {
   paymentPending,
   type RungSpec,
 } from '@domain/booking/reminders';
+import {
+  CHOSEN_HORIZON_MS,
+  type ChosenVerdict,
+} from '@domain/booking/chosen-reminder';
+import { chosenRemindersOn } from '../scheduling/reminder-choice.flag';
 
 /** One booking claimed for one rung. Named: a heredoc eats a trailing `<`. */
 interface ClaimedRow {
@@ -19,6 +24,24 @@ interface ClaimedRow {
   reminded_24h_at: Date | null;
   reminded_3h_at: Date | null;
   nudged_15m_at: Date | null;
+}
+
+/** An app booking whose own reminder is still outstanding. */
+export interface ChosenCandidate {
+  readonly id: string;
+  readonly code: string;
+  readonly customerId: string;
+  readonly startAtMs: number;
+  /** updated_at: its create, its last move, or any change since. */
+  readonly touchedAtMs: number;
+}
+
+interface ChosenRow {
+  id: string;
+  code: string;
+  customer_id: string;
+  start_at: Date;
+  updated_at: Date;
 }
 
 export interface RungResult {
@@ -66,6 +89,9 @@ export class ReminderRepository {
     const earlierStamped = earlierColumns(spec)
       .map((c) => `AND ${COLUMN_SQL[c]} IS NOT NULL`)
       .join(' ');
+    // With the customer's own reminder on, app bookings are its, not the
+    // fixed rungs' (MOBILE_REMINDER_CHOICE). A desk booking is unchanged.
+    const appBookings = chosenRemindersOn() ? `AND channel <> 'online'` : '';
 
     return this.prisma.$transaction(async (tx) => {
       const claimed = await tx.$queryRawUnsafe<ClaimedRow[]>(
@@ -76,6 +102,7 @@ export class ReminderRepository {
            SELECT id FROM booking
             WHERE ${column} IS NULL
               ${earlierStamped}
+              ${appBookings}
               AND status = ANY($1::booking_status[])
               AND start_at <= $2
             ORDER BY start_at
@@ -159,6 +186,92 @@ export class ReminderRepository {
         );
       }
       return { rung: spec.rung, sent, skipped, released: released.length };
+    });
+  }
+
+  /**
+   * App bookings whose own reminder is outstanding and could be due within
+   * the next day (the longest lead), soonest first. A plain read: the claim
+   * below is what makes two replicas safe.
+   */
+  async chosenCandidates(
+    nowMs: number,
+    limit = 1000,
+  ): Promise<ChosenCandidate[]> {
+    const rows = await this.prisma.$queryRawUnsafe<ChosenRow[]>(
+      `
+      SELECT id, code, customer_id, start_at, updated_at
+        FROM booking
+       WHERE reminded_chosen_at IS NULL
+         AND channel = 'online'
+         AND status = ANY($1::booking_status[])
+         AND start_at > $2
+         AND start_at <= $3
+       ORDER BY start_at
+       LIMIT $4`,
+      [...LADDER_STATUSES],
+      new Date(nowMs),
+      new Date(nowMs + CHOSEN_HORIZON_MS),
+      limit,
+    );
+    return rows.map((r) => ({
+      id: r.id,
+      code: r.code,
+      customerId: r.customer_id,
+      startAtMs: r.start_at.getTime(),
+      touchedAtMs: r.updated_at.getTime(),
+    }));
+  }
+
+  /**
+   * Stamp one booking's own reminder and, for a send, write reminder.chosen,
+   * in one transaction.
+   *
+   * THE CLAIM IS THE UPDATE: it lands only while the reminder is still
+   * outstanding, the booking still live AND still at the start it was judged
+   * for. A second replica that judged the same booking finds it stamped and
+   * gets 'lost'; a booking moved since the read is left for the next tick.
+   */
+  async claimChosen(
+    candidate: ChosenCandidate,
+    verdict: Exclude<ChosenVerdict, { kind: 'wait' }>,
+  ): Promise<'sent' | 'skipped' | 'lost'> {
+    return this.prisma.$transaction(async (tx) => {
+      const claimed = await tx.$queryRawUnsafe<{ id: string }[]>(
+        `
+        UPDATE booking
+           SET reminded_chosen_at = now(),
+               reminder_lead_min = $2
+         WHERE id = $1::uuid
+           AND reminded_chosen_at IS NULL
+           AND start_at = $3
+           AND status = ANY($4::booking_status[])
+        RETURNING id`,
+        candidate.id,
+        verdict.leadMinutes,
+        new Date(candidate.startAtMs),
+        [...LADDER_STATUSES],
+      );
+      if (claimed.length === 0) return 'lost';
+      if (verdict.kind === 'skip') return 'skipped';
+
+      await tx.eventOutbox.create({
+        data: {
+          aggregateType: 'booking',
+          aggregateId: candidate.id,
+          eventType: 'reminder.chosen',
+          payload: {
+            code: candidate.code,
+            // The start it was claimed FOR: a booking moved since is
+            // superseded at send time, and gets its own.
+            startAt: new Date(candidate.startAtMs).toISOString(),
+            customerId: candidate.customerId,
+            leadMinutes: verdict.leadMinutes,
+            late: verdict.late,
+          },
+        },
+      });
+      return 'sent';
     });
   }
 

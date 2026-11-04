@@ -4,9 +4,10 @@
  * Read-only window onto platform's service catalogue over gRPC. This
  * service owns no service rows of its own.
  *
- * NOT the same as GET /availability/catalogue, which returns the fixture
- * menu the availability engine runs on. Different ids, different source.
- * Do not mix them.
+ * GET /availability/catalogue reads the same source for a real branch
+ * (with SERVICES_FROM_PLATFORM on) and the fixture menu only for the demo
+ * salon. It is the engine's shape -- durations and resource types, no
+ * prices -- so it is not a substitute for this one.
  *
  * No access decorator, so the global guard applies: any valid bearer
  * token gets through, customer or staff. This is the menu a customer

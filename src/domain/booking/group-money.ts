@@ -34,7 +34,11 @@ export type AgeGroup = 'adult' | 'child';
 
 export interface MemberBasket {
   readonly ageGroup: AgeGroup;
-  /** Each service's LIST price, whole fils, in the order picked. */
+  /**
+   * Each LINE's price, whole fils, in the order picked: a hand-picked
+   * service at its own price, a package at the package's (a package is one
+   * line, so the child rule halves it once, as the app does).
+   */
   readonly serviceFils: readonly number[];
   /** Unit price and quantity of each product line, as sold. */
   readonly products: readonly {
@@ -44,7 +48,7 @@ export interface MemberBasket {
 }
 
 export interface MemberMoney {
-  /** Each service as charged: the child price already applied. */
+  /** Each line as charged: the child price already applied. */
   readonly serviceFils: readonly number[];
   readonly servicesNetFils: number;
   readonly productsNetFils: number;

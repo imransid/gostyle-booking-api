@@ -143,5 +143,5 @@ function bookingIdsOf(body: unknown): string[] | undefined {
       'bookingIds must be a list of booking ids.',
     );
   }
-  return ids as string[];
+  return ids;
 }

@@ -8,13 +8,16 @@ import { callWithRetry, type GrpcCallOptions } from './call-with-retry';
 import {
   describeGrpcFailure,
   grpcStatusName,
+  grpcStatusOf,
   isTransportFailure,
 } from './grpc-failure';
+import { status } from '@grpc/grpc-js';
 import { platformGrpcAddress } from './staff-grpc.constants';
 
 import type {
   ServicesDirectoryReader,
   CatalogueService,
+  CataloguePackage,
 } from '@application/ports/services-directory.port';
 import { SERVICES_DIRECTORY_CLIENT } from './services-grpc.constants';
 
@@ -41,6 +44,15 @@ interface ServiceWire {
   included_steps?: string[];
 }
 
+interface PackageWire {
+  package_id?: string;
+  name?: string;
+  price_minor?: number;
+  currency?: string;
+  items?: { service_id?: string; quantity?: number; variant_id?: string }[];
+  from_published_snapshot?: boolean;
+}
+
 /** The generated client surface. Nest lowercases the first letter of each rpc. */
 interface ServicesDirectoryGrpc {
   listServices(
@@ -52,6 +64,12 @@ interface ServicesDirectoryGrpc {
     metadata?: Metadata,
     options?: GrpcCallOptions,
   ): Observable<{ services?: ServiceWire[] }>;
+
+  listPackages(
+    data: { tenant_id: string; branch_id: string },
+    metadata?: Metadata,
+    options?: GrpcCallOptions,
+  ): Observable<{ packages?: PackageWire[] }>;
 }
 
 /** Milliseconds. gRPC sets NO default deadline, so an unanswered call
@@ -129,6 +147,70 @@ export class GrpcServicesDirectory
         throw bookingError(
           'DEPENDENCY_UNAVAILABLE',
           'The service catalogue is unavailable, so this booking cannot be ' +
+            'priced. Nothing was charged. Try again shortly.',
+          {
+            dependency: 'platform-api ServicesDirectory',
+            address: platformGrpcAddress(),
+            grpcStatus: grpcStatusName(err),
+          },
+        );
+      }
+      throw err;
+    }
+  }
+
+  async listPackages(
+    tenantId: string,
+    branchId: string,
+  ): Promise<CataloguePackage[]> {
+    try {
+      const res = await callWithRetry(
+        this.logger,
+        `listPackages tenant=${tenantId} branch=${branchId}`,
+        CALL_TIMEOUT_MS,
+        (md, opts) =>
+          this.svc.listPackages(
+            { tenant_id: tenantId, branch_id: branchId },
+            md,
+            opts,
+          ),
+      );
+      return (res.packages ?? []).map((p) => ({
+        id: p.package_id ?? '',
+        name: p.name ?? '',
+        priceMinor: p.price_minor ?? 0,
+        currency: p.currency ?? '',
+        items: (p.items ?? []).map((i) => ({
+          serviceId: i.service_id ?? '',
+          quantity: i.quantity ?? 1,
+          variantId: i.variant_id ?? '',
+        })),
+        fromPublishedSnapshot: p.from_published_snapshot === true,
+      }));
+    } catch (err) {
+      /**
+       * A PLATFORM WITH NO ListPackages SELLS NO PACKAGES. It is not an
+       * outage to wait out: the method is not there and will not come back
+       * on its own, so a basket naming a package is told the package is not
+       * sold here, rather than answered 503 as if trying again could help.
+       * Said at ERROR, because PACKAGES_FROM_PLATFORM is on and somebody
+       * expects packages.
+       */
+      if (grpcStatusOf(err) === status.UNIMPLEMENTED) {
+        this.logger.error(
+          `listPackages: the platform at ${platformGrpcAddress()} has no ` +
+            'ListPackages, so this branch sells no packages. Deploy a ' +
+            'platform with it before PACKAGES_FROM_PLATFORM is on.',
+        );
+        return [];
+      }
+      this.logger.error(
+        `listPackages failed for tenant ${tenantId}: ${describeGrpcFailure(err)}`,
+      );
+      if (isTransportFailure(err)) {
+        throw bookingError(
+          'DEPENDENCY_UNAVAILABLE',
+          'The package catalogue is unavailable, so this booking cannot be ' +
             'priced. Nothing was charged. Try again shortly.',
           {
             dependency: 'platform-api ServicesDirectory',

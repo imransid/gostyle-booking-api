@@ -27,6 +27,11 @@ change an endpoint.
 
 ## Contents
 
+> **Packages (2026-10-18):** how a package is listed, priced and sold — at
+> the desk and in the app, single and party — is in
+> [PACKAGES.md](PACKAGES.md). In short: the package price is carried by its
+> parts, so there is no bundle-discount line any more.
+
 - [1. Getting started](#1-getting-started)
   - [Base URL](#base-url)
   - [Authentication](#authentication)
@@ -1602,7 +1607,7 @@ Price a basket without holding or charging anything: every intermediate the arit
 | `400` | { statusCode: 400, message: [ '<per-field messages>' ], error: 'Bad Request' } — e.g. ['day must be YYYY-MM-DD','pick at least one service','customerId must be a string',... | The global ValidationPipe ({ transform:true, whitelist:true, forbidNonWhitelisted:true }, src/main.ts:30). |
 | `401` | Missing bearer token \| Malformed token \| Unknown token issuer \| Token expired \| Invalid token \| Staff authentication unavailable | BookingAuthGuard / TokenVerifier, exactly as on the other routes. |
 | `404` | Unknown service: ${missing ids, comma-space separated} — e.g. 'Unknown service: nail-art' or 'Unknown service: nail-art, scalp-massage' | GetQuoteHandler: after package expansion, loadServices() returned fewer services than were asked for; the handler then NAMES the missing ids (unlike POST /v1/bookings, which just says 'One o. |
-| `500` | Internal server error | Two paths, neither caught and there is no exception filter: (a) a plain Error from expandPackage() — 'Package ${id} contains no services' (package.ts:51) or 'Package ${id} costs AED X but it. |
+| `500` | Internal server error | Changed 2026-10-18: a package priced above its parts is no longer an error — it is sold at its own price, saving 0 (see [PACKAGES.md](PACKAGES.md)). A package with no services is left out of the catalogue before it reaches here. What remains is a genuine bug. |
 
 > STATUS CODE MISMATCH — this returns HTTP 201, not 200, despite @ApiOkResponse: it is @Post('quote') with no @HttpCode(HttpStatus.OK). Do not assert on 200. It is a POST only because of the body; it writes NOTHING — no hold, no reservation, no row — so calling it repeatedly is free and holds no slot.
 
@@ -1905,6 +1910,8 @@ Call the visit off. Legal from PENDING_PAYMENT, CONFIRMED and CHECKED_IN. The mo
 
 **Auth** — authenticated, with a role rule that depends on the CURRENT status: customer, staff and manager may all cancel from PENDING_PAYMENT or CONFIRMED; only staff and manager may cancel from CHECKED_IN.
 
+**Party lanes** (`MOBILE_GROUP_LANE_GUARD`, off by default): with it on, a customer cannot cancel one lane of an app party (`booking_group.source = 'mobile'`), the booker's own lane included: `409 BOOKING_PARTY_LANE`. The booker cancels the whole party with [`POST /v1/mobile-booking/group/:groupId/cancel`](#post-v1mobile-bookinggroupgroupidcancel). A desk party's lane is not affected: the customer cancels it as an ordinary booking. Staff and manager are never refused. Checked after ownership, so a booking that is not the caller's is still `404`.
+
 **Request (body)**
 
 | Field | Type | Required | Rules |
@@ -1944,6 +1951,7 @@ LifecycleView WITH the money block, never the receipt. { code: string; bookingId
 | `403` | A customer may not cancel. | A customer token on a CHECKED_IN booking -- checked_in->cancelled allows staff and manager only. From pending_payment or confirmed a customer IS allowed, so there is no 403 there. |
 | `404` | No such booking | Malformed :id (fails UUID_RE at lifecycle.handler.ts:106) or no booking row under FOR UPDATE. |
 | `409` | A ${from} booking cannot become cancelled. | Legal froms are pending_payment, confirmed and checked_in ONLY. All eleven verbatim strings: "A draft booking cannot become cancelled.", "A held booking cannot become cancelled.", "A pending... |
+| `409` | This booking is part of a party. A party is cancelled together, by the person who booked it, and cannot be moved one member at a time. | Code `BOOKING_PARTY_LANE`, only with `MOBILE_GROUP_LANE_GUARD=true`: a customer token on a lane of an app party. Body `{ "statusCode": 409, "code": "BOOKING_PARTY_LANE", "message": "...", "error": "Conflict" }`. Never for staff, never for a desk party's lane. |
 | `422` | Choose a reason | reason is absent, null, empty, or whitespace only. All three cancel transitions have requiresReason: true and checkTransition() tests `(input.reason ?? '').trim() === ''`. |
 | `500` | Internal server error | Non-system actor with a null actor id -> CHECK bsh_system_has_no_actor rejects the deposit_ledger / booking_status_history inserts and the whole transaction rolls back. |
 | `500` | Internal server error | Any other unmapped DB failure inside the transaction. Logged at ERROR by LifecycleRepository.transition() before rethrow. |
@@ -2012,6 +2020,8 @@ Move the booking to a slot that is already held. The booking MOVES (same row, sa
 
 **Auth** — authenticated (any actor kind). CONFIRMED AGAIN BY READING RescheduleRepository.move(): unlike the six lifecycle routes, this one performs NO actor check at all -- checkTransition() is never called on this path and `input.actor` is only ever written into the a...
 
+**Party lanes** (`MOBILE_GROUP_LANE_GUARD`, off by default): with it on, a customer cannot move one lane of an app party (`booking_group.source = 'mobile'`), the booker's own lane included: `409 BOOKING_PARTY_LANE`, refused before the hold is looked at. A party is never moved one member at a time, and there is no route to move a whole party. A desk party's lane is not affected: the customer moves it as an ordinary booking. Staff and manager are never refused. Checked after ownership, so a booking that is not the caller's is still `404`.
+
 **Request (body)**
 
 | Field | Type | Required | Rules |
@@ -2044,6 +2054,7 @@ RescheduleView (src/application/commands/reschedule.handler.ts:27). Exactly nine
 | `401` | Staff authentication unavailable | Server-side misconfiguration: JWT_ACCESS_SECRET is unset or empty. Also logged at ERROR ('JWT_ACCESS_SECRET is not set'). |
 | `404` | No such booking | Three distinct causes, one message. (a) :id does not match UUID_RE at reschedule.handler.ts:50 -- a malformed id is deliberately a 404, not the Postgres 22P02 500 it would otherwise be. |
 | `409` | A ${status} booking cannot be moved. | The booking's CURRENT status (read under FOR UPDATE) is not in MOVABLE = { confirmed, pending_payment, pending_confirmation } (reschedule.repository.ts:75). |
+| `409` | This booking is part of a party. A party is cancelled together, by the person who booked it, and cannot be moved one member at a time. | Code `BOOKING_PARTY_LANE`, only with `MOBILE_GROUP_LANE_GUARD=true`: a customer token on a lane of an app party. Same body as on cancel. Never for staff, never for a desk party's lane. |
 | `410` | That slot went while you were deciding. The original booking is untouched, and offers have refreshed. | No live staff_reservation joined to that hold_id with h.expires_at > now(). Covers all of: the hold's TTL lapsed, the holdId is a well-formed UUID that never existed, the hold has no staff r... |
 | `500` | Internal server error | `day` is a well-formed string but not a parseable YYYY-MM-DD. branchInstant() (hold.repository.ts:43) does `tradingDay.split('-').map(Number)` -> NaN -> Date.UTC(NaN,...) -> Invalid Date, an... |
 | `500` | Internal server error | A non-system actor whose token carries no `sub` claim: actor.id is undefined -> actorId null -> the CHECK bsh_system_has_no_actor `((actor_kind = 'system') = (actor_id IS NULL))` fails on th. |
@@ -2281,6 +2292,9 @@ Environment:
 | `MOBILE_GROUP_DEPOSIT_PERCENT` | `20` | The deposit, as a percent of the party total. The app's `deposit_percent` must match it. |
 | `PRODUCTS_FROM_PLATFORM` | off | As for a single booking: off, a party with products is refused with `products_not_supported`. |
 | `MOBILE_GROUP_SELF_CHECK_IN` | off | `true` adds `is_me` and `booking_id` to each member row of the party read, so a member can check in on their own lane. Off, the read is exactly what it was. See the read, below. |
+| `MOBILE_GROUP_LANE_GUARD` | off | `true` refuses a customer's single cancel or reschedule (`POST /v1/bookings/:id/cancel`, `/reschedule`) on one lane of an app party, the booker's own lane included: `409 BOOKING_PARTY_LANE`. The party is cancelled together on `.../cancel` above, which is not affected. Staff, desk party lanes and ordinary bookings are not affected either. |
+| `MOBILE_GROUP_CHAIRS` | off | `true` adds `chair` to every member row of the party read: the chair that lane's latest check-in request claimed, or `null`. Off, the read is exactly what it was. See the read, below. |
+| `MOBILE_GROUP_LIVE_STATUS` | off | `true`: the party's `status` and `status_detail` (the party read and the `GROUP` row of My Bookings) say confirmed while ANY lane is still confirmed, not only while the booker's is. Off, both follow the booker's lane. Money, the pass and `payment_status` always stay the booker's. |
 
 #### `POST /v1/mobile-booking/group`
 
@@ -2431,6 +2445,24 @@ anyway.
 
 Only this read carries the two keys. The create's answer, the cancel's answer
 and My Bookings never do, flag on or off.
+
+**Each member's chair: `chair`.** Behind `MOBILE_GROUP_CHAIRS=true`. With it
+off, the key is not there and the read is exactly what it was. With it on,
+`chair` is on EVERY member row, last (after `is_me` and `booking_id` when
+those are on):
+
+| Field | Type | Means |
+| --- | --- | --- |
+| `chair` | `{ "number": string, "zone_name": string or null }` or `null` | The chair claimed by that lane's LATEST check-in request (newest `raised_at`, then id), whatever that request's state. `null` when that request claimed no chair (Wait for Staff), or the lane has never asked. |
+
+Everyone who may read the party sees every member's chair, staff included.
+One query for the whole party. Only this read carries the key.
+
+**The party's status: `MOBILE_GROUP_LIVE_STATUS`.** Off, `status` and
+`status_detail` are the booker's lane's, so once the booker is checked in the
+party reads `CHECKED_IN`. On, they say confirmed (`CONFIRMED_BY_SALON`,
+`CONFIRMED`) while any lane is still confirmed, here and on the `GROUP` row
+of My Bookings alike. Every member row keeps its own `status`.
 
 Rana, a registered member, reads the party from the create example above. Only
 `members` is shown; every other key is as before:
@@ -2973,7 +3005,7 @@ The queue in arrival order, each row with a live quote of the nearest starts the
 
 #### `POST /v1/walk-ins`
 
-Add somebody to the walk-in queue. Package ids in serviceIds are expanded to plain services here, once, before anything is stored.
+Add somebody to the walk-in queue. Changed 2026-10-18: package ids in serviceIds are STORED as asked for and expanded wherever the queue is read, so the seat answers with the package and the desk's confirm charges its price (see [PACKAGES.md](PACKAGES.md)). The 201 still answers with the expanded parts.
 
 *Source: [walk-ins.controller.ts:89](src/interface/http/walk-ins.controller.ts#L89)*
 
@@ -3008,7 +3040,7 @@ Add somebody to the walk-in queue. Package ids in serviceIds are expanded to pla
 | `500` | Internal server error | `tradingDay` passes the regex but is not a real date — e.g. '2027-13-45'. new Date('2027-13-45T00:00:00Z') is an Invalid Date and Prisma refuses to write it. |
 | `500` | Internal server error | CUSTOMER TOKENS ONLY: the ConsumerAuth gRPC service is unreachable — AuthService.verifyToken lets the error propagate by design. 500, not 401. |
 | `500` | Internal server error | CHECK walk_in_duration_positive (duration_min > 0) if the resolved services somehow sum to 0, and CHECK walk_in_wants_something (array_length(service_ids,1) >= 1). |
-| `500` | Internal server error | resolveSelection -> expandPackage throws a plain Error: 'Package <id> contains no services', or 'Package <id> costs X but its parts total Y. |
+| `500` | Internal server error | Changed 2026-10-18: no longer reachable from package pricing — a package priced above its parts is sold at its own price (see [PACKAGES.md](PACKAGES.md)). |
 
 > THE CONTRACT THE FE MUST GET RIGHT: (1) exactly one of customerId / guestName, enforced only by a database CHECK, so getting it wrong is a 500 rather than a 400. (2) serviceIds is expanded server-side and the response's serviceIds is the EXPANDED list — store that, because /seat and the queue view speak the expanded ids. (3) joinedMin's ceiling is 1319, not 1320.
 

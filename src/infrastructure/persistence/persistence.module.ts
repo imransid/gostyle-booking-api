@@ -63,9 +63,13 @@ import { ReminderDeliveryListener } from '../messaging/reminder-delivery-listene
 import { SmtpEmailClient } from '../messaging/smtp-email.client';
 import { NotificationDeliveryRepository } from './notification-delivery.repository';
 import { ConsumerDirectoryGrpcModule } from '../grpc/consumer-directory-grpc.module';
+import { CustomerNotificationsGrpcModule } from '../grpc/customer-notifications-grpc.module';
+import { HubListener } from '../messaging/hub-listener';
 import { BranchClockCheck } from '../tenancy/branch-clock.check';
 import { PUSH_SENDER } from '@application/ports/push-sender.port';
 import { EMAIL_SENDER } from '@application/ports/email-sender.port';
+
+import { PlatformPackageCatalogue } from './platform-package-catalogue';
 
 /**
  * Global on purpose. One connection pool per process, shared by every module
@@ -85,12 +89,15 @@ import { EMAIL_SENDER } from '@application/ports/email-sender.port';
    * ConsumerDirectoryGrpcModule provides CUSTOMER_CONTACT, the reminder
    * dispatcher's way to an email address; it is re-exported below so the
    * handler can inject it from anywhere this global module reaches.
+   * CustomerNotificationsGrpcModule is the same for CUSTOMER_NOTIFIER, the
+   * dispatcher's way to customer-api's Notification Center.
    */
   imports: [
     ServicesGrpcModule,
     StaffGrpcModule,
     ProductsGrpcModule,
     ConsumerDirectoryGrpcModule,
+    CustomerNotificationsGrpcModule,
   ],
   providers: [
     TenantContext,
@@ -158,11 +165,13 @@ import { EMAIL_SENDER } from '@application/ports/email-sender.port';
     {
       provide: EVENT_PUBLISHER,
       // The chain, innermost last: group, walk-in seated, walk-in gap,
-      // waitlist, push, reminder delivery, then the real publisher.
+      // waitlist, push, check-in push, hub, reminder delivery, then the real
+      // publisher.
       //
-      // Reminder delivery is innermost because it is the one link that
-      // throws (a lost reminder is worse than a re-delivered event); every
-      // link outside it has already done its idempotent work by then.
+      // Hub and reminder delivery are innermost because they are the links
+      // that throw (a lost reminder or hand-over is worse than a
+      // re-delivered event); every link outside them has already done its
+      // idempotent work by then, and both of theirs are idempotent too.
       useFactory: (
         next: LoggingEventPublisher,
         waitlist: WaitlistRepository,
@@ -178,13 +187,18 @@ import { EMAIL_SENDER } from '@application/ports/email-sender.port';
               new WaitlistListener(
                 new PushListener(
                   new CheckInPushListener(
-                    new ReminderDeliveryListener(next, deliveries),
+                    new HubListener(
+                      new ReminderDeliveryListener(next, deliveries),
+                      prisma,
+                      deliveries,
+                    ),
                     prisma,
                     push,
                     contacts,
                   ),
                   prisma,
                   push,
+                  contacts,
                 ),
                 waitlist,
               ),
@@ -213,6 +227,7 @@ import { EMAIL_SENDER } from '@application/ports/email-sender.port';
     FixtureBookingContext,
     StylistRepository,
     PlatformProductCatalogue,
+    PlatformPackageCatalogue,
     JournalSyncRepository,
   ],
   exports: [
@@ -261,6 +276,8 @@ import { EMAIL_SENDER } from '@application/ports/email-sender.port';
     PUSH_SENDER,
     EMAIL_SENDER,
     ConsumerDirectoryGrpcModule,
+    CustomerNotificationsGrpcModule,
+    PlatformPackageCatalogue,
   ],
 })
 export class PersistenceModule {}

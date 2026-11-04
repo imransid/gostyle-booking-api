@@ -73,6 +73,14 @@ export const ERROR_CODES = [
    * number and the booking in it.
    */
   'BOOKING_CHAIR_REFUSED',
+  /**
+   * ONE LANE OF AN APP PARTY, on the single cancel or reschedule, from a
+   * customer (MOBILE_GROUP_LANE_GUARD). A party is cancelled together, by the
+   * booker, on the party's own route, and is never moved one member at a
+   * time. The booker's own lane is refused here too. A desk party's lane is
+   * an ordinary booking and never gets this.
+   */
+  'BOOKING_PARTY_LANE',
   'BOOKING_WITHIN_GRACE',
   'BOOKING_SERIAL_RESCHEDULE',
   'BOOKING_NO_SLOT',
@@ -183,6 +191,7 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   BOOKING_CHECKIN_REJECTED: 409,
   BOOKING_GROUP_CHECKIN_NONE: 409,
   BOOKING_CHAIR_REFUSED: 409,
+  BOOKING_PARTY_LANE: 409,
   BOOKING_WITHIN_GRACE: 409,
   BOOKING_SERIAL_RESCHEDULE: 409,
   BOOKING_NO_SLOT: 409,

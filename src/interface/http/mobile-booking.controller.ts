@@ -62,6 +62,7 @@ import { MobileContractError } from '@application/commands/mobile-booking.error'
 import { MobileGroupReadHandler } from '@application/queries/mobile-group-read.handler';
 import { MOBILE_GROUP_BOOKING } from './mobile-group.flag';
 import { MOBILE_GROUP_CHECK_IN } from './mobile-group-check-in.flag';
+import { MOBILE_GROUP_LIVE_STATUS } from './mobile-group-live-status.flag';
 import { SELF_CHECK_IN_V1 } from './self-check-in.flag';
 import {
   CheckInAttributionHandler,
@@ -100,6 +101,44 @@ export class MobileProductLineDto extends MobileLineDto {
   @Min(1)
   @Max(MAX_PRODUCT_QUANTITY)
   quantity?: number;
+}
+
+/** A line to price: the id alone. Its amount is what the quote answers. */
+export class MobileQuoteLineDto {
+  @ApiProperty({ example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1' })
+  @IsString()
+  id!: string;
+}
+
+export class MobileQuoteDto {
+  @ApiProperty({ example: 'marina-walk' })
+  @IsString()
+  salon_id!: string;
+
+  @ApiProperty({
+    type: [MobileQuoteLineDto],
+    description: 'Service or package ids, exactly as create takes them.',
+  })
+  @IsArray()
+  @ArrayNotEmpty({ message: 'Pick at least one service.' })
+  @ValidateNested({ each: true })
+  @Type(() => MobileQuoteLineDto)
+  services!: MobileQuoteLineDto[];
+
+  @ApiPropertyOptional({ type: [MobileProductLineDto] })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => MobileProductLineDto)
+  products?: MobileProductLineDto[];
+
+  @ApiProperty({ example: '2026-09-20' })
+  @Matches(DAY, { message: 'date must be YYYY-MM-DD' })
+  date!: string;
+
+  @ApiProperty({ example: '2026-09-20T20:00:00+04:00' })
+  @IsISO8601({ strict: true })
+  start_time!: string;
 }
 
 export class MobileBookingDto {
@@ -339,6 +378,33 @@ export class MobileBookingController {
     });
   }
 
+  @Post('quote')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Price a basket before creating the booking',
+    description:
+      'Answers with the figures create will check -- amount_without_tax, ' +
+      'discount, tax_amount, total, due_amount -- plus the services lines ' +
+      '(a package at its own price) and the end_time to send back. Holds ' +
+      'nothing and writes nothing. Same refusals as create for an unknown ' +
+      'service or a refused product.',
+  })
+  @ApiOkResponse({ description: 'The figures, and the lines to send.' })
+  quote(
+    @Body() dto: MobileQuoteDto,
+    @CurrentActor() actor: Actor,
+  ): Promise<unknown> {
+    return this.handler.quote({
+      salonId: dto.salon_id,
+      serviceIds: dto.services.map((s) => s.id),
+      products: dto.products,
+      date: dto.date,
+      startTime: dto.start_time,
+      // From the verified token, never the body (§1).
+      customerId: actor.id ?? 'anonymous',
+    });
+  }
+
   /**
    * booking-list.md §1. DECLARED BEFORE `:id`, and that is not cosmetic --
    * Nest matches in declaration order, and a `@Get(':id')` above this one
@@ -404,10 +470,18 @@ export class MobileBookingController {
     // Behind MOBILE_GROUP_BOOKING: a member of a mobile party is shown as
     // one GROUP row for the party. Off, the page is exactly what it was.
     const decorated: unknown = MOBILE_GROUP_BOOKING()
-      ? MOBILE_GROUP_CHECK_IN()
-        ? // is_booker on each GROUP row (MOBILE_GROUP_CHECK_IN).
-          this.groups.decorateList(shelfPage, actor.id ?? 'anonymous')
-        : this.groups.decorateList(shelfPage)
+      ? MOBILE_GROUP_LIVE_STATUS()
+        ? // The GROUP row's status follows any lane still confirmed
+          // (MOBILE_GROUP_LIVE_STATUS), with is_booker as below.
+          this.groups.decorateList(
+            shelfPage,
+            MOBILE_GROUP_CHECK_IN() ? (actor.id ?? 'anonymous') : undefined,
+            { liveStatus: true },
+          )
+        : MOBILE_GROUP_CHECK_IN()
+          ? // is_booker on each GROUP row (MOBILE_GROUP_CHECK_IN).
+            this.groups.decorateList(shelfPage, actor.id ?? 'anonymous')
+          : this.groups.decorateList(shelfPage)
       : shelfPage;
 
     // Behind MOBILE_SERIES_BOOKING (step 5): the Recurring tab lists this

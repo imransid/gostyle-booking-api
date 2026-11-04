@@ -83,6 +83,8 @@ import { MobileSeriesJobHandler } from '@application/commands/mobile-series-job.
 import { MobileSeriesJob } from '@infrastructure/scheduling/mobile-series-job.service';
 import { DispatchRemindersHandler } from '@application/commands/dispatch-reminders.handler';
 import { ReminderDispatchJob } from '@infrastructure/scheduling/reminder-dispatch.service';
+import { PlanChosenRemindersHandler } from '@application/commands/plan-chosen-reminders.handler';
+import { ChosenReminderJob } from '@infrastructure/scheduling/chosen-reminder.service';
 import { ReminderHealth } from '@infrastructure/scheduling/reminder-health';
 import { MobileSeriesJobController } from '@interface/http/mobile-series-job.controller';
 import { MobileGroupBookingHandler } from '@application/commands/mobile-group-booking.handler';
@@ -112,6 +114,10 @@ import {
 import { ServicesDirectoryController } from '@interface/http/services-directory.controller';
 import { ListServicesHandler } from '@application/queries/list-services.handler';
 
+import { MobilePackagesController } from '@interface/http/mobile-packages.controller';
+import { PackagesController } from '@interface/http/packages.controller';
+import { MobilePackagesHandler } from '@application/queries/mobile-packages.handler';
+
 @Module({
   // For the health endpoint's customer auth rail. AuthModule exports the
   // service; nothing here verifies a token -- the guard is global.
@@ -140,6 +146,8 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     // The /v1/bookings literals come first: BookingsController carries
     // @Get(':id'), which swallows every literal at that depth. Asserted by
     // route-order.spec.ts, not left to memory.
+    MobilePackagesController,
+    PackagesController,
     ServicesDirectoryController,
     SettingsController,
     ReadModelsController,
@@ -178,6 +186,7 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     ReceptionCheckInController,
   ],
   providers: [
+    MobilePackagesHandler,
     BookingScope,
     CheckInRequestHandler,
     CheckInAttributionHandler,
@@ -199,6 +208,8 @@ import { ListServicesHandler } from '@application/queries/list-services.handler'
     MobileSeriesJob,
     DispatchRemindersHandler,
     ReminderDispatchJob,
+    PlanChosenRemindersHandler,
+    ChosenReminderJob,
     ReminderHealth,
     JournalSyncHandler,
     BookingJournalHandler,

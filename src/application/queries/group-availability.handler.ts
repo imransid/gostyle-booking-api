@@ -16,7 +16,8 @@ import { DAILY_BOOKING_CAP, formatMinute } from '@domain/availability/grid';
 import { modeToWire, type WireGroupMode } from '@application/contract/wire';
 import type { GroupMode, PartyPlan } from '@domain/availability/party';
 import { MAX_PARTY_STARTS } from '@domain/availability/party-starts';
-import { skillsRequired } from '@domain/booking/service-resolution';
+import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
+import { planMember } from '@application/commands/party-member';
 
 export interface GroupAvailabilityQuery {
   readonly branchId: string;
@@ -88,7 +89,59 @@ export class GroupAvailabilityHandler {
   constructor(
     private readonly repo: GroupHoldRepository,
     @Inject(BOOKING_CONTEXT) private readonly context: BookingContextReader,
+    private readonly packageCatalogue: PlatformPackageCatalogue,
   ) {}
+
+  /**
+   * Each participant as the planner takes them, packages expanded: the
+   * same step group hold runs (party-member.ts), so the availability shown
+   * for a party is availability for what will actually be held.
+   */
+  private specsFor(
+    branchId: string,
+    participants: readonly {
+      readonly label: string;
+      readonly serviceIds: readonly string[];
+      readonly preferredStaffId: string | null;
+    }[],
+  ): Promise<
+    {
+      participant: {
+        id: string;
+        label: string;
+        skills: string[];
+        durationMin: number;
+        resourceType: string;
+        preferredStaffId: string | null;
+      };
+    }[]
+  > {
+    return Promise.all(
+      participants.map(async (p, i) => {
+        const m = await planMember(
+          this.context,
+          this.packageCatalogue,
+          branchId,
+          p.serviceIds,
+        );
+        if (m.basket.missing.length > 0 || m.basket.services.length === 0) {
+          throw new UnprocessableEntityException(
+            `${p.label}: one or more services do not exist.`,
+          );
+        }
+        return {
+          participant: {
+            id: `p${i}`,
+            label: p.label,
+            skills: [...m.skills],
+            durationMin: m.durationMin,
+            resourceType: m.resourceType,
+            preferredStaffId: p.preferredStaffId,
+          },
+        };
+      }),
+    );
+  }
 
   async execute(q: GroupAvailabilityQuery): Promise<GroupAvailabilityView> {
     if (q.participants.length < 2) {
@@ -111,29 +164,7 @@ export class GroupAvailabilityHandler {
       resourceCounts[r.id] = Math.max(0, r.units - r.outOfService);
     }
 
-    const specs = await Promise.all(
-      q.participants.map(async (p, i) => {
-        const services = await this.context.loadServices(
-          q.branchId,
-          p.serviceIds,
-        );
-        if (services.length !== p.serviceIds.length) {
-          throw new UnprocessableEntityException(
-            `${p.label}: one or more services do not exist.`,
-          );
-        }
-        return {
-          participant: {
-            id: `p${i}`,
-            label: p.label,
-            skills: skillsRequired(services),
-            durationMin: services.reduce((n, s) => n + s.durationMin, 0),
-            resourceType: services[services.length - 1]!.resourceType,
-            preferredStaffId: p.preferredStaffId,
-          },
-        };
-      }),
-    );
+    const specs = await this.specsFor(q.branchId, q.participants);
 
     const roster: GroupHoldInput['roster'] = {
       professionals: day.professionals.map((p) => ({
@@ -250,29 +281,7 @@ export class GroupAvailabilityHandler {
       resourceCounts[r.id] = Math.max(0, r.units - r.outOfService);
     }
 
-    const specs = await Promise.all(
-      q.participants.map(async (p, i) => {
-        const services = await this.context.loadServices(
-          q.branchId,
-          p.serviceIds,
-        );
-        if (services.length !== p.serviceIds.length) {
-          throw new UnprocessableEntityException(
-            `${p.label}: one or more services do not exist.`,
-          );
-        }
-        return {
-          participant: {
-            id: `p${i}`,
-            label: p.label,
-            skills: skillsRequired(services),
-            durationMin: services.reduce((n, s) => n + s.durationMin, 0),
-            resourceType: services[services.length - 1]!.resourceType,
-            preferredStaffId: p.preferredStaffId,
-          },
-        };
-      }),
-    );
+    const specs = await this.specsFor(q.branchId, q.participants);
 
     const plans = await this.repo.planMany({
       branchId: q.branchId,

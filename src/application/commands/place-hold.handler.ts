@@ -16,6 +16,7 @@ import {
   DESK_CHANNEL,
   ONLINE_CHANNEL,
   type Channel,
+  type Service,
 } from '@domain/availability/feasible';
 import { bitAt, type Mask } from '@domain/availability/mask';
 import { bookingError } from '@application/contract/errors';
@@ -29,7 +30,10 @@ import {
   SLOT_MIN,
   OFFER_SPACING_MIN,
 } from '@domain/availability/grid';
-import { effectiveUnits } from '@domain/availability/capacity';
+import {
+  effectiveUnits,
+  type ResourceType,
+} from '@domain/availability/capacity';
 import {
   feasibilityToken,
   startHold,
@@ -42,6 +46,39 @@ import {
   HoldRepository,
   type ResourceDemand,
 } from '@infrastructure/persistence/hold.repository';
+
+import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
+import { resolveBasket } from '@application/commands/basket';
+
+/**
+ * The stations a visit needs, one demand per stretch of the chain that
+ * sits in one: a colour station for the colour, then a styling chair for
+ * the blow-dry, each for its own minutes.
+ *
+ * Shared with the walk-in seat, which reserved the LAST service's station
+ * for the whole visit -- 170 minutes of styling chair and no colour station
+ * for a colour-and-finish -- so a walk-in could be seated into a colour
+ * station somebody else held.
+ */
+export function resourceDemandFor(
+  services: readonly Service[],
+  startMin: number,
+  resources: readonly ResourceType[],
+): ResourceDemand[] {
+  const unitsOf = (type: string): number => {
+    const r = resources.find((x) => x.id === type);
+    return r === undefined ? 0 : effectiveUnits(r);
+  };
+
+  return expandChain(services)
+    .filter((s) => s.resourceType !== null)
+    .map((s) => ({
+      resourceType: s.resourceType as string,
+      startMin: startMin + s.offsetMin,
+      endMin: startMin + s.offsetMin + s.durationMin,
+      units: unitsOf(s.resourceType as string),
+    }));
+}
 
 export interface PlaceHoldCommand {
   readonly branchId: string;
@@ -76,16 +113,20 @@ export class PlaceHoldHandler {
   constructor(
     @Inject(BOOKING_CONTEXT) private readonly context: BookingContextReader,
     private readonly holds: HoldRepository,
+    private readonly packageCatalogue: PlatformPackageCatalogue,
   ) {}
 
   async execute(cmd: PlaceHoldCommand): Promise<HoldView> {
-    const services = await this.context.loadServices(
+    const basket = await resolveBasket(
+      this.context,
+      this.packageCatalogue,
       cmd.branchId,
       cmd.serviceIds,
     );
-    if (services.length !== cmd.serviceIds.length) {
+    if (basket.missing.length > 0) {
       throw new NotFoundException('One or more services do not exist');
     }
+    const services = basket.services;
 
     const day = await this.context.loadDay(cmd.branchId, cmd.tradingDay);
     if (day.closureReason !== undefined) {
@@ -243,19 +284,7 @@ export class PlaceHoldHandler {
       }
     }
 
-    const unitsOf = (type: string): number => {
-      const r = day.resources.find((x) => x.id === type);
-      return r === undefined ? 0 : effectiveUnits(r);
-    };
-
-    const demand: ResourceDemand[] = expandChain(services)
-      .filter((s) => s.resourceType !== null)
-      .map((s) => ({
-        resourceType: s.resourceType as string,
-        startMin: cmd.startMin + s.offsetMin,
-        endMin: cmd.startMin + s.offsetMin + s.durationMin,
-        units: unitsOf(s.resourceType as string),
-      }));
+    const demand = resourceDemandFor(services, cmd.startMin, day.resources);
 
     const first = services[0];
     const last = services[services.length - 1];

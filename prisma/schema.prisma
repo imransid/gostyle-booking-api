@@ -231,6 +231,11 @@ model Booking {
   reminded24hAt DateTime? @map("reminded_24h_at") @db.Timestamptz(6)
   reminded3hAt  DateTime? @map("reminded_3h_at") @db.Timestamptz(6)
   nudged15mAt   DateTime? @map("nudged_15m_at") @db.Timestamptz(6)
+  /// The app customer's own reminder, at the time they chose
+  /// (MOBILE_REMINDER_CHOICE): when it was claimed (sent or passed over),
+  /// and the lead it was claimed with, in minutes. Cleared by every move.
+  remindedChosenAt DateTime? @map("reminded_chosen_at") @db.Timestamptz(6)
+  reminderLeadMin  Int?      @map("reminder_lead_min") @db.SmallInt
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -280,6 +285,25 @@ model BookingItem {
   /// record, and a column you cannot trust for old rows is worse than one
   /// that admits which rows it covers.
   source CatalogueSource?
+
+  /// THE PACKAGE THIS LINE WAS SOLD IN, or null for a hand-picked service.
+  ///
+  /// A package expands into its services before the engine sees it, and
+  /// until this the expansion was all that survived: the booking could not
+  /// say it was "Groom and Go", only list a cut and a beard trim at prices
+  /// that added up to an unexplained figure. Each part now records which
+  /// package it came from and that package's name as sold, frozen beside
+  /// the price for the same reason the service name is.
+  ///
+  /// The package's own price is NOT stored again: its parts' price_fils add
+  /// up to it (domain/booking/package.ts), so a second copy could only
+  /// disagree. All three or none, by CHECK booking_item_package_named.
+  packageId   String? @map("package_id") @db.Uuid
+  packageName String? @map("package_name")
+  /// WHICH SALE of the package this line belongs to, from 0 in the order
+  /// chosen: the same package twice in one visit is two sales, each at its
+  /// own price, and must read back as two (domain/booking/package.ts).
+  packageSeq  Int?    @map("package_seq") @db.SmallInt
 
   /// STAYS NOT NULL, and this is the one place the FE doc cannot be met by a
   /// schema change.
@@ -663,10 +687,13 @@ model EventOutbox {
 
 // ============================================================ notification_delivery
 
-/// How a reminder reaches the customer.
+/// How a reminder reaches the customer, or `hub`: a customer-facing booking
+/// event handed to customer-api's Notification Center (MOBILE_NOTIFY_HUB),
+/// which sends the push and email itself.
 enum NotificationChannel {
   push
   email
+  hub
 
   @@map("notification_channel")
 }
@@ -1269,7 +1296,10 @@ model WalkInEntry {
   customerId String? @map("customer_id") @db.Uuid
   guestName  String? @map("guest_name")
 
-  /// What they want. Packages are expanded before they get here.
+  /// What they asked for: services, packages, or both. A package is
+  /// expanded wherever this is read (basket.ts), so it is still a package
+  /// -- at its own price -- when the desk confirms the seat. Rows written
+  /// before held the expansion, which reads exactly as it did.
   serviceIds  String[] @map("service_ids")
   durationMin Int      @map("duration_min") @db.SmallInt
 

@@ -153,3 +153,115 @@ describe('what a claim writes', () => {
     );
   });
 });
+
+describe("the fixed rungs and the customer's own reminder", () => {
+  const saved = {
+    choice: process.env.MOBILE_REMINDER_CHOICE,
+    hub: process.env.MOBILE_NOTIFY_HUB,
+  };
+  const restore = () => {
+    for (const [k, v] of [
+      ['MOBILE_REMINDER_CHOICE', saved.choice],
+      ['MOBILE_NOTIFY_HUB', saved.hub],
+    ] as const) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  };
+
+  it('with the choice and the hub on, the fixed rungs leave app bookings alone', async () => {
+    process.env.MOBILE_REMINDER_CHOICE = 'true';
+    process.env.MOBILE_NOTIFY_HUB = 'true';
+    try {
+      const { repo, tx } = build();
+      await repo.runRung(rungSpec('confirm_24h'), NOW);
+      expect(sqlOf(tx)).toContain(`AND channel <> 'online'`);
+    } finally {
+      restore();
+    }
+  });
+
+  it.each([
+    ['both off', undefined, undefined],
+    ['the choice on, the hub off', 'true', undefined],
+    ['the hub on, the choice off', undefined, 'true'],
+  ])(
+    '%s: the fixed rungs claim every booking, as before',
+    async (_n, choice, hub) => {
+      if (choice === undefined) delete process.env.MOBILE_REMINDER_CHOICE;
+      else process.env.MOBILE_REMINDER_CHOICE = choice;
+      if (hub === undefined) delete process.env.MOBILE_NOTIFY_HUB;
+      else process.env.MOBILE_NOTIFY_HUB = hub;
+      try {
+        const { repo, tx } = build();
+        await repo.runRung(rungSpec('confirm_24h'), NOW);
+        expect(sqlOf(tx)).not.toContain('channel');
+      } finally {
+        restore();
+      }
+    },
+  );
+
+  it('claimChosen stamps, then writes reminder.chosen for the start it judged', async () => {
+    const { repo, tx } = build([{ id: 'b1' } as never]);
+    const out = await repo.claimChosen(
+      {
+        id: 'b1',
+        code: 'GS-1483',
+        customerId: 'c1',
+        startAtMs: NOW + HOUR,
+        touchedAtMs: NOW - HOUR,
+      },
+      { kind: 'send', leadMinutes: 60, late: false },
+    );
+    expect(out).toBe('sent');
+    expect(sqlOf(tx)).toContain('reminded_chosen_at IS NULL');
+    expect(sqlOf(tx)).toContain('AND start_at = $3');
+    expect(tx.eventOutbox.create).toHaveBeenCalledWith({
+      data: {
+        aggregateType: 'booking',
+        aggregateId: 'b1',
+        eventType: 'reminder.chosen',
+        payload: {
+          code: 'GS-1483',
+          startAt: new Date(NOW + HOUR).toISOString(),
+          customerId: 'c1',
+          leadMinutes: 60,
+          late: false,
+        },
+      },
+    });
+  });
+
+  it('claimChosen on a skip stamps and writes nothing', async () => {
+    const { repo, tx } = build([{ id: 'b1' } as never]);
+    const out = await repo.claimChosen(
+      {
+        id: 'b1',
+        code: 'GS-1',
+        customerId: 'c1',
+        startAtMs: NOW + HOUR,
+        touchedAtMs: NOW,
+      },
+      { kind: 'skip', leadMinutes: 60, reason: 'booked_late' },
+    );
+    expect(out).toBe('skipped');
+    expect(tx.eventOutbox.create).not.toHaveBeenCalled();
+  });
+
+  it('claimChosen that finds it taken (another replica, or moved) is lost', async () => {
+    const { repo, tx } = build([]);
+    const out = await repo.claimChosen(
+      {
+        id: 'b1',
+        code: 'GS-1',
+        customerId: 'c1',
+        startAtMs: NOW + HOUR,
+        touchedAtMs: NOW - HOUR,
+      },
+      { kind: 'send', leadMinutes: 60, late: false },
+    );
+    expect(out).toBe('lost');
+    expect(tx.eventOutbox.create).not.toHaveBeenCalled();
+  });
+});

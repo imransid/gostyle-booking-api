@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from './prisma.service';
 import { toUuid } from './hold.repository';
 import type { PaymentRail } from '../../generated/prisma/enums';
+import { MOBILE_NOTIFY_HUB } from '../messaging/notify-hub.flag';
 
 /**
  * §11: record what the gateway took.
@@ -141,6 +142,20 @@ export class MobilePaymentRepository {
                 actorId: toUuid(input.customerId),
               },
             });
+            // The moment an app booking is really confirmed: its create wrote
+            // booking.confirmed while it still waited for this payment. In the
+            // same transaction, so the customer is told exactly when it
+            // happened, and only if it did (MOBILE_NOTIFY_HUB, HubListener).
+            if (MOBILE_NOTIFY_HUB()) {
+              await tx.eventOutbox.create({
+                data: {
+                  aggregateType: 'booking',
+                  aggregateId: b.id,
+                  eventType: 'booking.payment_recorded',
+                  payload: { paymentStatus: input.paymentStatus },
+                },
+              });
+            }
           }
 
           MobilePaymentRepository.log.log(

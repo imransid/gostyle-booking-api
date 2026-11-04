@@ -41,8 +41,15 @@ export interface BookingContextReader {
   /** The branch's people and places for one trading day. */
   loadDay(branchId: string, tradingDay: string): Promise<DayContext>;
 
-  /** Everything on the menu. Used by the catalogue endpoint. */
+  /**
+   * Every service an id might name: the menu, plus the demo services, so a
+   * stored slug id still reads back as a name. For resolving ids -- NOT for
+   * showing anyone what is on sale. That is `loadMenu`.
+   */
   loadCatalogue(branchId: string): Promise<Service[]>;
+
+  /** What the branch sells, and nothing else. The catalogue endpoint's list. */
+  loadMenu(branchId: string): Promise<Service[]>;
 }
 
 /** Nest injection token. An interface has no runtime identity, so this does. */

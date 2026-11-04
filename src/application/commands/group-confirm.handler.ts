@@ -6,6 +6,7 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { GroupConfirmRepository } from '@infrastructure/persistence/group-confirm.repository';
 import { PrismaService } from '@infrastructure/persistence/prisma.service';
@@ -15,13 +16,11 @@ import {
 } from '@application/ports/booking-context.port';
 import { DAILY_BOOKING_CAP, formatMinute } from '@domain/availability/grid';
 import { Money } from '@domain/shared/money';
-// The SAME price table the single confirm uses. One catalogue, one answer.
-import { priceOf } from './confirm-booking.handler';
-import {
-  priceOfService,
-  skillsRequired,
-  sourceOfAll,
-} from '@domain/booking/service-resolution';
+import { PlatformPackageCatalogue } from '@infrastructure/persistence/platform-package-catalogue';
+// The SAME basket step, and price table, the single confirm uses. One
+// catalogue, one answer.
+import { planMember } from './party-member';
+import { sourceOf, sourceOfAll } from '@domain/booking/service-resolution';
 import { SlugIndex } from '@infrastructure/persistence/slug-uuid';
 import { DEFAULT_BRANCH_ID } from '@infrastructure/tenancy/branch-context';
 
@@ -61,6 +60,7 @@ export class GroupConfirmHandler {
     private readonly prisma: PrismaService,
     @Inject(BOOKING_CONTEXT)
     private readonly context: BookingContextReader,
+    private readonly packageCatalogue: PlatformPackageCatalogue,
   ) {}
 
   async execute(cmd: GroupConfirmCommand): Promise<GroupConfirmView> {
@@ -106,26 +106,67 @@ export class GroupConfirmHandler {
       resourceCounts[r.id] = Math.max(0, r.units - r.outOfService);
     }
 
+    /**
+     * A SERVICE NOBODY SELLS IS REFUSED, not left out of the price.
+     *
+     * This loaded each participant's services and never checked how many
+     * came back: an unknown id -- a package id among them, before packages
+     * reached the party -- was silently dropped from the price, the length
+     * and the skills, and a participant none of whose ids resolved crashed
+     * on services[length - 1] as a 500. Each participant now goes through
+     * the step group hold runs (party-member.ts): packages expanded at
+     * their own price, anything unknown refused by name.
+     */
     const items = await Promise.all(
       cmd.participants.map(async (p, i) => {
-        const services = await this.context.loadServices(
+        const m = await planMember(
+          this.context,
+          this.packageCatalogue,
           branchId,
           p.serviceIds,
         );
+        if (m.basket.missing.length > 0 || m.basket.services.length === 0) {
+          throw new UnprocessableEntityException(
+            `${p.label}: one or more services do not exist` +
+              (m.basket.missing.length > 0
+                ? ` (${m.basket.missing.join(', ')}).`
+                : '.'),
+          );
+        }
         return {
           participantId: `p${i}`,
           label: p.label,
-          serviceIds: p.serviceIds,
-          priceFils: services.reduce(
-            (n, s) => n + priceOfService(s, priceOf),
-            0,
-          ),
-          skills: skillsRequired(services),
-          durationMin: services.reduce((n, s) => n + s.durationMin, 0),
-          resourceType: services[services.length - 1]!.resourceType,
+          // The services that will be performed, a package's parts in place
+          // of its id: this row's service_id is a service, never a package.
+          serviceIds: m.basket.serviceIds,
+          // A package at its own price, carried by its parts (package.ts).
+          priceFils: m.basket.totalFils,
+          skills: [...m.skills],
+          durationMin: m.durationMin,
+          resourceType: m.resourceType,
           preferredStaffId: p.preferredStaffId,
           // One row, several services: mixed where they disagree.
-          source: sourceOfAll(services),
+          source: sourceOfAll(m.basket.services),
+          parts: m.basket.services.map((s, k) => {
+            const origin = m.basket.origins[k] ?? null;
+            return {
+              serviceId: s.id,
+              serviceName: s.name,
+              resourceType: s.resourceType,
+              requiredSkill: s.skill,
+              priceFils: m.basket.pricesFils[k] ?? 0,
+              durationMin: s.durationMin,
+              source: sourceOf(s),
+              package:
+                origin === null
+                  ? null
+                  : {
+                      id: origin.packageId,
+                      name: origin.name,
+                      seq: origin.seq,
+                    },
+            };
+          }),
         };
       }),
     );

@@ -37,6 +37,8 @@ describe('found', () => {
         language: 'en',
         appointment_reminder: true,
         push_enabled: true,
+        booking_confirmation: true,
+        booking_changes: false,
       }),
     );
     expect(await adapter.lookup(CUSTOMER)).toEqual({
@@ -48,8 +50,30 @@ describe('found', () => {
         fullName: 'Sara Ahmed',
         appointmentReminder: true,
         pushEnabled: true,
+        bookingConfirmation: true,
+        bookingChanges: false,
+        emailEnabled: true,
       },
     });
+  });
+
+  it('booking switches an older customer-api does not send read as on', async () => {
+    // `optional` in the proto: a missing key is "not known", never "off".
+    const { adapter } = build(() =>
+      of({ found: true, consumer_id: CUSTOMER, push_enabled: true }),
+    );
+    const got = await adapter.lookup(CUSTOMER);
+    expect(got.kind === 'found' && got.contact.bookingConfirmation).toBe(true);
+    expect(got.kind === 'found' && got.contact.bookingChanges).toBe(true);
+    expect(got.kind === 'found' && got.contact.emailEnabled).toBe(true);
+  });
+
+  it('the Email switch off is answered as off', async () => {
+    const { adapter } = build(() =>
+      of({ found: true, consumer_id: CUSTOMER, email_enabled: false }),
+    );
+    const got = await adapter.lookup(CUSTOMER);
+    expect(got.kind === 'found' && got.contact.emailEnabled).toBe(false);
   });
 
   it('a customer with no email: found, email null', async () => {

@@ -55,6 +55,21 @@ services:
       # Changing it re-reads stored bookings at a new offset: the boot log
       # says so loudly (BranchClockCheck) if they disagree.
       BRANCH_TIMEZONE: ${BRANCH_TIMEZONE:-Asia/Dhaka}
+      # A customer may not cancel or move one lane of an app party on the
+      # single routes: 409 BOOKING_PARTY_LANE. Off: both routes as today.
+      # Staff, desk parties and the booker's party cancel are never touched.
+      MOBILE_GROUP_LANE_GUARD: ${MOBILE_GROUP_LANE_GUARD:-false}
+      # Each member's chair on the party read, from the lane's latest
+      # check-in request. Off: the read exactly as today.
+      MOBILE_GROUP_CHAIRS: ${MOBILE_GROUP_CHAIRS:-false}
+      # A party's status follows any lane still confirmed, not only the
+      # booker's. Off: the booker's lane, exactly as today.
+      MOBILE_GROUP_LIVE_STATUS: ${MOBILE_GROUP_LIVE_STATUS:-false}
+      # Salon packages from the platform (ListPackages), single and party,
+      # desk and app (docs/api/PACKAGES.md). Off: a real branch sells no
+      # packages; the slug demo salon keeps its three fixture ones. Needs
+      # SERVICES_FROM_PLATFORM and SKILLS_UNVERIFIED on to sell any.
+      PACKAGES_FROM_PLATFORM: ${PACKAGES_FROM_PLATFORM:-false}
       # Customer reminders (24h, 3h, 15m) by push and email. Off: claimed by
       # the ladder, never sent -- exactly today's behaviour.
       REMINDER_DELIVERY: ${REMINDER_DELIVERY:-false}
@@ -62,6 +77,18 @@ services:
       # check-in, or it expires unanswered. Off: no answer event, no push --
       # the desk's approve and reject exactly as today.
       CHECK_IN_PUSH_V1: ${CHECK_IN_PUSH_V1:-false}
+      # The "Booking confirmed / cancelled / moved" pushes ask customer-api
+      # first and respect the customer's push, booking confirmation and
+      # booking changes switches. Off: they go to everyone, as today.
+      MOBILE_PUSH_PREFS: ${MOBILE_PUSH_PREFS:-false}
+      # Booking confirmed / moved / cancelled through customer-api's
+      # Notification Center (it keeps them and sends the push and email).
+      # Off: PushListener pushes them, as today. Needs customer-api's Notify.
+      MOBILE_NOTIFY_HUB: ${MOBILE_NOTIFY_HUB:-false}
+      # One reminder per app booking at the customer's chosen time, through
+      # the Notification Center; the fixed 24h/3h/15m rungs keep desk
+      # bookings only. Needs MOBILE_NOTIFY_HUB on. Off: the ladder as today.
+      MOBILE_REMINDER_CHOICE: ${MOBILE_REMINDER_CHOICE:-false}
       PUSH_API_URL: ${PUSH_API_URL:-http://push-app:3351}
       PUSH_API_KEY: ${PUSH_API_KEY:-}
       # customer-api's ConsumerDirectory answers only with this key; the same

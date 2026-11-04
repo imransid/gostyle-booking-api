@@ -57,11 +57,28 @@ const lane = (id: string, code: string, customerId: string) => ({
   endAt: new Date(START + 45 * MIN),
 });
 
+const SOLO = 'eeeeeeee-1111-4eee-8eee-111111111111';
+
 const LANES = [
   lane(BOOKER_LANE, 'GS-1417', toUuid(BOOKER)),
   lane(RANA_LANE, 'GS-1418', toUuid(RANA)),
   lane(GUEST_LANE, 'GS-1419', toUuid(GROUP)),
+  // Rana's ordinary booking, in no party: the yardstick for "exactly as".
+  { ...lane(SOLO, 'GS-1500', toUuid(RANA)), groupId: null },
 ];
+
+/** A LIVE card on a free chair of the lanes' own salon, as platform answers. */
+const CARD = 'chair-card-8';
+const CHAIR = {
+  cardStatus: 'LIVE',
+  chairId: 'cccccccc-8888-4ccc-8ccc-888888888888',
+  tenantId: 'tenant-a',
+  branchId: 'b7e92439-8285-469a-bba4-dcaa3dd5842c',
+  chairNumber: '8',
+  zoneName: 'Window section',
+  chairState: 'AVAILABLE',
+  chairBookable: true,
+};
 
 /** Only the fields a Prisma `select` asked for. */
 function picked(
@@ -100,6 +117,8 @@ function route() {
     LANES.find((l) => l.id === id) as Record<string, unknown> | undefined;
   const tx = {
     $queryRaw: vi.fn((sql: TemplateStringsArray, ...values: unknown[]) => {
+      // occupantOf (a chair claimed): nobody is in that chair.
+      if (/FROM booking me/.test(sql.join('?'))) return Promise.resolve([]);
       const row = byId(values[0]);
       return Promise.resolve(
         row === undefined ? [] : [columns(sql.join('?'), row)],
@@ -107,17 +126,26 @@ function route() {
     }),
     checkInRequest: {
       findFirst: vi.fn(() => Promise.resolve(null)),
-      create: vi.fn((args: { data: { bookingId: string; raisedAt: Date } }) =>
-        Promise.resolve({
-          id: 'req-1',
-          bookingId: args.data.bookingId,
-          state: 'waiting',
-          raisedAt: args.data.raisedAt,
-          decidedAt: null,
-          chairId: null,
-          chairNumber: null,
-          chairZoneName: null,
-        }),
+      create: vi.fn(
+        (args: {
+          data: {
+            bookingId: string;
+            raisedAt: Date;
+            chairId?: string;
+            chairNumber?: string;
+            chairZoneName?: string | null;
+          };
+        }) =>
+          Promise.resolve({
+            id: 'req-1',
+            bookingId: args.data.bookingId,
+            state: 'waiting',
+            raisedAt: args.data.raisedAt,
+            decidedAt: null,
+            chairId: args.data.chairId ?? null,
+            chairNumber: args.data.chairNumber ?? null,
+            chairZoneName: args.data.chairZoneName ?? null,
+          }),
       ),
     },
   };
@@ -134,9 +162,18 @@ function route() {
     },
     $transaction: vi.fn((fn: (t: typeof tx) => unknown) => fn(tx)),
   };
+  const chairs = {
+    resolve: vi.fn((token: string) =>
+      Promise.resolve(
+        token === CARD
+          ? { kind: 'found' as const, chair: CHAIR }
+          : { kind: 'unknown_card' as const },
+      ),
+    ),
+  };
   const handler = new CheckInRequestHandler(
     new CheckInRequestRepository(prisma as never),
-    {} as never,
+    chairs,
     {} as never,
   );
   const raise = vi.spyOn(handler, 'raise');
@@ -145,7 +182,7 @@ function route() {
     handler,
   );
   const res = { status: vi.fn() };
-  return { c, raise, prisma, tx, res };
+  return { c, raise, prisma, tx, res, chairs };
 }
 
 const customer = (id: string): Actor => ({
@@ -198,5 +235,74 @@ describe('POST /v1/bookings/:id/check-in-request on a party lane', () => {
     ).rejects.toThrow(new NotFoundException('No such booking'));
     expect(h.raise).not.toHaveBeenCalled();
     expect(h.tx.checkInRequest.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /v1/bookings/:id/check-in-request with a chairToken on a party lane', () => {
+  it('a member scans a chair on their own lane: 201, the request claims that chair', async () => {
+    const h = route();
+    await expect(
+      h.c.raise(
+        RANA_LANE,
+        { chairToken: CARD },
+        customer(RANA),
+        h.res as never,
+      ),
+    ).resolves.toMatchObject({
+      request: {
+        bookingId: RANA_LANE,
+        state: 'WAITING',
+        chair: { number: '8', zoneName: 'Window section' },
+      },
+    });
+    expect(h.res.status).toHaveBeenCalledWith(201);
+    expect(h.chairs.resolve).toHaveBeenCalledWith(CARD, null);
+    expect(h.tx.checkInRequest.create.mock.calls[0]![0].data).toMatchObject({
+      bookingId: RANA_LANE,
+      raisedById: toUuid(RANA),
+      chairId: CHAIR.chairId,
+      chairNumber: '8',
+      chairZoneName: 'Window section',
+    });
+  });
+
+  it('exactly as on an ordinary booking: the same answer and the same write, but the booking', async () => {
+    const onLane = route();
+    const lane = await onLane.c.raise(
+      RANA_LANE,
+      { chairToken: CARD },
+      customer(RANA),
+      onLane.res as never,
+    );
+    const onSolo = route();
+    const solo = await onSolo.c.raise(
+      SOLO,
+      { chairToken: CARD },
+      customer(RANA),
+      onSolo.res as never,
+    );
+    expect({ ...lane.request, bookingId: SOLO }).toEqual(solo.request);
+    expect(onLane.res.status.mock.calls).toEqual(onSolo.res.status.mock.calls);
+    const write = (h: ReturnType<typeof route>) =>
+      h.tx.checkInRequest.create.mock.calls[0]![0].data;
+    expect({ ...write(onLane), bookingId: SOLO }).toEqual(write(onSolo));
+  });
+
+  it('a card that is not a chair is refused on a lane exactly as on an ordinary booking', async () => {
+    const errors = [];
+    for (const id of [RANA_LANE, SOLO]) {
+      const h = route();
+      errors.push(
+        await h.c
+          .raise(id, { chairToken: 'a-poster' }, customer(RANA), h.res as never)
+          .catch((e: unknown) => e),
+      );
+      expect(h.tx.checkInRequest.create).not.toHaveBeenCalled();
+    }
+    expect(errors[0]).toMatchObject({
+      code: 'BOOKING_CHAIR_REFUSED',
+      details: { reason: 'UNKNOWN_CARD' },
+    });
+    expect(errors[1]).toEqual(errors[0]);
   });
 });

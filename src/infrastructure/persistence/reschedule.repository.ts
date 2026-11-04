@@ -245,6 +245,8 @@ export class RescheduleRepository {
             reminded24hAt: null,
             reminded3hAt: null,
             nudged15mAt: null,
+            remindedChosenAt: null,
+            reminderLeadMin: null,
           },
         });
 
@@ -440,10 +442,12 @@ export class RescheduleRepository {
           moveCount: outcome.newMoveCount,
           // The ladder starts again: a customer who moved to Friday should
           // not be reminded about Tuesday, and should still be reminded
-          // about Friday.
+          // about Friday. The customer's own reminder too.
           reminded24hAt: null,
           reminded3hAt: null,
           nudged15mAt: null,
+          remindedChosenAt: null,
+          reminderLeadMin: null,
           ...(outcome.acquiresDepositFils !== null
             ? {
                 status: 'pending_payment' as const,

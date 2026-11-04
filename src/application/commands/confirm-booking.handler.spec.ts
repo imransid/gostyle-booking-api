@@ -8,6 +8,8 @@ import type {
 import type { Service } from '@domain/availability/feasible';
 import type { CustomerContext } from '@application/ports/customer-context.port';
 
+import { PACKAGES } from '@infrastructure/fixtures/fixture-booking-context';
+
 /**
  * HANDLER SPEC — the PRODUCTS PASS-THROUGH, and nothing else it touches.
  *
@@ -66,6 +68,7 @@ function handlerWith(
     loadServices: () => Promise.resolve([HAIRCUT]),
     loadDay: () => Promise.reject(new Error('not used')),
     loadCatalogue: () => Promise.reject(new Error('not used')),
+    loadMenu: () => Promise.reject(new Error('not used')),
   };
 
   const bookings = {
@@ -112,6 +115,7 @@ function handlerWith(
     bookings as never,
     prisma as never,
     customers,
+    { forBranch: () => Promise.resolve(PACKAGES) } as never,
   );
 
   /** What persistence was asked to write. */
@@ -192,6 +196,7 @@ describe('products reach persistence, or the key does not exist', () => {
         durationMin: 45,
         staffId: 'maya',
         source: 'fixture',
+        package: null,
       },
     ]);
   });

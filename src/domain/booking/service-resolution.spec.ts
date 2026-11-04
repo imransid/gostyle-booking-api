@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   HOUSE_CURRENCY,
   looksLikePlatformId,
+  menuSource,
   oneCurrency,
   priceOfService,
   skillsRequired,
@@ -45,6 +46,23 @@ describe('looksLikePlatformId', () => {
     expect(looksLikePlatformId('65ababf6-d2ac-459b-90ca')).toBe(false);
     expect(looksLikePlatformId('65ababf6d2ac459b90cab1adf7a5abbc')).toBe(false);
     expect(looksLikePlatformId('')).toBe(false);
+  });
+});
+
+describe('menuSource', () => {
+  const REAL = 'b7e92439-8285-469a-bba4-dcaa3dd5842c';
+
+  it('the demo salon sells the fixture, switch on or off', () => {
+    expect(menuSource('marina-walk', false)).toBe('fixture');
+    expect(menuSource('marina-walk', true)).toBe('fixture');
+  });
+
+  it('a real branch sells what the platform says, with the switch on', () => {
+    expect(menuSource(REAL, true)).toBe('platform');
+  });
+
+  it('a real branch sells nothing with the switch off, never the demo', () => {
+    expect(menuSource(REAL, false)).toBe('none');
   });
 });
 

@@ -13,6 +13,7 @@ import {
   type CheckInPushSubject,
 } from '@domain/booking/check-in-push';
 import { PrismaService } from '../persistence/prisma.service';
+import { MOBILE_NOTIFY_HUB } from './notify-hub.flag';
 
 /**
  * A name lookup on this path waits at most this long. The relay delivers
@@ -51,7 +52,9 @@ export class CheckInPushListener implements EventPublisher {
 
   async publish(event: DomainEvent): Promise<void> {
     const answer = answerOfEvent(event.eventType);
-    if (answer !== null) {
+    // With MOBILE_NOTIFY_HUB on, the Notification Center tells them
+    // (HubListener): one push, not two.
+    if (answer !== null && !MOBILE_NOTIFY_HUB()) {
       await this.tryPush(event, answer);
     }
     // Whatever happened above, the event still goes where it was going.

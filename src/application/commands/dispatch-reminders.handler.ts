@@ -28,6 +28,15 @@ import {
   type EmailSender,
 } from '@application/ports/email-sender.port';
 import {
+  CUSTOMER_NOTIFIER,
+  type CustomerNotifier,
+} from '@application/ports/customer-notifier.port';
+import { checkInNotice, hubPlan } from '@domain/booking/hub-notification';
+import {
+  answerOfEvent,
+  type CheckInAnswer,
+} from '@domain/booking/check-in-push';
+import {
   NotificationDeliveryRepository,
   type ClaimedDelivery,
   type DeliveryBooking,
@@ -41,6 +50,9 @@ import { renderReminderEmail } from '@infrastructure/messaging/reminder-email.la
  * the lease (DISPATCH_LEASE_MS) or a second worker would take the same rows.
  */
 export const DISPATCH_BATCH = 10;
+
+/** A party member's name for a check-in answer waits at most this long. */
+export const CHECK_IN_NAME_MS = 2_000;
 
 export interface DispatchReport {
   readonly claimed: number;
@@ -82,6 +94,7 @@ export class DispatchRemindersHandler {
     @Inject(CUSTOMER_CONTACT) private readonly contacts: CustomerContactReader,
     @Inject(PUSH_SENDER) private readonly push: PushSender,
     @Inject(EMAIL_SENDER) private readonly email: EmailSender,
+    @Inject(CUSTOMER_NOTIFIER) private readonly notifier: CustomerNotifier,
   ) {}
 
   async run(
@@ -134,6 +147,10 @@ export class DispatchRemindersHandler {
     nowMs: number,
   ): Promise<RowResult> {
     try {
+      // A hand-over to customer-api (MOBILE_NOTIFY_HUB), not a reminder:
+      // none of the reminder rules below are about it.
+      if (d.channel === 'hub') return await this.dispatchHub(d, booking, nowMs);
+
       const ready = readiness({
         booking:
           booking === null
@@ -194,6 +211,113 @@ export class DispatchRemindersHandler {
       );
       return 'lost';
     }
+  }
+
+  /**
+   * Hand one booking event to customer-api's Notification Center.
+   *
+   * Decided from the booking as it is NOW (hubPlan): an app booking still
+   * waiting for its payment is not "confirmed" yet, and is told when the
+   * payment is recorded (booking.payment_recorded). A missing customer is
+   * a desk walk-in with no app: skipped, not retried. No answer retries
+   * with the reminder backoff, never past the row's expiry.
+   */
+  private async dispatchHub(
+    d: ClaimedDelivery,
+    booking: DeliveryBooking | null,
+    nowMs: number,
+  ): Promise<RowResult> {
+    if (nowMs >= d.expiresAtMs) {
+      return this.write(d, { status: 'skipped', reason: 'expired' }, nowMs);
+    }
+    const answer = answerOfEvent(d.eventType);
+    if (answer !== null) return this.dispatchCheckIn(d, booking, answer, nowMs);
+
+    const plan = hubPlan({
+      eventType: d.eventType,
+      sourceEventId: d.sourceEventId,
+      customerId: d.customerId,
+      booking,
+      scheduledForMs: d.scheduledForMs,
+      expiresAtMs: d.expiresAtMs,
+    });
+    if (plan.kind === 'skip') {
+      return this.write(d, { status: 'skipped', reason: plan.reason }, nowMs);
+    }
+
+    const settlement = settle({
+      outcome: await this.notifier.notify(plan.request),
+      attempt: d.attempt,
+      nowMs,
+      expiresAtMs: d.expiresAtMs,
+    });
+    if (settlement.status === 'failed') {
+      DispatchRemindersHandler.log.error(
+        `${d.eventType} hand-over for booking ${booking?.code ?? d.bookingId} ` +
+          `failed on attempt ${d.attempt}: ${settlement.error}`,
+      );
+    }
+    return this.write(d, settlement, nowMs);
+  }
+
+  /**
+   * A desk's answer to a check-in, handed over with the words the check-in
+   * push has always used. A party member's name is a guest's as the booker
+   * typed it, or a registered member's as customer-api gives it to the
+   * salon side, asked quickly: no answer in time words it without a name.
+   */
+  private async dispatchCheckIn(
+    d: ClaimedDelivery,
+    booking: DeliveryBooking | null,
+    answer: CheckInAnswer,
+    nowMs: number,
+  ): Promise<RowResult> {
+    if (booking === null) {
+      return this.write(
+        d,
+        { status: 'skipped', reason: 'booking_gone' },
+        nowMs,
+      );
+    }
+    const facts = await this.deliveries.checkInFacts(d.sourceEventId);
+    if (facts === null || facts.raisedByKind !== 'customer') {
+      return this.write(
+        d,
+        { status: 'skipped', reason: 'request_gone' },
+        nowMs,
+      );
+    }
+
+    const self = facts.bookingCustomerId === facts.raisedById;
+    let memberName: string | null = null;
+    if (!self && facts.member !== null) {
+      memberName = facts.member.guestName;
+      if (memberName === null && facts.member.customerId !== null) {
+        const who = await this.contacts.lookup(facts.member.customerId, {
+          quickMs: CHECK_IN_NAME_MS,
+        });
+        memberName = who.kind === 'found' ? who.contact.fullName : null;
+      }
+    }
+
+    const settlement = settle({
+      outcome: await this.notifier.notify(
+        checkInNotice({
+          answer,
+          requestId: facts.requestId,
+          to: facts.raisedById,
+          self,
+          memberName,
+          booking,
+          groupId: facts.groupId,
+          expiresAtMs: d.expiresAtMs,
+        }),
+      ),
+      attempt: d.attempt,
+      nowMs,
+      expiresAtMs: d.expiresAtMs,
+    });
+    return this.write(d, settlement, nowMs);
   }
 
   /**
@@ -273,6 +397,9 @@ export class DispatchRemindersHandler {
     const { contact } = who;
     if (!contact.appointmentReminder)
       return { kind: 'skipped', reason: 'opted_out' };
+    // The Email channel switch (customer-api NOTIFICATION_CHANNELS_V1).
+    // Read as on from a customer-api that does not send it.
+    if (!contact.emailEnabled) return { kind: 'skipped', reason: 'opted_out' };
     if (contact.email === null) return { kind: 'skipped', reason: 'no_email' };
     if (!contact.emailVerified)
       return { kind: 'skipped', reason: 'email_unverified' };

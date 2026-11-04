@@ -14,7 +14,6 @@ describe('THE WORKED EXAMPLE from the document', () => {
   const q = quote({
     serviceFils: 48000,
     addOnFils: 0,
-    bundleDiscountFils: 0,
     tier: 'none',
     requirementFils: 24000,
   });
@@ -33,7 +32,6 @@ describe('VAT sits on the DISCOUNTED subtotal', () => {
     const gold = quote({
       serviceFils: 48000,
       addOnFils: 0,
-      bundleDiscountFils: 0,
       tier: 'gold',
       requirementFils: 24000,
     });
@@ -43,23 +41,25 @@ describe('VAT sits on the DISCOUNTED subtotal', () => {
     expect(aed(gold.totalFils)).toBe('AED 453.60');
   });
 
-  it('after a bundle discount too', () => {
+  it('on a package at its own price, with no bundle line', () => {
+    // A package reaches the quote as its parts, already charged the package
+    // price between them (package.ts): parts of AED 480 sold for AED 400
+    // are AED 400 of services here, and nothing is taken off a second time.
     const q = quote({
-      serviceFils: 48000,
+      serviceFils: 40000,
       addOnFils: 0,
-      bundleDiscountFils: 8000,
       tier: 'none',
       requirementFils: 24000,
     });
     expect(aed(q.vatFils)).toBe('AED 20.00'); // 5% of 400
     expect(aed(q.totalFils)).toBe('AED 420.00');
+    expect(q.lines.map((l) => l.label)).not.toContain('Bundle discount');
   });
 
   it('add-ons are taxed like services', () => {
     const q = quote({
       serviceFils: 48000,
       addOnFils: 6000,
-      bundleDiscountFils: 0,
       tier: 'none',
       requirementFils: 24000,
     });
@@ -72,7 +72,6 @@ describe('THE DEPOSIT IS UNTOUCHED BY EITHER', () => {
     const gold = quote({
       serviceFils: 48000,
       addOnFils: 0,
-      bundleDiscountFils: 0,
       tier: 'gold',
       requirementFils: 24000,
     });
@@ -85,7 +84,6 @@ describe('THE DEPOSIT IS UNTOUCHED BY EITHER', () => {
     const q = quote({
       serviceFils: 48000,
       addOnFils: 0,
-      bundleDiscountFils: 0,
       tier: 'none',
       requirementFils: 24000,
     });
@@ -97,7 +95,6 @@ describe('THE DEPOSIT IS UNTOUCHED BY EITHER', () => {
     const q = quote({
       serviceFils: 48000,
       addOnFils: 0,
-      bundleDiscountFils: 0,
       tier: 'none',
       requirementFils: 24000,
     });
@@ -111,7 +108,6 @@ describe('the quote lines', () => {
     const plain = quote({
       serviceFils: 48000,
       addOnFils: 0,
-      bundleDiscountFils: 0,
       tier: 'none',
       requirementFils: 0,
     });
@@ -127,14 +123,12 @@ describe('the quote lines', () => {
     const full = quote({
       serviceFils: 48000,
       addOnFils: 6000,
-      bundleDiscountFils: 4000,
       tier: 'gold',
       requirementFils: 24000,
     });
     expect(full.lines.map((l) => l.label)).toEqual([
       'Subtotal (net)',
       'Add-ons',
-      'Bundle discount',
       'Tier discount',
       'VAT 5%',
       'Total',
@@ -146,12 +140,10 @@ describe('the quote lines', () => {
     const q = quote({
       serviceFils: 48000,
       addOnFils: 0,
-      bundleDiscountFils: 4000,
       tier: 'gold',
       requirementFils: 0,
     });
     expect(q.lines.filter((l) => l.negative).map((l) => l.label)).toEqual([
-      'Bundle discount',
       'Tier discount',
     ]);
   });
@@ -160,7 +152,6 @@ describe('the quote lines', () => {
     const q = quote({
       serviceFils: 48000,
       addOnFils: 0,
-      bundleDiscountFils: 0,
       tier: 'none',
       requirementFils: 60000,
     });
