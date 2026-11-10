@@ -261,6 +261,14 @@ function view(o: MoneyOutcome): unknown {
       throw bookingError('BOOKING_NOT_FOUND', 'No such booking');
     case 'illegal':
       throw bookingError('BOOKING_STATE_INVALID', o.message);
+    case 'held_by_pos':
+      throw bookingError(
+        'DEPOSIT_HELD_BY_POS',
+        `POS ticket ${o.ticketNumber} holds this deposit until the visit is ` +
+          'settled at the till. Cancel or no-show the visit to release it, or ' +
+          'refund it after settlement.',
+        { ticketNumber: o.ticketNumber },
+      );
     case 'done':
       return {
         bookingId: undefined,

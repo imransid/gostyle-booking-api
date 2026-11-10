@@ -1,0 +1,137 @@
+syntax = "proto3";
+package gostyle.pos.booking.v1;
+
+// ──────────────────────────────────────────────────────────────────────
+// Booked visits arriving at the till, for booking-api.
+//
+// booking-api owns the booking; the POS owns the ticket. When a booked
+// customer checks in, booking-api opens a ticket here carrying the booked
+// services at their BOOKED prices, the staff, and the deposit already paid.
+// Later lifecycle moves (started, completed, check-in undone, cancelled,
+// no-show) are mirrored onto that ticket. The till then takes the balance.
+// (docs/booking-pos-tickets-plan.md)
+//
+// KEYED, like ChairDirectory. Every call must carry the gRPC metadata
+// `x-internal-key` set to PLATFORM_INTERNAL_KEY, or it is refused
+// UNAUTHENTICATED. When the key is unset on this side, every call is refused.
+//
+// CONVENTIONS, the same as the sibling protos:
+//   - Field names are snake_case and arrive that way: both sides must load
+//     this file with `keepCase: true`.
+//   - proto3 has no null. A string that has no value is '', and a field this
+//     file calls optional is "unset" when it is '' (or 0).
+//   - Every id is a UUID. A malformed one is INVALID_ARGUMENT.
+//   - Timestamps are ISO-8601 UTC.
+//   - Money is in MINOR UNITS (AED 110.00 is 11000), int32, never negative.
+//   - Enums travel as their names, in strings (see `status` and `state`).
+//
+// EVERY CALL IS SAFE TO RETRY. An open for a booking that already has a live
+// ticket returns that ticket (`replayed: true`); a status the ticket already
+// carries is a no-op that also answers `replayed: true`.
+//
+// ERRORS carry the platform's own error code in `error-code` trailing
+// metadata, and as the prefix of the status message:
+//   UNAUTHENTICATED      missing or wrong x-internal-key (no error-code)
+//   INVALID_ARGUMENT     a malformed request
+//   NOT_FOUND            POS_BRANCH_NOT_FOUND, POS_BOOKING_TICKET_NOT_FOUND
+//   FAILED_PRECONDITION  POS_Z_IMMUTABLE, POS_BRANCH_CLOSED (the trading day
+//                        is closed: try again on the next one),
+//                        POS_LINE_CATALOG (a service the tenant does not own),
+//                        POS_VOID_AFTER_CAPTURE (void asked of a paid ticket),
+//                        POS_TAX_NOT_CONFIGURED
+// Retry UNAVAILABLE, DEADLINE_EXCEEDED, UNKNOWN and INTERNAL. Anything else
+// will fail the same way again until a person fixes the cause.
+// ──────────────────────────────────────────────────────────────────────
+service PosBookingIntake {
+  // Opens the ticket for a checked-in booking. Idempotent on the booking:
+  // while a live (not voided) ticket exists for it, that ticket is returned.
+  rpc OpenTicketForBooking (OpenTicketForBookingRequest) returns (TicketRef);
+  // Mirrors a later lifecycle move onto the booking's live ticket.
+  rpc UpdateBookingStatus (UpdateBookingStatusRequest) returns (TicketRef);
+  // The booking's latest ticket, for reconciling a lost paid callback.
+  rpc GetTicketForBooking (GetTicketForBookingRequest) returns (TicketForBooking);
+}
+
+message Customer {
+  string consumer_id = 1; // customer-api consumer id; '' for a group guest
+  string email = 2;       // '' when unknown
+  string full_name = 3;   // '' when unknown
+}
+
+message BookedService {
+  string booking_item_id = 1;
+  string service_id = 2;       // platform Service.id
+  string service_name = 3;     // snapshot, used whatever the menu says today
+  string staff_profile_id = 4; // platform staff_profile.id; '' if unknown
+  int32 price_minor = 5;       // the BOOKED price, frozen when booked
+  int32 duration_min = 6;
+}
+
+message BookedProduct {
+  string booking_product_id = 1;
+  string variant_id = 2;   // platform product variant id
+  string name = 3;         // snapshot
+  int32 qty = 4;
+  int32 price_minor = 5;   // the BOOKED unit price
+}
+
+message OpenTicketForBookingRequest {
+  string tenant_id = 1;
+  string branch_id = 2;
+  string booking_id = 3;
+  string booking_code = 4;        // "GS-1234", shown on the ticket and receipt
+  string start_at = 5;            // the booked start, ISO-8601 UTC
+  string opened_by_user_id = 6;   // the staff member who checked them in; '' unknown
+  Customer customer = 7;
+  repeated BookedService items = 8;
+  repeated BookedProduct products = 9;
+  // The deposit still held for the booking, and the VAT booking-api already
+  // declared inside it. The till reverses exactly that VAT on the part it
+  // applies, so the pair must come from the same ledger booking-api posts.
+  int32 deposit_available_minor = 10;
+  int32 deposit_vat_minor = 11;
+  string idempotency_key = 12;
+}
+
+message UpdateBookingStatusRequest {
+  string tenant_id = 1;
+  string booking_id = 2;
+  // IN_SERVICE | COMPLETED | CHECK_IN_UNDONE | CANCELLED | NO_SHOW.
+  // The last three void the ticket.
+  string status = 3;
+  // COMPLETED only: the deposit as it stands now (see the open request).
+  int32 deposit_available_minor = 4;
+  int32 deposit_vat_minor = 5;
+  string actor_user_id = 6; // '' for the system
+  string idempotency_key = 7;
+}
+
+message TicketRef {
+  string ticket_id = 1;
+  string number = 2;  // "#T-42"
+  string state = 3;   // the TicketState name: OPEN | READY | VOIDED | ...
+  bool replayed = 4;  // true when nothing new was written
+}
+
+message GetTicketForBookingRequest {
+  string tenant_id = 1;
+  string booking_id = 2;
+}
+
+message TicketDocument {
+  string type = 1;   // RECEIPT | INVOICE
+  string number = 2; // "R-118", "INV-2026-0042"
+}
+
+message TicketForBooking {
+  bool found = 1;
+  string ticket_id = 2;
+  string state = 3;
+  string paid_at = 4;    // '' until paid
+  string cashier_id = 5; // '' until claimed
+  int32 total_minor = 6;
+  int32 deposit_applied_minor = 7;
+  int32 deposit_applied_vat_minor = 8;
+  repeated TicketDocument documents = 9;
+  string number = 10;    // "#T-42"
+}

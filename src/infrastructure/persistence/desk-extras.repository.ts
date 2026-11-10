@@ -15,6 +15,17 @@ import { REMINDER_LIVE_STATUSES } from '@domain/booking/reminders';
  * actor and the reason, rather than inventing a second audit table.
  */
 
+/** The booking as the undo locks it. Named: a heredoc eats a trailing `<`. */
+interface UndoLockedBooking {
+  id: string;
+  code: string;
+  status: string;
+  branch_id: string;
+  trading_day: Date;
+  start_minute: number;
+  duration_min: number;
+}
+
 export type ExtraOutcome =
   | { readonly kind: 'not_found' }
   | { readonly kind: 'illegal'; readonly message: string }
@@ -43,10 +54,10 @@ export class DeskExtrasRepository {
     const nowMs = input.nowMs ?? Date.now();
 
     return this.prisma.$transaction(async (tx) => {
-      const rows = await tx.$queryRaw<
-        { id: string; code: string; status: string }[]
-      >`
-        SELECT id, code, status::text AS status FROM booking
+      const rows = await tx.$queryRaw<UndoLockedBooking[]>`
+        SELECT id, code, status::text AS status, branch_id, trading_day,
+               start_minute, duration_min
+          FROM booking
          WHERE id = ${input.bookingId}::uuid FOR UPDATE`;
       const b = rows[0];
       if (b === undefined) return { kind: 'not_found' as const };
@@ -92,6 +103,45 @@ export class DeskExtrasRepository {
           reason: input.reason,
           actorKind: input.actor,
           actorId: actorUuid(input),
+        },
+      });
+
+      /**
+       * THE EVENT AN UNDO NEVER HAD. A check-in opens a ticket on the till
+       * (booking.checked_in, through pos_ticket_sync); an undo that only
+       * rewound the row left that ticket open for a customer who is not
+       * here, and the group status reading a lane as arrived. Same commit as
+       * the move, in the lifecycle events' shape, so every consumer reads it
+       * the way it reads a transition (lifecycle.repository.ts).
+       */
+      const first = await tx.bookingItem.findFirst({
+        where: { bookingId: b.id },
+        orderBy: { position: 'asc' },
+        select: { serviceId: true, staffId: true },
+      });
+      await tx.eventOutbox.create({
+        data: {
+          aggregateType: 'booking',
+          aggregateId: b.id,
+          eventType: 'booking.check_in_undone',
+          payload: {
+            code: b.code,
+            from: 'checked_in',
+            to: 'confirmed',
+            refundFils: 0,
+            keptFils: 0,
+            releasedCapacity: false,
+            branchId: b.branch_id,
+            tradingDay: b.trading_day.toISOString().slice(0, 10),
+            startMin: b.start_minute,
+            durationMin: b.duration_min,
+            ...(first !== null
+              ? { serviceId: first.serviceId, staffId: first.staffId }
+              : {}),
+            reason: input.reason,
+            actorKind: input.actor,
+            actorId: input.actorId,
+          },
         },
       });
 

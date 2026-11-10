@@ -1,11 +1,12 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
-import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import type {
   CreateIntentInput,
   PaymentGateway,
   PaymentIntent,
   RefundResult,
 } from '@application/ports/payment-gateway.port';
+import { hmacSha256Hex, verifyHmacSha256Hex } from '../security/hmac';
 
 /**
  * The webhook secret for local runs and tests (scripts/qa-suite.mjs signs
@@ -87,13 +88,7 @@ export class SimulatedGateway implements PaymentGateway, OnModuleInit {
   verifySignature(rawBody: string, signature: string): boolean {
     const secret = webhookSecret();
     if (secret === null) return false;
-    const expected = hmac(secret, rawBody);
-    const a = Buffer.from(expected);
-    const b = Buffer.from(signature);
-    // timingSafeEqual throws on a length mismatch, which is itself a leak of
-    // one bit, but an unavoidable and harmless one.
-    if (a.length !== b.length) return false;
-    return timingSafeEqual(a, b);
+    return verifyHmacSha256Hex(secret, rawBody, signature);
   }
 
   /**
@@ -105,10 +100,6 @@ export class SimulatedGateway implements PaymentGateway, OnModuleInit {
     if (secret === null) {
       throw new Error('PAYMENT_WEBHOOK_SECRET is not set');
     }
-    return hmac(secret, rawBody);
+    return hmacSha256Hex(secret, rawBody);
   }
-}
-
-function hmac(secret: string, rawBody: string): string {
-  return createHmac('sha256', secret).update(rawBody).digest('hex');
 }

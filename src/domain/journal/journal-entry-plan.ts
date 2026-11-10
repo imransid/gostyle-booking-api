@@ -73,6 +73,12 @@ export interface LedgerRowFacts {
   readonly branchId: string;
   /** The booking's stored net / tax / discount, for the VAT share. */
   readonly breakdown: StoredBreakdown;
+  /**
+   * The VAT inside this row when the till decided the split (applied_at_pos,
+   * and the leftover credited at the same settlement). Null or absent: the
+   * booking's own proportion (vatShare).
+   */
+  readonly vatFils?: number | null;
 }
 
 // ----------------------------------------------------------------- the wire
@@ -155,6 +161,26 @@ export function vatShare(
   }
   const [net, vat] = Money.fils(amountFils).allocate([total - tax, tax]);
   return { net: net?.fils ?? amountFils, vat: vat?.fils ?? 0 };
+}
+
+/**
+ * THE split of one ledger row: what of it is deposit and what is VAT.
+ *
+ * The till's own figure when it decided one (`vatFils`, clamped into the
+ * row), otherwise the booking's proportion. The ONE place a row is split:
+ * the journal legs and the deposit position (deposit-position.ts) both read
+ * it, so the VAT the till reverses is exactly the VAT the books declared.
+ */
+export function splitOf(
+  row: { readonly amountFils: number; readonly vatFils?: number | null },
+  breakdown: StoredBreakdown,
+): { readonly net: number; readonly vat: number } {
+  const amount = Math.abs(row.amountFils);
+  if (row.vatFils !== undefined && row.vatFils !== null) {
+    const vat = Math.min(Math.max(0, row.vatFils), amount);
+    return { net: amount - vat, vat };
+  }
+  return vatShare(amount, breakdown);
 }
 
 // --------------------------------------------------------------- the money
@@ -287,7 +313,7 @@ export function planJournalEntry(row: LedgerRowFacts): JournalPlan {
 }
 
 function legsFor(row: LedgerRowFacts, amount: number): Leg[] | null {
-  const { net, vat } = vatShare(amount, row.breakdown);
+  const { net, vat } = splitOf(row, row.breakdown);
   const DEPOSITS = Account.CUSTOMER_DEPOSITS;
   const VAT = Account.SALES_TAX_PAYABLE;
 

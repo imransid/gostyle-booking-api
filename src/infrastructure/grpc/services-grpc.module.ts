@@ -4,6 +4,8 @@ import { ClientsModule, Transport } from '@nestjs/microservices';
 
 import { SERVICES_DIRECTORY } from '@application/ports/services-directory.port';
 import { GrpcServicesDirectory } from './grpc-services-directory';
+import { TAX_SETTINGS } from '@application/ports/tax-settings.port';
+import { GrpcTaxSettings } from './grpc-tax-settings';
 import { SERVICES_DIRECTORY_CLIENT } from './services-grpc.constants';
 import { platformGrpcAddress } from './staff-grpc.constants';
 import { platformChannelOptions } from './channel-options';
@@ -44,7 +46,11 @@ import { platformChannelOptions } from './channel-options';
       },
     ]),
   ],
-  providers: [{ provide: SERVICES_DIRECTORY, useClass: GrpcServicesDirectory }],
-  exports: [SERVICES_DIRECTORY],
+  providers: [
+    { provide: SERVICES_DIRECTORY, useClass: GrpcServicesDirectory },
+    // The tenant's VAT (GetTaxSettings), on the same client and proto.
+    { provide: TAX_SETTINGS, useClass: GrpcTaxSettings },
+  ],
+  exports: [SERVICES_DIRECTORY, TAX_SETTINGS],
 })
 export class ServicesGrpcModule {}

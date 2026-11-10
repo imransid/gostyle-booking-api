@@ -51,6 +51,8 @@ import { StylistRepository } from './stylist.repository';
 import { PlatformProductCatalogue } from './platform-product-catalogue';
 import { ProductsGrpcModule } from '../grpc/products-grpc.module';
 import { JournalSyncRepository } from './journal-sync.repository';
+import { PosTicketSyncRepository } from './pos-ticket-sync.repository';
+import { PosTicketSyncEnqueuer } from '../messaging/pos-ticket-sync-enqueuer';
 
 import { PushListener } from '../messaging/push-listener';
 import { CheckInPushListener } from '../messaging/check-in-push-listener';
@@ -165,13 +167,14 @@ import { PlatformPackageCatalogue } from './platform-package-catalogue';
     {
       provide: EVENT_PUBLISHER,
       // The chain, innermost last: group, walk-in seated, walk-in gap,
-      // waitlist, push, check-in push, hub, reminder delivery, then the real
-      // publisher.
+      // waitlist, push, check-in push, hub, reminder delivery, the till's
+      // queue, then the real publisher.
       //
-      // Hub and reminder delivery are innermost because they are the links
-      // that throw (a lost reminder or hand-over is worse than a
-      // re-delivered event); every link outside them has already done its
-      // idempotent work by then, and both of theirs are idempotent too.
+      // Hub, reminder delivery and the till's queue are innermost because
+      // they are the links that throw (a lost reminder, hand-over or ticket
+      // is worse than a re-delivered event); every link outside them has
+      // already done its idempotent work by then, and theirs are idempotent
+      // too (unique source event, ON CONFLICT DO NOTHING).
       useFactory: (
         next: LoggingEventPublisher,
         waitlist: WaitlistRepository,
@@ -180,6 +183,7 @@ import { PlatformPackageCatalogue } from './platform-package-catalogue';
         push: PushNotificationClient,
         deliveries: NotificationDeliveryRepository,
         contacts: CustomerContactReader,
+        posSync: PosTicketSyncRepository,
       ) =>
         new GroupStatusListener(
           new WalkInSeatedListener(
@@ -188,7 +192,10 @@ import { PlatformPackageCatalogue } from './platform-package-catalogue';
                 new PushListener(
                   new CheckInPushListener(
                     new HubListener(
-                      new ReminderDeliveryListener(next, deliveries),
+                      new ReminderDeliveryListener(
+                        new PosTicketSyncEnqueuer(next, posSync),
+                        deliveries,
+                      ),
                       prisma,
                       deliveries,
                     ),
@@ -216,6 +223,7 @@ import { PlatformPackageCatalogue } from './platform-package-catalogue';
         PushNotificationClient,
         NotificationDeliveryRepository,
         CUSTOMER_CONTACT,
+        PosTicketSyncRepository,
       ],
     },
     LifecycleRepository,
@@ -229,6 +237,7 @@ import { PlatformPackageCatalogue } from './platform-package-catalogue';
     PlatformProductCatalogue,
     PlatformPackageCatalogue,
     JournalSyncRepository,
+    PosTicketSyncRepository,
   ],
   exports: [
     TenantContext,
@@ -272,6 +281,7 @@ import { PlatformPackageCatalogue } from './platform-package-catalogue';
     StylistRepository,
     PlatformProductCatalogue,
     JournalSyncRepository,
+    PosTicketSyncRepository,
     NotificationDeliveryRepository,
     PUSH_SENDER,
     EMAIL_SENDER,

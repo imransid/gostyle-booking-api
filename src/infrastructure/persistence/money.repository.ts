@@ -40,6 +40,8 @@ export interface MoneyActionInput {
 export type MoneyOutcome =
   | { readonly kind: 'not_found' }
   | { readonly kind: 'illegal'; readonly message: string }
+  /** A live till ticket may apply this deposit at any moment (B8). */
+  | { readonly kind: 'held_by_pos'; readonly ticketNumber: string }
   | {
       readonly kind: 'done';
       readonly entryId: string | null;
@@ -295,10 +297,12 @@ export class MoneyRepository {
             payment_status: string;
             price_fils: number;
             deposit_fils: number;
+            pos_ticket_number: string | null;
           }[]
         >`
         SELECT id, code, status::text AS status,
-               payment_status::text AS payment_status, price_fils, deposit_fils
+               payment_status::text AS payment_status, price_fils, deposit_fils,
+               pos_ticket_number
           FROM booking
          WHERE id = ${input.bookingId}::uuid
          FOR UPDATE`;
@@ -324,6 +328,26 @@ export class MoneyRepository {
             code: b.code,
             status: b.status,
             paymentStatus: b.payment_status,
+          };
+        }
+
+        /**
+         * THE TILL HOLDS THIS DEPOSIT (gostyle-platform
+         * docs/booking-pos-tickets-plan.md, B8). While the visit has a live
+         * POS ticket and is not settled, the till may apply the deposit at
+         * any moment from the figure it was sent: a refund, capture or
+         * goodwill here would let it spend money that is already gone, or
+         * miss money that arrived. Under the booking's lock, so a ticket
+         * cannot open between this check and the write -- the sync stores
+         * the ticket with its own update of this row.
+         *
+         * Settled is past it: the till is done, and a refund afterwards is
+         * an ordinary refund.
+         */
+        if (typeof b.pos_ticket_number === 'string' && b.status !== 'settled') {
+          return {
+            kind: 'held_by_pos' as const,
+            ticketNumber: b.pos_ticket_number,
           };
         }
 

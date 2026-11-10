@@ -378,3 +378,46 @@ describe('what is not posted', () => {
     });
   });
 });
+
+describe('vatFils: a split the till decided', () => {
+  it('replaces the booking proportion on a refund the till sized', () => {
+    // A leftover credited after the till applied part of the deposit: the
+    // VAT left on it is whatever the till did not reverse, not 5/105 of it.
+    const r = posted({
+      entryType: 'refunded',
+      amountFils: -2000,
+      rail: 'internal',
+      breakdown: FIVE_PERCENT,
+      vatFils: 95,
+    });
+    expect(legs(r)).toEqual([
+      ['DEBIT', 'CUSTOMER_DEPOSITS', 1905],
+      ['DEBIT', 'SALES_TAX_PAYABLE', 95],
+      ['CREDIT', 'CUSTOMER_WALLET', 2000],
+    ]);
+  });
+
+  it('cannot move more VAT than the row moves', () => {
+    const r = posted({
+      entryType: 'refunded',
+      amountFils: -100,
+      rail: 'internal',
+      breakdown: FIVE_PERCENT,
+      vatFils: 999,
+    });
+    expect(legs(r)).toEqual([
+      ['DEBIT', 'SALES_TAX_PAYABLE', 100],
+      ['CREDIT', 'CUSTOMER_WALLET', 100],
+    ]);
+  });
+
+  it('leaves every row without one exactly as before', () => {
+    const a = posted({ entryType: 'captured', breakdown: FIVE_PERCENT });
+    const b = posted({
+      entryType: 'captured',
+      breakdown: FIVE_PERCENT,
+      vatFils: null,
+    });
+    expect(b).toEqual(a);
+  });
+});

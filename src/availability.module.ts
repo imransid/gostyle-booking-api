@@ -114,6 +114,13 @@ import {
 import { ServicesDirectoryController } from '@interface/http/services-directory.controller';
 import { ListServicesHandler } from '@application/queries/list-services.handler';
 
+import { PosBookingGrpcModule } from './infrastructure/grpc/pos-booking-grpc.module';
+import { PosTicketSyncHandler } from '@application/commands/pos-ticket-sync.handler';
+import { PosTicketPaidHandler } from '@application/commands/pos-ticket-paid.handler';
+import { PosTicketSyncWorker } from '@infrastructure/scheduling/pos-ticket-sync-worker.service';
+import { InternalPosController } from '@interface/http/internal-pos.controller';
+import { PosTicketSyncController } from '@interface/http/pos-ticket-sync.controller';
+
 import { MobilePackagesController } from '@interface/http/mobile-packages.controller';
 import { PackagesController } from '@interface/http/packages.controller';
 import { MobilePackagesHandler } from '@application/queries/mobile-packages.handler';
@@ -141,6 +148,9 @@ import { MobilePackagesHandler } from '@application/queries/mobile-packages.hand
     FloorGrpcModule,
     // JOURNAL_LEDGER, owned by the journal handlers (CLAUDE.md 7).
     JournalGrpcModule,
+    // POS_TICKET_INTAKE, owned by PosTicketSyncHandler (CLAUDE.md 7). Keyed
+    // with PLATFORM_INTERNAL_KEY, like the chair directory.
+    PosBookingGrpcModule,
   ],
   controllers: [
     // The /v1/bookings literals come first: BookingsController carries
@@ -154,6 +164,10 @@ import { MobilePackagesHandler } from '@application/queries/mobile-packages.hand
     MoneyController,
     BookingJournalController,
     JournalSyncController,
+    // Service-to-service and ops routes for the till; nothing under
+    // /v1/bookings, so their place in this list is free.
+    InternalPosController,
+    PosTicketSyncController,
     // Before MobileBookingController: nothing of that one may be tried
     // first for a path under /mobile-booking/group or /mobile-booking/series.
     MobileGroupBookingController,
@@ -214,6 +228,9 @@ import { MobilePackagesHandler } from '@application/queries/mobile-packages.hand
     JournalSyncHandler,
     BookingJournalHandler,
     JournalSyncWorker,
+    PosTicketPaidHandler,
+    PosTicketSyncHandler,
+    PosTicketSyncWorker,
     DeskExtrasHandler,
     DeskActionsHandler,
     ReadModelRepository,

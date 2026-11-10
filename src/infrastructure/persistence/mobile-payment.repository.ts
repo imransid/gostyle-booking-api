@@ -24,6 +24,8 @@ export type RecordPaymentOutcome =
   | { readonly kind: 'not_found' }
   | { readonly kind: 'already_paid'; readonly paymentStatus: string }
   | { readonly kind: 'expired' }
+  /** A live till ticket may apply this booking's deposit at any moment (B8). */
+  | { readonly kind: 'held_by_pos'; readonly ticketNumber: string }
   /** The same reference again. Nothing was written the second time. */
   | { readonly kind: 'replayed'; readonly bookingId: string }
   | {
@@ -73,16 +75,31 @@ export class MobilePaymentRepository {
               status: string;
               payment_status: string;
               link_expires_at: Date | null;
+              pos_ticket_number: string | null;
             }[]
           >`
           SELECT id, status::text AS status,
-                 payment_status::text AS payment_status, link_expires_at
+                 payment_status::text AS payment_status, link_expires_at,
+                 pos_ticket_number
             FROM booking
            WHERE id = ${input.bookingId}::uuid
            FOR UPDATE`;
 
           const b = rows[0];
           if (b === undefined) return { kind: 'not_found' as const };
+
+          // THE TILL HOLDS THIS BOOKING'S DEPOSIT (B8), as MoneyRepository
+          // refuses for the desk: a payment recorded now would never reach
+          // the ticket, which already has its figure.
+          if (
+            typeof b.pos_ticket_number === 'string' &&
+            b.status !== 'settled'
+          ) {
+            return {
+              kind: 'held_by_pos' as const,
+              ticketNumber: b.pos_ticket_number,
+            };
+          }
 
           // §11.1: only from DRAFT.
           if (b.payment_status !== 'unpaid') {
