@@ -13,6 +13,7 @@ import {
   ConflictError,
   DependencyUnavailableError,
   HoldExpiredError,
+  isSettledByPos,
   UnauthorizedError,
   ValidationError,
   formatCountdown,
@@ -137,14 +138,21 @@ async function main(): Promise<void> {
   await api.checkIn(booking.bookingId);
   await api.start(booking.bookingId);
   await api.complete(booking.bookingId);
-  const settled = await api.settle(booking.bookingId, {
-    rail: 'card',
-    tipMinor: 5000,
-  });
-  console.log(
-    `settled    tip ${settled.receipt?.tip}, deposit ${settled.receipt?.depositApplied}, ` +
-      `due now ${settled.receipt?.due}`,
-  );
+  try {
+    const settled = await api.settle(booking.bookingId, {
+      rail: 'card',
+      tipMinor: 5000,
+    });
+    console.log(
+      `settled    tip ${settled.receipt?.tip}, deposit ${settled.receipt?.depositApplied}, ` +
+        `due now ${settled.receipt?.due}`,
+    );
+  } catch (error: unknown) {
+    // A tenant on the POS: the till takes the balance and the booking moves
+    // to SETTLED by itself when its ticket is paid.
+    if (!isSettledByPos(error)) throw error;
+    console.log('settled    at the till: the POS ticket settles this booking');
+  }
 }
 
 main().catch((error: unknown) => {

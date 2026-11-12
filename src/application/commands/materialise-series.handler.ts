@@ -7,7 +7,11 @@ import {
   CUSTOMER_CONTEXT,
   type CustomerContextReader,
 } from '@application/ports/customer-context.port';
-import { SeriesRepository } from '@infrastructure/persistence/series.repository';
+import {
+  SeriesRepository,
+  type SeriesRow,
+} from '@infrastructure/persistence/series.repository';
+import { TenantContext } from '@infrastructure/tenancy/tenant-context';
 import {
   feasibleSet,
   staffAvailableAt,
@@ -72,6 +76,7 @@ export class MaterialiseSeriesHandler {
     private readonly repo: SeriesRepository,
     @Inject(BOOKING_CONTEXT) private readonly context: BookingContextReader,
     @Inject(CUSTOMER_CONTEXT) private readonly customers: CustomerContextReader,
+    private readonly tenants: TenantContext,
   ) {}
 
   /** Top the calendar up to the horizon, then seat everything inside it. */
@@ -86,6 +91,38 @@ export class MaterialiseSeriesHandler {
       ]);
     }
 
+    return this.inSeriesTenant(series, () =>
+      this.materialise(series, seriesId, today),
+    );
+  }
+
+  /**
+   * Run as the series' own tenant when nothing else has said whose this is.
+   *
+   * THE NIGHTLY RUN HAS NO REQUEST, so no header and no token, and
+   * `tenants.current()` is null. Every booking it wrote landed with no
+   * tenant -- invisible to the general ledger, which posts per tenant -- and
+   * every tenant-scoped catalogue lookup it made was refused. The series
+   * remembers its tenant from the request that created it; this hands it
+   * back for the length of the run, as the mobile series job already does.
+   *
+   * A request that already names a tenant (the desk's "materialise now")
+   * keeps it: the caller knows their own tenancy.
+   */
+  private inSeriesTenant<T>(
+    series: SeriesRow,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    if (this.tenants.current() !== null || series.tenantId === null)
+      return fn();
+    return this.tenants.run(series.tenantId, fn);
+  }
+
+  private async materialise(
+    series: SeriesRow,
+    seriesId: string,
+    today: string,
+  ): Promise<MaterialiseResult> {
     const definition = await this.definitionOf(seriesId);
     if (definition !== null) {
       const expansion = expandSeries(definition, {

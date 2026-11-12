@@ -5,6 +5,16 @@ import { PrismaService } from '../../infrastructure/persistence/prisma.service';
 import { OutboxRelay } from '../../infrastructure/messaging/outbox-relay.service';
 import { AuthService } from '../../auth/auth.service';
 import {
+  JournalSyncRepository,
+  type JournalSyncStats,
+} from '../../infrastructure/persistence/journal-sync.repository';
+import { journalPostingEnabled } from '@application/commands/journal-sync.flag';
+import {
+  PosTicketSyncRepository,
+  type PosTicketSyncStats,
+} from '../../infrastructure/persistence/pos-ticket-sync.repository';
+import { posTicketSyncEnabled } from '@application/commands/pos-ticket-sync.flag';
+import {
   ReminderHealth,
   type ReminderHealthView,
 } from '../../infrastructure/scheduling/reminder-health';
@@ -30,11 +40,32 @@ interface CustomerAuthHealth {
   readonly error?: string;
 }
 
-/** Postgres and the queue that lives in it: one rail, one round trip. */
+/**
+ * Money rows on their way to the platform's general ledger. `parked` is the
+ * number to alert on: each one is money that will not reach the books until
+ * somebody acts. `oldestPendingSeconds` growing means the platform is
+ * unreachable (or sending is switched off, which `sendingEnabled` says).
+ */
+interface JournalHealth extends JournalSyncStats {
+  readonly sendingEnabled: boolean;
+}
+
+/**
+ * Booking events on their way to the platform's POS (check-in opens a till
+ * ticket). `parked` is the number to alert on: each is a visit the till
+ * cannot charge, or a ticket it cannot void, until somebody acts.
+ */
+interface PosTicketSyncHealth extends PosTicketSyncStats {
+  readonly sendingEnabled: boolean;
+}
+
+/** Postgres and the queues that live in it: one rail. */
 interface DatabaseHealth {
   readonly database: string;
   readonly databaseLatencyMs: number | null;
   readonly outbox?: OutboxHealth;
+  readonly journal?: JournalHealth;
+  readonly posTicketSync?: PosTicketSyncHealth;
   readonly error?: string;
 }
 
@@ -47,6 +78,8 @@ interface HealthView {
   readonly outbox?: OutboxHealth;
   /** The reminder pipeline: ladder, delivery queue, dispatcher. */
   readonly reminders: ReminderHealthView;
+  readonly journal?: JournalHealth;
+  readonly posTicketSync?: PosTicketSyncHealth;
   readonly error?: string;
 }
 
@@ -59,6 +92,8 @@ export class HealthController {
     private readonly relay: OutboxRelay,
     private readonly consumerAuth: AuthService,
     private readonly reminders: ReminderHealth,
+    private readonly journal: JournalSyncRepository,
+    private readonly posSync: PosTicketSyncRepository,
   ) {}
 
   @Get()
@@ -102,6 +137,20 @@ export class HealthController {
           publishedTotal: 6,
           failedTotal: 0,
         },
+        journal: {
+          waitingForTenant: 0,
+          pending: 0,
+          parked: 0,
+          oldestPendingSeconds: null,
+          sendingEnabled: true,
+        },
+        posTicketSync: {
+          waitingForTenant: 0,
+          pending: 0,
+          parked: 0,
+          oldestPendingSeconds: null,
+          sendingEnabled: false,
+        },
       },
     },
   })
@@ -128,7 +177,9 @@ export class HealthController {
     const degraded =
       db.database !== 'ok' ||
       customerAuth.status !== 'ok' ||
-      (db.outbox?.stuck ?? 0) > 0;
+      (db.outbox?.stuck ?? 0) > 0 ||
+      (db.journal?.parked ?? 0) > 0 ||
+      (db.posTicketSync?.parked ?? 0) > 0;
 
     return {
       status: degraded ? 'degraded' : 'ok',
@@ -147,6 +198,14 @@ export class HealthController {
         database: 'ok',
         databaseLatencyMs,
         outbox: await this.relay.stats(),
+        journal: {
+          ...(await this.journal.stats()),
+          sendingEnabled: journalPostingEnabled(),
+        },
+        posTicketSync: {
+          ...(await this.posSync.stats()),
+          sendingEnabled: posTicketSyncEnabled(),
+        },
       };
     } catch (e) {
       return {

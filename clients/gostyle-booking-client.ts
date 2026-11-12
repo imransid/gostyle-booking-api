@@ -323,7 +323,11 @@ export interface LifecycleResult {
   lateCancel?: boolean;
   /** The sentence to read to the customer. */
   explanation?: string;
-  /** Present on settle. */
+  /**
+   * Present on settle(), for a tenant still settled here. A visit paid at the
+   * POS has no receipt from this API: the till issues the receipt and tax
+   * invoice, and their numbers are in the booking's history.
+   */
   receipt?: Receipt;
 }
 
@@ -487,6 +491,13 @@ export class ConflictError extends BookingApiError {}
  */
 export class HoldExpiredError extends BookingApiError {}
 
+/**
+ * 410 SETTLED_BY_POS. This visit is paid at the till: the salon's POS takes
+ * the balance and the booking settles itself when its ticket is paid. Not a
+ * hold problem -- do not re-run availability. Show the till, not a bill.
+ */
+export class SettledByPosError extends BookingApiError {}
+
 /** 422. The request was understood and refused for a stated reason. */
 export class UnprocessableError extends BookingApiError {}
 
@@ -524,7 +535,11 @@ function errorFor(
     case 409:
       return new ConflictError(...args);
     case 410:
-      return new HoldExpiredError(...args);
+      // Two different 410s: the till owns this booking's money, or the hold
+      // is gone. The code says which.
+      return (body as { code?: unknown } | null)?.code === 'SETTLED_BY_POS'
+        ? new SettledByPosError(...args)
+        : new HoldExpiredError(...args);
     case 422:
       return new UnprocessableError(...args);
     case 503:
@@ -533,6 +548,10 @@ function errorFor(
       return new BookingApiError(...args);
   }
 }
+
+/** Narrowing helper: the till settles this booking, not settle(). */
+export const isSettledByPos = (e: unknown): e is SettledByPosError =>
+  e instanceof SettledByPosError;
 
 /** Narrowing helper: the hold died, so start again from availability. */
 export const isHoldExpired = (e: unknown): e is HoldExpiredError =>
@@ -723,7 +742,14 @@ export class BookingClient {
     return this.transition(id, 'complete', body);
   }
 
-  /** Paid at the register. The response carries the receipt. */
+  /**
+   * Paid at the register. The response carries the receipt.
+   *
+   * RETIRING. For a tenant whose booked visits open tickets on the POS, the
+   * till takes the money and the booking settles itself when its ticket is
+   * paid; this then throws SettledByPosError (410 SETTLED_BY_POS). Read the
+   * booking's status instead of calling this.
+   */
   settle(id: string, body: SettleRequest = {}): Promise<LifecycleResult> {
     return this.transition(id, 'settle', body);
   }

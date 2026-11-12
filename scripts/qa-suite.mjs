@@ -39,6 +39,9 @@ const BASE = process.env.BASE ?? 'http://156.67.214.42:3851';
 const SECRET = process.env.JWT_ACCESS_SECRET;
 const WEBHOOK_SECRET =
   process.env.PAYMENT_WEBHOOK_SECRET ?? 'simulated-webhook-secret';
+/** The platform POS signs its paid callback with this (POS_CALLBACK_SECRET). */
+const POS_SECRET =
+  process.env.POS_CALLBACK_SECRET ?? 'dev-pos-callback-secret';
 const SLOW = (process.env.SLOW ?? 'no').toLowerCase() === 'yes';
 const CLEANUP = (process.env.CLEANUP ?? 'yes').toLowerCase() !== 'no';
 const ONLY = process.env.ONLY ?? null;
@@ -194,9 +197,16 @@ function expectRefusal(r, wantStatus, mustMention) {
 
 // ------------------------------------------------------------------ the wire
 
+/**
+ * The tenant every call is tagged with. A case that needs a REAL tenant id
+ * (the POS paid callback carries the platform's uuid) swaps it for its own
+ * duration; cases run one at a time, so nothing else sees it.
+ */
+let tenantOverride = null;
+
 async function call(method, path, body, opts = {}) {
   const headers = {
-    'X-Tenant-Id': TENANT,
+    'X-Tenant-Id': tenantOverride ?? TENANT,
     ...(opts.token === null
       ? {}
       : { Authorization: `Bearer ${opts.token ?? MANAGER}` }),
@@ -1122,6 +1132,65 @@ async function money() {
       `ledger sums to ${sum}, not 0 -- the deposit was not fully consumed at the till: [${shown}]`,
     );
     return `[${shown}] = 0`;
+  });
+
+  await testCase('MON-6b', 'The ledger sums to zero after a POS settle (paid callback)', async () => {
+    // The till takes the balance and tells this service through the signed
+    // callback (docs: gostyle-platform booking-pos-tickets-plan.md, B6). The
+    // callback names the platform tenant, a uuid, so this booking gets one.
+    tenantOverride = randomUUID();
+    try {
+      const b = await bookingWithDeposit(DAY, ['luxury-facial'], 'dana');
+      await walkToCompleted(b.booking.bookingId);
+      const before = await readBooking(b.booking.bookingId);
+      const held = (before.json.ledger ?? []).reduce((a, l) => a + l.amountMinor, 0);
+
+      const body = {
+        tenantId: tenantOverride,
+        bookingId: b.booking.bookingId,
+        ticketId: randomUUID(),
+        ticketNumber: '#T-QA',
+        paidAt: new Date().toISOString(),
+        cashierId: '33333333-3333-3333-3333-333333333333',
+        totalMinor: held + 10000,
+        depositAppliedMinor: held,
+        depositAppliedVatMinor: 0,
+        documents: [{ type: 'RECEIPT', number: `R-QA-${RUN}` }],
+      };
+      const raw = JSON.stringify(body);
+      const signed = () =>
+        call('POST', '/v1/internal/pos/ticket-paid', body, {
+          token: null,
+          raw,
+          headers: { 'x-signature': createHmac('sha256', POS_SECRET).update(raw).digest('hex') },
+        });
+
+      const r = await signed();
+      if (r.status === 401) blocked('signature rejected -- POS_CALLBACK_SECRET does not match the server');
+      expect(r.status === 200, `ticket-paid ${r.status}: ${messageOf(r)}`);
+
+      const detail = await readBooking(b.booking.bookingId);
+      expect(detail.json.status === 'SETTLED', `status is ${detail.json.status}`);
+      const ledger = detail.json.ledger ?? [];
+      const sum = ledger.reduce((a, l) => a + l.amountMinor, 0);
+      const shown = ledger.map((l) => `${l.entryType} ${l.amountMinor}`).join(', ');
+      expect(sum === 0, `ledger sums to ${sum}, not 0: [${shown}]`);
+
+      // The platform's outbox retries: the same ticket again writes nothing.
+      const again = await signed();
+      expect(
+        again.status === 200 && again.json?.alreadySettled === true,
+        `replay answered ${again.status} ${JSON.stringify(again.json)}`,
+      );
+      const after = await readBooking(b.booking.bookingId);
+      expect(
+        (after.json.ledger ?? []).length === ledger.length,
+        'the replay wrote another ledger row',
+      );
+      return `[${shown}] = 0, replay alreadySettled`;
+    } finally {
+      tenantOverride = null;
+    }
   });
 
   await testCase('MON-7', 'Refund lands: cancel more than 24h out', async () => {

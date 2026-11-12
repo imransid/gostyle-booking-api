@@ -228,14 +228,28 @@ model Booking {
   // The reminder ladder. Timestamps rather than booleans: "when did we tell
   // them" is the question support actually asks, and a boolean cannot answer
   // it. NULL means outstanding, and that is what the scheduler claims on.
-  reminded24hAt DateTime? @map("reminded_24h_at") @db.Timestamptz(6)
-  reminded3hAt  DateTime? @map("reminded_3h_at") @db.Timestamptz(6)
-  nudged15mAt   DateTime? @map("nudged_15m_at") @db.Timestamptz(6)
+  reminded24hAt    DateTime? @map("reminded_24h_at") @db.Timestamptz(6)
+  reminded3hAt     DateTime? @map("reminded_3h_at") @db.Timestamptz(6)
+  nudged15mAt      DateTime? @map("nudged_15m_at") @db.Timestamptz(6)
   /// The app customer's own reminder, at the time they chose
   /// (MOBILE_REMINDER_CHOICE): when it was claimed (sent or passed over),
   /// and the lead it was claimed with, in minutes. Cleared by every move.
   remindedChosenAt DateTime? @map("reminded_chosen_at") @db.Timestamptz(6)
   reminderLeadMin  Int?      @map("reminder_lead_min") @db.SmallInt
+
+  /// THE TILL'S TICKET FOR THIS VISIT, while one is live (or once it paid).
+  ///
+  /// Written by the pos_ticket_sync worker when the platform opens a ticket
+  /// at check-in, cleared when the platform voids it (undo, cancel,
+  /// no-show), and stamped again by the paid callback. While it is set and
+  /// the booking is not settled, the till may apply the deposit, so the desk
+  /// money routes refuse to move it (DEPOSIT_HELD_BY_POS).
+  ///
+  /// Both or neither, by CHECK booking_pos_ticket_pair. No FK: the ticket
+  /// lives in another service.
+  posTicketId     String? @map("pos_ticket_id") @db.Uuid
+  /// "#T-42", for the desk, so it can name the ticket without asking.
+  posTicketNumber String? @map("pos_ticket_number")
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
@@ -247,6 +261,7 @@ model Booking {
   idempotencyKeys IdempotencyKey[]
   deliveries      NotificationDelivery[]
   checkInRequests CheckInRequest[]
+  posTicketSyncs  PosTicketSync[]
 
   @@index([branchId, tradingDay, status], map: "booking_branch_day_idx")
   @@index([customerId, startAt(sort: Desc)], map: "booking_customer_idx")
@@ -512,7 +527,23 @@ model DepositLedger {
   /// the migration (WHERE gateway_ref IS NOT NULL) because cash, internal and
   /// course_draw entries carry no reference and must stay duplicable.
   gatewayRef       String? @unique @map("gateway_ref")
+  /// The POS ticket this row settled against (applied_at_pos, and the
+  /// leftover credited at that settlement). One applied_at_pos per ticket,
+  /// by the partial unique index deposit_ledger_pos_applied_once.
   posTransactionId String? @map("pos_transaction_id")
+
+  /// THE VAT INSIDE THIS ROW, when it is not the booking's own proportion.
+  ///
+  /// Null on almost every row: the journal splits a row in the ratio of the
+  /// booking's stored net and tax (journal-entry-plan.ts vatShare). Set only
+  /// when the till has already decided the split -- the deposit it applied,
+  /// and what is left of the deposit VAT on the leftover credited back -- so
+  /// the books reverse EXACTLY the VAT declared at capture, and
+  /// CUSTOMER_DEPOSITS lands on zero rather than a fil off.
+  ///
+  /// Only on applied_at_pos and refunded rows, and never more than the row
+  /// moves, by CHECK deposit_ledger_vat_fils_sane.
+  vatFils Int? @map("vat_fils")
 
   // A reversal or partial refund names the row it corrects.
   linkedEntryId String?         @map("linked_entry_id") @db.Uuid
@@ -525,8 +556,39 @@ model DepositLedger {
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
+  // ---------------------------------------------------------------- journal sync
+  //
+  // Whether this row has reached the general ledger on the platform. The
+  // books themselves live THERE; this is only the delivery receipt, kept on
+  // the row because the platform cannot tell us about an entry it never got.
+  //
+  // The append-only trigger lets ONLY these columns change. Null status is a
+  // row from before the cutover, never posted.
+  journalSyncStatus JournalSyncStatus? @default(pending) @map("journal_sync_status")
+  /// The platform's journal entry for this row. What a void needs.
+  journalEntryId    String?            @map("journal_entry_id") @db.Uuid
+  journalAttempts   Int                @default(0) @map("journal_attempts")
+  /// When to send next. Null once there is nothing left to send.
+  journalNextAt     DateTime?          @default(now()) @map("journal_next_at") @db.Timestamptz(6)
+  journalError      String?            @map("journal_error")
+  /// The platform's refusal code (ACCOUNT_NOT_FOUND, ...), or NO_MAPPING.
+  journalErrorCode  String?            @map("journal_error_code")
+
   @@index([bookingId, createdAt], map: "deposit_ledger_booking_idx")
   @@map("deposit_ledger")
+}
+
+enum JournalSyncStatus {
+  /// Waiting to be sent (or for its booking's tenant).
+  pending
+  /// The platform has it: journal_entry_id says which entry.
+  posted
+  /// Refused by the platform, or no account mapping: needs a person.
+  parked
+  /// Never posted from here (applied_at_pos: the till posts it).
+  skipped
+
+  @@map("journal_sync_status")
 }
 
 // Append-only. Every transition, with who did it and why.
@@ -652,6 +714,74 @@ model EventOutbox {
   /// Without this it scans the whole table on every poll, forever.
   @@index([createdAt], map: "event_outbox_unpublished_idx")
   @@map("event_outbox")
+}
+
+// ============================================================ pos_ticket_sync
+
+enum PosSyncKind {
+  /// booking.checked_in: open the booking's ticket on the till.
+  open
+  /// Every later move: in service, completed, or a void (check-in undone,
+  /// cancelled, no-show).
+  status
+
+  @@map("pos_sync_kind")
+}
+
+enum PosSyncStatus {
+  /// Waiting to be sent, or for its turn behind an older row of the booking.
+  pending
+  /// The platform has it.
+  done
+  /// Refused by the platform: needs a person, then a requeue. Holds back
+  /// every later row of the same booking, so they cannot overtake it.
+  parked
+  /// Nothing to send: an open for a booking no longer in the visit by the
+  /// time its turn came (undone, cancelled), or a void with no ticket.
+  skipped
+
+  @@map("pos_sync_status")
+}
+
+/// One booking event on its way to the platform's POS, in order.
+///
+/// NOT THE OUTBOX CHAIN. A network call inside the relay would run inside
+/// its five-second batch, re-deliver every push when it failed, and has no
+/// backoff and no per-booking order. The chain only INSERTS a row here
+/// (PosTicketSyncEnqueuer); the worker sends it, one booking's rows strictly
+/// in event order, with backoff and no attempt limit.
+model PosTicketSync {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  /// The EventOutbox row this came from. UNIQUE: a re-delivered event
+  /// enqueues nothing.
+  eventId   String   @unique @map("event_id") @db.Uuid
+  /// When that event happened. The order a booking's rows are sent in:
+  /// insertion order is not event order once a relay retry is involved.
+  eventAt   DateTime @map("event_at") @db.Timestamptz(6)
+  bookingId String   @map("booking_id") @db.Uuid
+  booking   Booking  @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+
+  kind          PosSyncKind
+  /// checked_in | in_service | completed | check_in_undone | cancelled |
+  /// no_show. Pinned to the kind by CHECK pos_ticket_sync_kind_matches.
+  bookingStatus String        @map("booking_status")
+  status        PosSyncStatus @default(pending)
+  attempts      Int           @default(0)
+  nextAttemptAt DateTime      @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  lastError     String?       @map("last_error")
+  /// The platform's refusal code (POS_LINE_CATALOG, ...), or ours.
+  lastErrorCode String?       @map("last_error_code")
+  /// The ticket the platform answered with, once it answered.
+  ticketId      String?       @map("ticket_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  /// Defaulted as well as @updatedAt: the enqueuer inserts with raw SQL.
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  // The due-row claim and the parked count are PARTIAL indexes, in the
+  // migration (CLAUDE.md 3).
+  @@index([bookingId, eventAt], map: "pos_ticket_sync_booking_idx")
+  @@map("pos_ticket_sync")
 }
 
 // ============================================================ notification_delivery

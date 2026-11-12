@@ -53,6 +53,11 @@ export interface CreateSeriesInput {
 
 export interface SeriesRow {
   readonly id: string;
+  /**
+   * Whose series. The nightly materialiser runs outside any request, so this
+   * is the only place its bookings can learn their tenant from.
+   */
+  readonly tenantId: string | null;
   readonly branchId: string;
   readonly customerId: string;
   readonly startMin: number;
@@ -393,6 +398,7 @@ export class SeriesRepository {
     if (s === null) return null;
     return {
       id: s.id,
+      tenantId: s.tenantId,
       branchId: s.branchId,
       customerId: s.customerId,
       startMin: s.startMin,

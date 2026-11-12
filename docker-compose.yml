@@ -119,6 +119,26 @@ services:
       # is platform's own dev default. Empty refuses chair scans only (503,
       # Wait for Staff still works). See docs/chair-check-in.md.
       PLATFORM_INTERNAL_KEY: ${PLATFORM_INTERNAL_KEY:-dev-platform-internal-key}
+      # General-ledger sync (docs/journal-integration.md). Off: nothing is
+      # sent, and new money rows wait as pending with their own dates. The
+      # allow-list narrows sending to the named tenants; empty is every tenant.
+      JOURNAL_POSTING_ENABLED: ${JOURNAL_POSTING_ENABLED:-false}
+      JOURNAL_POSTING_TENANTS: ${JOURNAL_POSTING_TENANTS:-}
+      # Bookings -> POS open tickets (gostyle-platform
+      # docs/booking-pos-tickets-plan.md). On: a check-in opens a ticket on
+      # the platform's till (PosBookingIntake, keyed with
+      # PLATFORM_INTERNAL_KEY above) and the visit is mirrored onto it. Off:
+      # nothing is queued. The allow-list narrows it to the named tenants.
+      POS_TICKET_SYNC_ENABLED: ${POS_TICKET_SYNC_ENABLED:-false}
+      POS_TICKET_SYNC_TENANTS: ${POS_TICKET_SYNC_TENANTS:-}
+      # The platform signs its "ticket paid" callback with this: the SAME
+      # value as platform's BOOKING_API_CALLBACK_SECRET. Empty here means the
+      # dev default; NODE_ENV=production with none refuses every callback.
+      POS_CALLBACK_SECRET: ${POS_CALLBACK_SECRET:-}
+      # The tenant's VAT from the platform (GetTaxSettings). RESERVED: the
+      # client reads it, but no quote path uses that client yet, so every
+      # figure is still 5% on top whatever this says.
+      TENANT_VAT_FROM_PLATFORM: ${TENANT_VAT_FROM_PLATFORM:-false}
       # No GRPC_PORT here. This service is a gRPC CLIENT, not a server: it
       # DIALS platform-api for stylist data. Nothing in src/ reads GRPC_PORT
       # and main.ts never calls connectMicroservice, so the variable only ever

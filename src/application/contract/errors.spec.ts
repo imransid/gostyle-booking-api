@@ -17,7 +17,7 @@ describe('the error catalogue', () => {
   });
 
   it('has no status outside the four the contract lists', () => {
-    const allowed = new Set([400, 401, 402, 403, 404, 409, 422, 503]);
+    const allowed = new Set([400, 401, 402, 403, 404, 409, 410, 422, 503]);
     for (const code of ERROR_CODES) {
       expect(allowed.has(ERROR_STATUS[code]), `${code}`).toBe(true);
     }
@@ -56,6 +56,9 @@ describe('the error catalogue', () => {
         'BOOKING_BRANCH_MISMATCH',
         'BOOKING_VALIDATION_FAILED',
         'AUTH_MISCONFIGURED',
+        'SETTLED_BY_POS',
+        'DEPOSIT_HELD_BY_POS',
+        'ALREADY_SETTLED',
       ].sort(),
     );
   });
@@ -165,6 +168,7 @@ describe('statusText', () => {
     expect(statusText(403)).toBe('Forbidden');
     expect(statusText(404)).toBe('Not Found');
     expect(statusText(409)).toBe('Conflict');
+    expect(statusText(410)).toBe('Gone');
     expect(statusText(422)).toBe('Unprocessable Entity');
   });
 

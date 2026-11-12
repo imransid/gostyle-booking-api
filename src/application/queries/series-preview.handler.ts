@@ -110,6 +110,9 @@ export class SeriesPreviewHandler {
     // so this is the definition standing in for one.
     const asSeries = {
       id: 'preview',
+      // Not stored, so no tenant of its own: a preview is a request, and runs
+      // as the request's tenant.
+      tenantId: null,
       branchId: q.branchId,
       customerId: q.customerId,
       startMin: q.startMin,

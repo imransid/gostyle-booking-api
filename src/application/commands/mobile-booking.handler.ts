@@ -1204,6 +1204,12 @@ export class MobileBookingHandler {
         throw MobileContractError.bookingExpired(
           'The draft hold expired before the payment was recorded.',
         );
+      case 'held_by_pos':
+        // Not in DRAFT either, as §11 means it: the visit is at the till.
+        throw MobileContractError.alreadyPaid(
+          `This visit is being paid at the salon (ticket ` +
+            `${outcome.ticketNumber}). Pay at the till.`,
+        );
       case 'replayed':
       case 'recorded':
         break;

@@ -226,12 +226,13 @@ export class MoneyController {
   }
 }
 
-function manager(actor: Actor): void {
+/** Manager only. Shared with the journal routes rather than copied. */
+export function manager(
+  actor: Actor,
+  message = 'Only a manager may move money against policy.',
+): void {
   if (actor.kind !== 'manager') {
-    throw bookingError(
-      'FORBIDDEN_ROLE',
-      'Only a manager may move money against policy.',
-    );
+    throw bookingError('FORBIDDEN_ROLE', message);
   }
 }
 
@@ -260,6 +261,14 @@ function view(o: MoneyOutcome): unknown {
       throw bookingError('BOOKING_NOT_FOUND', 'No such booking');
     case 'illegal':
       throw bookingError('BOOKING_STATE_INVALID', o.message);
+    case 'held_by_pos':
+      throw bookingError(
+        'DEPOSIT_HELD_BY_POS',
+        `POS ticket ${o.ticketNumber} holds this deposit until the visit is ` +
+          'settled at the till. Cancel or no-show the visit to release it, or ' +
+          'refund it after settlement.',
+        { ticketNumber: o.ticketNumber },
+      );
     case 'done':
       return {
         bookingId: undefined,

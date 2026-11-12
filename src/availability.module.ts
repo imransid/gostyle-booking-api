@@ -103,8 +103,23 @@ import { BookingReadHandler } from '@application/queries/read-models.handler';
 import { ReadModelRepository } from '@infrastructure/persistence/read-model.repository';
 import { ServicesGrpcModule } from './infrastructure/grpc/services-grpc.module';
 import { FloorGrpcModule } from './infrastructure/grpc/floor-grpc.module';
+import { JournalGrpcModule } from './infrastructure/grpc/journal-grpc.module';
+import { JournalSyncHandler } from '@application/commands/journal-sync.handler';
+import { BookingJournalHandler } from '@application/queries/booking-journal.handler';
+import { JournalSyncWorker } from '@infrastructure/scheduling/journal-sync-worker.service';
+import {
+  BookingJournalController,
+  JournalSyncController,
+} from '@interface/http/journal.controller';
 import { ServicesDirectoryController } from '@interface/http/services-directory.controller';
 import { ListServicesHandler } from '@application/queries/list-services.handler';
+
+import { PosBookingGrpcModule } from './infrastructure/grpc/pos-booking-grpc.module';
+import { PosTicketSyncHandler } from '@application/commands/pos-ticket-sync.handler';
+import { PosTicketPaidHandler } from '@application/commands/pos-ticket-paid.handler';
+import { PosTicketSyncWorker } from '@infrastructure/scheduling/pos-ticket-sync-worker.service';
+import { InternalPosController } from '@interface/http/internal-pos.controller';
+import { PosTicketSyncController } from '@interface/http/pos-ticket-sync.controller';
 
 import { MobilePackagesController } from '@interface/http/mobile-packages.controller';
 import { PackagesController } from '@interface/http/packages.controller';
@@ -131,6 +146,11 @@ import { MobilePackagesHandler } from '@application/queries/mobile-packages.hand
     CqrsModule,
     ServicesGrpcModule,
     FloorGrpcModule,
+    // JOURNAL_LEDGER, owned by the journal handlers (CLAUDE.md 7).
+    JournalGrpcModule,
+    // POS_TICKET_INTAKE, owned by PosTicketSyncHandler (CLAUDE.md 7). Keyed
+    // with PLATFORM_INTERNAL_KEY, like the chair directory.
+    PosBookingGrpcModule,
   ],
   controllers: [
     // The /v1/bookings literals come first: BookingsController carries
@@ -142,6 +162,12 @@ import { MobilePackagesHandler } from '@application/queries/mobile-packages.hand
     SettingsController,
     ReadModelsController,
     MoneyController,
+    BookingJournalController,
+    JournalSyncController,
+    // Service-to-service and ops routes for the till; nothing under
+    // /v1/bookings, so their place in this list is free.
+    InternalPosController,
+    PosTicketSyncController,
     // Before MobileBookingController: nothing of that one may be tried
     // first for a path under /mobile-booking/group or /mobile-booking/series.
     MobileGroupBookingController,
@@ -199,6 +225,12 @@ import { MobilePackagesHandler } from '@application/queries/mobile-packages.hand
     PlanChosenRemindersHandler,
     ChosenReminderJob,
     ReminderHealth,
+    JournalSyncHandler,
+    BookingJournalHandler,
+    JournalSyncWorker,
+    PosTicketPaidHandler,
+    PosTicketSyncHandler,
+    PosTicketSyncWorker,
     DeskExtrasHandler,
     DeskActionsHandler,
     ReadModelRepository,

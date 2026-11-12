@@ -164,6 +164,28 @@ export const ERROR_CODES = [
    * forged staff token, on every route in the service.
    */
   'AUTH_MISCONFIGURED',
+  /**
+   * THE TILL OWNS TAKING MONEY for this booking (gostyle-platform
+   * docs/booking-pos-tickets-plan.md, B7). POST /settle computed a whole
+   * bill here; once a tenant's booked visits open tickets on the POS, the
+   * POS takes the balance and tells this service through the paid callback.
+   * 410: the route is gone for this booking, and no retry brings it back.
+   */
+  'SETTLED_BY_POS',
+  /**
+   * A TICKET ON THE TILL HOLDS THIS DEPOSIT (B8). While the booking has a
+   * live POS ticket and is not settled, the till may apply the deposit at
+   * any moment, so a refund, capture or goodwill here could hand back money
+   * the till is about to spend. Cancel or no-show the visit (which voids the
+   * ticket) or let it settle first.
+   */
+  'DEPOSIT_HELD_BY_POS',
+  /**
+   * The paid callback for a booking ANOTHER ticket already settled. The
+   * same ticket again is a replay and answers 200; this is two tills taking
+   * money for one visit, which a person has to look at.
+   */
+  'ALREADY_SETTLED',
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -207,6 +229,9 @@ export const ERROR_STATUS: Readonly<Record<ErrorCode, number>> = {
   BOOKING_BRANCH_MISMATCH: 403,
   BOOKING_VALIDATION_FAILED: 400,
   AUTH_MISCONFIGURED: 503,
+  SETTLED_BY_POS: 410,
+  DEPOSIT_HELD_BY_POS: 409,
+  ALREADY_SETTLED: 409,
 };
 
 /** What the client receives. `details` is absent rather than null when empty. */
@@ -275,6 +300,7 @@ const STATUS_TEXT: Readonly<Record<number, string>> = {
   403: 'Forbidden',
   404: 'Not Found',
   409: 'Conflict',
+  410: 'Gone',
   422: 'Unprocessable Entity',
 };
 

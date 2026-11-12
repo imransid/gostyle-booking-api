@@ -77,3 +77,25 @@ describe('MobilePaymentRepository and the Notification Center', () => {
     expect(tx.eventOutbox.create).not.toHaveBeenCalled();
   });
 });
+
+describe('MobilePaymentRepository and the till (B8)', () => {
+  it('refuses a payment while a live POS ticket holds the deposit', async () => {
+    const { tx, record } = setup('checked_in');
+    tx.$queryRaw.mockImplementation(() =>
+      Promise.resolve([
+        {
+          id: BOOKING,
+          status: 'checked_in',
+          payment_status: 'unpaid',
+          link_expires_at: null,
+          pos_ticket_number: '#T-42',
+        },
+      ]),
+    );
+    expect(await record()).toEqual({
+      kind: 'held_by_pos',
+      ticketNumber: '#T-42',
+    });
+    expect(tx.depositLedger.create).not.toHaveBeenCalled();
+  });
+});

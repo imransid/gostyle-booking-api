@@ -31,6 +31,7 @@ import {
   outcomeOf,
 } from '@domain/booking/lifecycle';
 import { bookingError } from '@application/contract/errors';
+import { posTicketSyncFor } from './pos-ticket-sync.flag';
 import type { CheckInVia } from '@domain/booking/check-in-attribution';
 
 export interface LifecycleView {
@@ -163,6 +164,22 @@ export class LifecycleHandler {
     if (cmd.to === 'settled') {
       const ticket = await this.repo.ticketFor(cmd.bookingId);
       if (ticket === null) throw new NotFoundException('No such booking');
+
+      // THE TILL OWNS TAKING MONEY for a tenant whose booked visits open
+      // POS tickets (gostyle-platform docs/booking-pos-tickets-plan.md, B7),
+      // and for any visit that has one: the POS bills it, with the tenant's
+      // real VAT, and settles this booking through the paid callback. A
+      // second bill computed here would disagree with the receipt.
+      if (ticket.posTicketId !== null || posTicketSyncFor(ticket.tenantId)) {
+        throw bookingError(
+          'SETTLED_BY_POS',
+          'This visit is paid at the till. The booking settles itself when ' +
+            'its POS ticket is paid.',
+          ticket.posTicketId === null
+            ? {}
+            : { posTicketId: ticket.posTicketId },
+        );
+      }
 
       const customer = await this.customers.load(ticket.customerId);
       const co = cmd.checkout ?? {};

@@ -19,7 +19,14 @@ import { bookingError } from '@application/contract/errors';
  * check. A gateway has no idea what a branch is, and a health probe that
  * needs a business header is a health probe that fails for the wrong reason.
  */
-const EXEMPT = [/^\/health/, /^\/v1\/webhooks\//, /^\/docs/];
+const EXEMPT = [
+  /^\/health/,
+  /^\/v1\/webhooks\//,
+  // Service-to-service (the platform's POS paid callback): signed, and
+  // about one booking whose branch the body already names.
+  /^\/v1\/internal\//,
+  /^\/docs/,
+];
 
 @Injectable()
 export class BranchMiddleware implements NestMiddleware {

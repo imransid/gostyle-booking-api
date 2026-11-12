@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { HealthController } from './health.controller';
+import type {
+  PosTicketSyncRepository,
+  PosTicketSyncStats,
+} from '../../infrastructure/persistence/pos-ticket-sync.repository';
 import type { PrismaService } from '../../infrastructure/persistence/prisma.service';
 import type { OutboxRelay } from '../../infrastructure/messaging/outbox-relay.service';
 import type { AuthService, ConsumerAuthProbe } from '../../auth/auth.service';
@@ -7,6 +11,10 @@ import type {
   ReminderHealth,
   ReminderHealthView,
 } from '../../infrastructure/scheduling/reminder-health';
+import type {
+  JournalSyncRepository,
+  JournalSyncStats,
+} from '../../infrastructure/persistence/journal-sync.repository';
 
 /**
  * /health is read before anyone hits the thing it describes -- that is the
@@ -67,6 +75,34 @@ const remindersUp = {
   report: () => Promise.resolve(REMINDERS),
 } as unknown as ReminderHealth;
 
+const JOURNAL: JournalSyncStats = {
+  waitingForTenant: 0,
+  pending: 0,
+  parked: 0,
+  oldestPendingSeconds: null,
+};
+
+const journalWith = (
+  over: Partial<JournalSyncStats> = {},
+): JournalSyncRepository =>
+  ({
+    stats: () => Promise.resolve({ ...JOURNAL, ...over }),
+  }) as unknown as JournalSyncRepository;
+
+const POS_SYNC: PosTicketSyncStats = {
+  waitingForTenant: 0,
+  pending: 0,
+  parked: 0,
+  oldestPendingSeconds: null,
+};
+
+const posSyncWith = (
+  over: Partial<PosTicketSyncStats> = {},
+): PosTicketSyncRepository =>
+  ({
+    stats: () => Promise.resolve({ ...POS_SYNC, ...over }),
+  }) as unknown as PosTicketSyncRepository;
+
 const authWith = (probe: ConsumerAuthProbe): AuthService =>
   ({ probe: () => Promise.resolve(probe) }) as unknown as AuthService;
 
@@ -90,6 +126,8 @@ describe('everything is up', () => {
       relayWith(),
       authWith(reachable),
       remindersUp,
+      journalWith(),
+      posSyncWith(),
     ).check();
 
     expect(got.status).toBe('ok');
@@ -105,6 +143,8 @@ describe('the consumer API is unreachable', () => {
       relayWith(),
       authWith(unreachable),
       remindersUp,
+      journalWith(),
+      posSyncWith(),
     );
 
   it('is degraded, not ok', async () => {
@@ -137,6 +177,8 @@ describe('rails fail independently', () => {
       relayWith(),
       authWith(reachable),
       remindersUp,
+      journalWith(),
+      posSyncWith(),
     ).check();
 
     expect(got.status).toBe('degraded');
@@ -152,6 +194,8 @@ describe('rails fail independently', () => {
       relayWith(),
       authWith(unreachable),
       remindersUp,
+      journalWith(),
+      posSyncWith(),
     ).check();
 
     expect(got.status).toBe('degraded');
@@ -167,9 +211,54 @@ describe('the outbox rail still votes', () => {
       relayWith({ stuck: 1 }),
       authWith(reachable),
       remindersUp,
+      journalWith(),
+      posSyncWith(),
     ).check();
 
     expect(got.status).toBe('degraded');
+  });
+});
+
+describe('the journal rail votes too', () => {
+  it('reports the posting queue beside the outbox', async () => {
+    const got = await new HealthController(
+      prismaUp,
+      relayWith(),
+      authWith(reachable),
+      remindersUp,
+      journalWith({ pending: 3, oldestPendingSeconds: 12 }),
+      posSyncWith(),
+    ).check();
+
+    expect(got.status).toBe('ok');
+    expect(got.journal).toMatchObject({ pending: 3, oldestPendingSeconds: 12 });
+  });
+
+  it('a parked posting degrades: money that will not reach the books', async () => {
+    const got = await new HealthController(
+      prismaUp,
+      relayWith(),
+      authWith(reachable),
+      remindersUp,
+      journalWith({ parked: 1 }),
+      posSyncWith(),
+    ).check();
+
+    expect(got.status).toBe('degraded');
+  });
+
+  it('a parked till event degrades: a visit the till cannot charge', async () => {
+    const got = await new HealthController(
+      prismaUp,
+      relayWith(),
+      authWith(reachable),
+      remindersUp,
+      journalWith(),
+      posSyncWith({ parked: 1 }),
+    ).check();
+
+    expect(got.status).toBe('degraded');
+    expect(got.posTicketSync).toMatchObject({ parked: 1 });
   });
 });
 
@@ -180,6 +269,8 @@ describe('the reminder pipeline', () => {
       relayWith(),
       authWith(reachable),
       remindersUp,
+      journalWith(),
+      posSyncWith(),
     ).check();
     expect(got.reminders).toEqual(REMINDERS);
   });
@@ -197,6 +288,8 @@ describe('the reminder pipeline', () => {
       relayWith(),
       authWith(reachable),
       backlog,
+      journalWith(),
+      posSyncWith(),
     ).check();
     expect(got.status).toBe('ok');
   });

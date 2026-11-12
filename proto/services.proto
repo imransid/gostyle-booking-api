@@ -8,6 +8,9 @@ package gostyle.services.v1;
 service ServicesDirectory {
   rpc ListServices (ListServicesRequest) returns (ListServicesResponse);
   rpc ListPackages (ListPackagesRequest) returns (ListPackagesResponse);
+  // The tenant's VAT as the till charges it, so booking-api quotes the same
+  // total the POS will ring up. Same resolver the POS uses to open a ticket.
+  rpc GetTaxSettings (GetTaxSettingsRequest) returns (TaxSettings);
 }
 
 
@@ -68,4 +71,19 @@ message PackageInfo {
 
 message ListPackagesResponse {
   repeated PackageInfo packages = 1;
+}
+
+
+message GetTaxSettingsRequest {
+  string tenant_id = 1;
+}
+
+message TaxSettings {
+  // FALSE: no VAT rate resolves for this tenant (the POS refuses to open a
+  // ticket with POS_TAX_NOT_CONFIGURED). The caller keeps its own default and
+  // the other fields are unset.
+  bool configured = 1;
+  int32 vat_bps = 2;      // 500 is 5%
+  string tax_mode = 3;    // INCLUSIVE | EXCLUSIVE: are catalogue prices gross of VAT
+  string tax_rate_id = 4; // the TaxRate row; '' when unknown
 }
